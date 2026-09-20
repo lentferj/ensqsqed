@@ -68,7 +68,7 @@ __all__ = [
     "Function", "ProtocolError", "Packet",
     "frame", "parse", "to_nibbles", "from_nibbles",
     "identity_request", "NAME_ENCODING_UNKNOWN", "sound_name",
-    "NAME_OFFSET", "NAME_CHARS", "NAME_BYTES",
+    "NAME_OFFSET", "NAME_CHARS", "NAME_BYTES", "encode_name",
     "from_nibbles_low_first",
     "SOUND_BYTES_PACKED", "SOUND_BYTES",
 ]
@@ -437,6 +437,34 @@ def virtual_button(button: int, *, down: bool = True,
     value = button if down else button + CommandType.BUTTON_UP_OFFSET
     return command_message(CommandType.VIRTUAL_BUTTON, [value],
                            channel=channel)
+
+
+def encode_name(record: bytearray, name: str) -> None:
+    """Write a sixteen-character name into a record, in place.
+
+    The counterpart of :func:`sound_name`, and it did not exist until the
+    demo device needed one -- the tests had been packing bits by hand.
+    Seven bits per character, most significant first, from
+    :data:`NAME_OFFSET`.
+    """
+    if len(record) < NAME_OFFSET + NAME_BYTES:
+        raise ProtocolError(
+            f"a sound is {SOUND_BYTES} bytes; this one is {len(record)}, "
+            f"which does not reach the name at {NAME_OFFSET}")
+    padded = f"{name:<{NAME_CHARS}}"[:NAME_CHARS]
+    accumulator = bits = 0
+    out = bytearray()
+    for char in padded:
+        value = ord(char)
+        if not 32 <= value < 127:
+            raise ProtocolError(
+                f"{char!r} is outside this instrument's ASCII 32-126")
+        accumulator = (accumulator << 7) | value
+        bits += 7
+        while bits >= 8:
+            bits -= 8
+            out.append((accumulator >> bits) & 0xFF)
+    record[NAME_OFFSET:NAME_OFFSET + NAME_BYTES] = out
 
 
 def identity_request() -> bytes:

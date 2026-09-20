@@ -11,6 +11,7 @@ license = { text = "GPL-2.0-or-later" }
 dependencies = ["textual>=0.40", "python-rtmidi>=1.4"]
 
 [project.scripts]
+ensqsqed = "ensqsqed.app:main"
 sqcli = "ensqsqed.cli:main"
 
 [tool.setuptools.packages.find]

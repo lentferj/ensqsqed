@@ -64,17 +64,24 @@ over SysEx but no message type for them was seen in any of the 116 files.
 ensqsqed browses sounds. Presets would be a second pane; sequences are a
 different program.
 
-## 4. The browser has no TUI yet
+## 4. The browser — DONE 2026-09-20
 
-**Status:** open.
+Two panes, the sibling shape: groups left, that group's sounds right.
+Favourites with tags and notes, the three-way `F` cycle, search, the
+channel keys, and a device screen that reports what the unit is playing,
+since this instrument answers no identity request and has no version
+message.
 
-`sqcli` does the reading and the arithmetic. The Textual browser the
-siblings have -- two panes, favourites, tags, notes, the F cycle -- is
-not written. The shared modules it needs (`favorites`, `config`,
-`catalog`) are already ported and working.
+What is specific to this instrument, and is the reason it is worth
+having: the slot pane shows **both** numbers -- the 001-080 the unit
+displays and the 000-079 MIDI sends -- the detail line spells out the
+group selector and the sound as two separate program changes, and `r`
+refuses ROM, Card A, Card B and the drum kits before sending anything,
+because none of them has a dump request at all.
 
-**Blocked on:** nothing but the writing. It should wait for item 1, so
-that `⏎` has something to send to.
+`ensqsqed/demo.py` is new with it, and `messages.encode_name` -- the
+counterpart to `sound_name`, which did not exist because the tests had
+been packing bits by hand.
 
 ## 5. `tools/extract_catalog.py` is not written
 
@@ -237,3 +244,31 @@ surviving as a named, test-compared wrong answer is exactly how a
 two-hour debugging session should be preserved. The `main()` catch list
 includes `OSError`, which `morphcli read` lacks — worth copying back
 across when the CLI grows its first hardware command.
+
+## ER-F1 — the bool sweep stopped at `device_id`; `load_channel` has the same bug (external review follow-up — GLM-5.3-Flash, 2026-09-20)
+
+**Status:** open, verified live in six projects.
+
+The emorphed ER-3 fix added the correct bool guard to `load_device_id` —
+verified live: a hand-edited `device_id = true` now comes back as `None`
+in this project too, with the comment naming why (`isinstance(True, int)`
+is True).
+
+**`load_channel`, one function away in the same file, was not swept.** It
+still reads `isinstance(value, int) and 0 <= value <= 15`, which passes
+for `True`: `channel = true` in TOML returns `True`, every downstream
+range check passes (`0 <= True <= 15` is true), and the wire effect is
+real — with the new CLI wiring, `select_messages(slot, True)` emits
+status `0xC1`, which is **MIDI channel 2**, not channel 1. Verified live
+against this checkout, and the same unfixed form is in
+`emorphed/emu/config.py`, `kwsed/kws/config.py:129`, `p2ked/p2k/config.py:130`,
+`x5ded/x5/config.py:129` and `nanosyned/nano/config.py:130`. rxved
+carries its channel logic in its bridge with its own panel-number range
+and needs the same check in its own terms.
+
+The failure mode is the one the new `load_device_id` comment itself
+describes — a hand-edited value taking a plausible wrong form — one
+function from where it was just fixed. The sweep that propagated the
+device-ID guard to six projects should run for the channel loader too;
+`load_last_recv_port`'s `and value` truthiness check is of the same
+shape and worth a glance while there.
