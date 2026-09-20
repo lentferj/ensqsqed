@@ -3,10 +3,11 @@
 #
 # This file is part of ensqsqed.
 #
-# The frame layout and the dump sizes are derived from System Exclusive
-# dumps produced by the instrument itself. Ensoniq's own MIDI
-# specification for this family was a printed document supplied on request
-# and is not available; see DISCLAIMER.md.
+# The wire protocol is transcribed as data from Ensoniq's MIDI System
+# Exclusive Implementation Specification version 1.43, printed as
+# Appendix A of the SQ-1 Musician's Manual, and checked against 116 dump
+# files produced by three instruments. The transport layer is ported from
+# the sibling p2ked, x5ded, kwsed, rxved, nanosyned and emorphed projects.
 #
 # ensqsqed is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
@@ -79,8 +80,10 @@ SYSEX_END = 0xF7
 ENSONIQ_ID = 0x0F
 
 #: The product family byte. ``06`` in every SQ-family dump seen here. The
-#: byte after it is ``00`` in all of them and its meaning is unknown; it
-#: is carried rather than interpreted.
+#: byte after it is the **SQ-1 Model ID**, ``00``, which the specification
+#: says the SQ-R recognises too so that the two can exchange messages. It
+#: is neither carried nor checked by :func:`parse` -- it is skipped, and
+#: saying so is more honest than saying it is carried.
 SQ_FAMILY = 0x06
 
 #: 408 seven-bit bytes per sound on the wire...
@@ -268,8 +271,14 @@ def frame(function: int, body: Sequence[int] = (), *,
     known to be safe, and an unknown opcode sent to a synthesizer holding
     somebody's sounds is not an experiment worth running.
     """
-    if not 0 <= device <= 0x7F:
-        raise ProtocolError(f"device {device} is not a 7-bit value")
+    # 0-15, not 0-127: this byte is the unit's base MIDI channel. Dumps
+    # from three instruments carry 0x00, 0x0A and 0x0D, the bridge sweeps
+    # exactly that range, and every docstring here says so -- so accepting
+    # more would be this one function disagreeing with the rest.
+    if not 0 <= device <= 15:
+        raise ProtocolError(
+            f"device {device} is outside 0-15; this byte is the unit's "
+            f"base MIDI channel")
     for byte in body:
         if not 0 <= byte <= 0x7F:
             raise ProtocolError(

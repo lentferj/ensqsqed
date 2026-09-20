@@ -103,7 +103,8 @@ def list_ports() -> Tuple[List[str], List[str]]:
 def likely_ports() -> List[str]:
     """Ports whose name suggests the instrument. Only an ordering."""
     _, outs = list_ports()
-    wanted = ("sq-r", "sqr", "ensoniq", "sq1", "sq-1")
+    wanted = ("sq-r", "sqr", "ensoniq", "sq1", "sq-1", "sq2",
+              "sq-2", "ks32", "ks-32")
     return [p for p in outs if any(w in p.lower() for w in wanted)]
 
 
@@ -280,9 +281,16 @@ class SqBridge:
         sound it is on.
 
         The single-sound request is the probe rather than the bank
-        request: 415 bytes against 32647, and equally silent. Sixteen
-        channels times every port is a lot, so channel 1 is tried on every
-        port first.
+        request: 415 bytes against 32647, and equally silent.
+
+        **This is slow, and the arithmetic is worth knowing before you
+        wait for it.** Sixteen base channels times every bidirectional
+        port times the probe timeout: on a rig with thirty ports that is
+        about five minutes before it gives up. Channel 1 is tried on every
+        port first, so a unit left on the default is found in the first
+        pass -- but a unit that is switched off is found never, slowly.
+        Passing ``--port`` and ``--channel`` skips all of it, and the CLI
+        remembers both once something answers.
         """
         hinted = likely_ports()
         _, outs = list_ports()
@@ -306,7 +314,8 @@ class SqBridge:
                 return bridge
         raise DeviceError(
             "no SQ-R answered a Single Sound Dump Request on any port at "
-            "any base channel. Check the cable, that the unit is on, that "
+            "any of the sixteen base channels. Check the cable, that the "
+            "unit is on, that "
             "System Excl is ON in its System bank, and that the chain "
             "carries its replies back to this computer."
         )

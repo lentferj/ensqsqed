@@ -38,7 +38,13 @@ python -m ensqsqed.cli groups            # the groups and their selectors
 python -m ensqsqed.cli list ROM          # every sound in a group
 python -m ensqsqed.cli reach CARDB 42    # what it takes to select one
 python -m ensqsqed.cli read dump.syx     # read a .syx or .mid dump
+python -m ensqsqed.cli status            # ask the unit what it is on
+python -m ensqsqed.cli names             # all 80 internal names (silent)
 ```
+
+`status` and `names` need the instrument. Pass `--port` and `--channel`
+the first time; both are remembered. Without them the sweep tries sixteen
+base channels on every port, which takes minutes.
 
 `read` takes both, and deliberately: a `.mid` in this collection held a
 message its matching `.syx` did not.

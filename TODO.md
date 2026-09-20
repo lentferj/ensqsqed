@@ -114,153 +114,110 @@ porting artifact this project shares with emorphed, the emorphed TODO's
 external-review section (same date) documents the corrected version; the
 sibling's cleanup can be copied rather than re-derived.
 
-## ER-1 — `catalog.py` is the raw Korg-era port, unadapted
+*Every finding below was re-verified at its site before being acted on.
+Eight of the nine held. **ER-4 does not: the manual answers it, and the
+code was already right.***
 
-**Status:** open, documentation, but the worst kind: it reads as authority.
+## ER-1 — `catalog.py` was the raw Korg-era port — ALREADY FIXED
 
-The module docstring is the pre-rewrite sibling text, verbatim, and none of
-it fits this instrument:
+**Confirmed, and fixed the day before this review was read**, as part of
+acting on emorphed's. All three projects that came off the same `sed`
+were rewritten then. The review's diagnosis was exactly right, including
+that this instrument's version needed a *different* argument from
+emorphed's: there the unit hands over every name in one exchange, here
+only the internal 80 can be read at all.
 
-* Lines 21-22: printed names come from "the **X5 family**" instrument
-  definition files, generated into "``p2k/data/catalog.json``" — two other
-  projects' names, and this project's actual path is
-  ``sq/data/catalog.json``.
-* Line 30: "An SQ-R will not name one program on request; it dumps all
-  **hundred** at once." Wrong twice over: there are **340** sounds in 80s,
-  and the protocol has **no name-list message at all** — the only names
-  SysEx can deliver are the internal bank's 80, in a 32,647-byte dump. For
-  ROM, Card A and Card B the unit can supply nothing, which is why item 5
-  exists. The whole "working from the unit is cheap" argument the
-  (since-rewritten) emorphed version makes does not hold here.
-* Lines 114-119: "Reading all **640** presets of one ROM off a unit on
-  **2026-09-12** and comparing them with **Korg's own patch list**" — an
-  event from p2ked: wrong count, wrong manufacturer, and a date that
-  predates this repo's first session. And for this instrument the example
-  is impossible: ROM cannot be read over SysEx at all.
-* "see :meth:`disagreement` and **ensqsqed/app.py**" — no `app.py` exists
-  (item 4).
-* The printed-vs-live disagreement machinery (writable → "saved over the
-  factory preset", else → "the printed list is wrong") is meaningful only
-  for **INT** — the sole group that is both readable and writable here.
-  Every other group can have at most a printed name.
+## ER-2 — the bridge was unreachable from the CLI — FIXED
 
-Emorphed's `emu/catalog.py` now carries the corrected shape (it says
-explicitly that nothing in its project has yet compared the two sources);
-that rewrite is the template for fixing this one.
+**Confirmed.** `sqcli` had no `--port`, constructed no device and had no
+online command, so item 1's plan -- "`sqcli` against
+`read_current_sound`" -- was not executable as written.
 
-## ER-2 — the bridge is unreachable from the CLI
+The CLI now takes `--port`, `--recv-port`, `--channel` and `--config`,
+remembers what answered, tries the remembered port before sweeping, and
+has two online commands: `status`, which reads the sound the unit is on
+and so proves the link with the smallest possible message, and `names`,
+which reads all eighty internal names.
 
-**Status:** open, and it changes what item 1's first bench step will be.
+## ER-3 — `config` unused, `favorites` untested and unimported — FIXED
 
-TODO item 1 says the first probe is "`sqcli` against `read_current_sound`"
-— but no `sqcli` command touches the bridge. The parser takes no `--port`,
-there is no `names`/`status`/`reach-current` command, and `main` constructs
-no device: every command is offline (`groups`, `list`, `reach`, `read`).
-Emorphed's CLI, written the same day, wires its bridge with `--port`,
-`--recv-port`, `--device-id`, `autodetect`, and `names`/`status`/`select`
-commands; ensqsqed's dropped all of it, and `README.md`'s "Running it"
-reflects that — so item 1's plan is not executable as written. Either wire
-the bridge in (the emorphed CLI is the working shape) or amend item 1 to
-say the wiring is part of it.
+**Confirmed.** `config` was imported and never called; `favorites` (601
+lines) was imported by nothing.
 
-## ER-3 — `config` is imported but never used; `favorites` is imported by nothing
+`config` is now used by the wiring above. `favorites` is covered by
+`tests/test_store.py`, which is the suite written for emorphed after the
+same finding there -- the upsert preserving `added`, the soft delete and
+v1 migration, `toggle`'s restore, `_merge`, LIKE escaping,
+`refresh_names`, TOML quoting and the catalog's disagreement reporting.
+The docstrings promising "``--favorites`` on both front ends" and
+describing a browser are corrected.
 
-**Status:** open.
+## ER-4 — `--with-effect` composes before the group selector — REJECTED
 
-`ensqsqed/cli.py` imports `sq.config` and never calls it — no channel or
-port is loaded or saved, so the entire module (162 lines, with the
-carefully-reasoned `_toml_string` escaping) is dead in this repo right now.
-`sq/favorites.py` (601 lines, the largest module) is not imported by
-anything at all and has no tests: `tests/test_banks.py` covers `banks`,
-`dumps` and `messages` only. Both are ported ahead of the TUI (item 4),
-which is a legitimate decision — but it should be *recorded* as such
-somewhere cheaper than a reviewer finding it, and neither module's
-docstrings say their front end does not exist yet. `favorites.py` still
-promises "``--favorites`` on both front ends" and describes the browser
-redrawing 128-line banks.
+**The code is right and the manual says so explicitly.** The review
+raises a fair question -- program change 124 means "the *next* program
+change brings its effect", so a selector in between looks as though it
+would swallow the flag -- and then the manual answers it, in the same
+section that introduces 124:
 
-## ER-4 — `--with-effect` composes before the group selector
+> Dieser spezielle Programmwechsel 124 hat keinen Einfluss darauf, wie
+> andere Programmwechsel verstanden werden. Wird einer der
+> "Steuer"-Programmwechsel fuer den gleichen Sound gebraucht, senden Sie
+> diesen **zwischen dem 124er und dem eigentlichen Programmwechsel**.
 
-**Status:** open, a semantics question for the bench, not necessarily a
-bug.
+Send the selector *between* the 124 and the real program change -- which
+is `[124, selector, sound]`, the order `select_messages` already emits.
+No bench step needed. The citation is now at `select_messages`, which is
+where the question arises.
 
-`banks.select_messages` sends `[PC 123, selector PC, sound PC]` when a
-target in another group is reached with `with_effect=True`. But PC 123
-means "the **next** program change brings its effect" — and the next
-program change after 123 is the *selector* (124-127), not the sound. Two
-readings are possible: the effect flag is consumed harmlessly by the
-group-selector PC and never reaches the sound, or group-selector program
-changes are not "sound" program changes and the flag carries to the sound
-after. The code does not say which it believes, and `sqcli reach
---with-effect` prints the sequence with the effect first without flagging
-the question. The alternative order — selector first, then 123, then the
-sound — is equally plausible. Settle it from the manual's MULTI-mode
-section or at the bench (item 1), and note the answer at
-`select_messages`.
+## ER-5 — SMF SysEx continuation events were not handled — FIXED
 
-## ER-5 — SMF SysEx continuation events are not handled
+**Confirmed, and it was the `.mid` reader's headline feature that it
+broke.** A Standard MIDI File may split a long SysEx across a continuing
+`F7` event, and an all-sounds dump is 32647 bytes -- exactly the size
+sequencers split. Unjoined, the `F0` fragment failed its length check and
+counted as unknown while the `F7` fragments did not parse at all, so a
+good bank dump read as noise.
 
-**Status:** open, a limitation of the `.mid` reader's headline feature.
+`sysex_from_smf` now joins them, and leaves alone an `F7` event whose
+first byte is a status byte, which is an escaped raw event rather than a
+continuation. The files in the collection still read exactly as before.
 
-`dumps.sysex_from_smf` walks `MTrk` chunks and reads every
-`F0 <varlen> …` event — but Standard MIDI File also carries *continued*
-System Exclusive as `F7 <varlen> …` events, and 32,647-byte dumps are
-exactly the size sequencers split that way. A continuation-split
-all-sounds dump would arrive as fragments: the `F0` part fails
-`size_is_right` and counts as `unknown`, the `F7` fragments parse as
-`None` and count as `foreign`, and a real bank dump is silently
-misread as noise. The docstring's "walks the tracks properly" overclaims.
-The reader's own rationale ("a `.mid` in this collection held a message
-its `.syx` did not") is the argument for closing this: the interesting
-messages are precisely the ones that arrived via sequencer, and those are
-the ones that get split. The repair is the usual one: treat an `F7` event
-whose payload does not start with a status byte as a continuation of the
-previous `F0` event.
+## ER-6 — the SPDX header said the specification does not exist — FIXED
 
-## ER-6 — `messages.py`'s SPDX header contradicts the module docstring
+**Confirmed, and it was the one false claim in the file.** The header
+predated finding the specification; the docstring, item 2 and
+RESOLUTION_NOTES §1 all said the opposite. It now credits v1.43 and the
+116 dump files, which is what a licensee reads first.
 
-**Status:** open, documentation.
+## ER-7 — the test count had drifted — FIXED
 
-The header block still says "Ensoniq's own MIDI specification for this
-family was a printed document supplied on request and **is not
-available**". The module docstring, TODO item 2 and RESOLUTION_NOTES §1
-all say the opposite: the spec (v1.43, Appendix A of the SQ-1 Musician's
-Manual) was found, used, and settled the nibble order. The header predates
-the find. Fixing it matters because the header is what a licensee or a
-future reader sees first — and "there is no specification" is now the one
-claim in the file that is false.
+25 in the text, 33 in the repository. Now 55, and recounted.
 
-## ER-7 — the TODO's test count has drifted
+## ER-8 — `frame()` validated the wrong range — FIXED
 
-**Status:** open, trivial.
+**Confirmed**: `0-0x7F` where every docstring and the bridge's sweep say
+the byte is a base MIDI channel, 0-15. Now 0-15, with the reason.
 
-The status line says "25 tests, all synthetic"; there are 33, all passing.
-(Morphcli's sibling had the same drift in the other direction.) Cheap to
-recount at the next edit.
+The second half is fixed the other way round, as the review suggested:
+`parse` skips the byte at index 3 rather than carrying it, so the comment
+now says the byte is the SQ-1 Model ID and that it is skipped -- because
+describing it as "carried" was the inaccuracy.
 
-## ER-8 — `frame()` validates the wrong range for the device byte
+## ER-9 — minor — ALL FIXED
 
-**Status:** open, small.
+* `by_selector` is exported; `sqcli reach` calls it.
+* `likely_ports` now also matches sq2/sq-2/ks32, which the specification
+  says speak the same header.
+* `--channel` has help text and a 1-16 check, in both its senses -- the
+  global one and `reach`'s -- rather than relying on `select_messages`
+  raising, which read as an accident.
 
-Every docstring establishes the fifth-byte-as-base-channel as 0-15
-("dumps from three instruments carry 0x00, 0x0A and 0x0D"), and the bridge
-sweeps exactly 0-15 — but `messages.frame` accepts `0-0x7F`. Emorphed's
-equivalent enforces 0-15. Also, `parse()` does not check the unknown byte
-at index 3: the docstring says it "is carried rather than interpreted",
-but the code neither carries nor validates it — it just skips it. If the
-byte is ever shown to matter, both ends need to change; until then the
-docstring should say "ignored", which is what the code does.
-
-## ER-9 — minor
-
-* `banks.by_selector` is missing from `__all__` while `sqcli reach` calls
-  it. Same class as emorphed's `signed` omission.
-* `likely_ports` matches "sq1"/"sq-1" but not "sq2"/"sq-2"/"ks32" — the
-  SQ-2 and KS-32 speak the same header per the specification, and would be
-  found anyway by the sweep; the hint list is just incomplete.
-* `--channel` on `reach` has no help text and no 1-16 validation — an
-  out-of-range value is only saved by `select_messages` raising ValueError,
-  which reads as an accident rather than a contract.
+**One thing the review did not raise, found while fixing ER-2:**
+`autodetect` sweeps sixteen base channels across every bidirectional
+port. On this rig that is about five minutes before it gives up. It is
+documented at the point of use now, with the arithmetic, and `--port`
+plus `--channel` is the fast path the CLI remembers for next time.
 
 ## What was checked and found sound
 

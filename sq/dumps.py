@@ -116,9 +116,24 @@ def _varlen(data: bytes, index: int):
 def sysex_from_smf(raw: bytes) -> List[bytes]:
     """Every SysEx message inside a Standard MIDI File.
 
-    In an SMF the ``F0`` is followed by a variable-length count rather
-    than by the message body, so a naive search for ``F0`` ... ``F7``
-    finds the right bytes only by luck. This walks the tracks properly.
+    Two things a naive reader gets wrong, and this is the file format
+    this project leans on -- a ``.mid`` here held a message its matching
+    ``.syx`` did not, which is how the single-sound opcode was found.
+
+    First, in an SMF the ``F0`` is followed by a variable-length count
+    rather than by the message body, so searching for ``F0`` ... ``F7``
+    finds the right bytes only by luck.
+
+    Second, and worse: **a long message may be split across a continuing
+    ``F7`` event.** The format allows a sequencer to send part of a SysEx
+    in the ``F0`` event and the rest in one or more ``F7`` events, and an
+    all-sounds dump is 32647 bytes, which is exactly the size that gets
+    split. Unjoined, the ``F0`` fragment fails its length check and is
+    counted as unknown while the ``F7`` fragments do not parse at all --
+    so a perfectly good bank dump reads as noise.
+
+    An ``F7`` event whose first byte is a status byte is an escaped raw
+    event, not a continuation, and is left alone.
     """
     out: List[bytes] = []
     index = raw.find(b"MTrk")
@@ -126,16 +141,37 @@ def sysex_from_smf(raw: bytes) -> List[bytes]:
         length = struct.unpack(">I", raw[index + 4:index + 8])[0]
         body = raw[index + 8:index + 8 + length]
         cursor = 0
-        while True:
-            at = body.find(b"\xf0", cursor)
-            if at < 0:
+        pending: Optional[bytearray] = None
+        while cursor < len(body):
+            at_f0 = body.find(b"\xf0", cursor)
+            at_f7 = body.find(b"\xf7", cursor)
+            candidates = [p for p in (at_f0, at_f7) if p >= 0]
+            if not candidates:
                 break
+            at = min(candidates)
             try:
                 count, after = _varlen(body, at + 1)
             except m.ProtocolError:
                 break
-            out.append(b"\xf0" + body[after:after + count])
+            chunk = body[after:after + count]
+            if body[at] == 0xF0:
+                if pending is not None:
+                    # An F0 while one is open: the previous message was
+                    # never terminated. Keep it rather than lose it.
+                    out.append(bytes(pending))
+                pending = bytearray(b"\xf0") + chunk
+            else:
+                if pending is None or (chunk and chunk[0] & 0x80):
+                    # An escaped raw event, not a continuation.
+                    cursor = after + count
+                    continue
+                pending += chunk
+            if pending is not None and pending.endswith(b"\xf7"):
+                out.append(bytes(pending))
+                pending = None
             cursor = after + count
+        if pending is not None:
+            out.append(bytes(pending))
         index = raw.find(b"MTrk", index + 8 + length)
     return out
 

@@ -73,7 +73,8 @@ __all__ = [
     "Group", "Slot", "GROUPS", "SOUNDS_PER_GROUP", "DRUM_KITS",
     "TOTAL_SOUNDS", "BANKS_PER_GROUP", "SOUNDS_PER_BANK",
     "DRUM_FIRST_PC", "EFFECT_WITH_NEXT_PC", "PRESETS",
-    "group", "groups", "group_ids", "slots", "slot", "lookup",
+    "group", "groups", "group_ids", "by_selector", "slots", "slot",
+    "lookup",
     "readable_groups", "select_messages",
 ]
 
@@ -262,6 +263,16 @@ def select_messages(target: Slot, channel: int = 0,
     A drum kit needs no selector because its program change is absolute,
     and sending one would be worse than pointless: it would leave the unit
     in a group the caller did not ask for.
+
+    **The effect command goes first, and the manual says so explicitly.**
+    Program change 124 as displayed means "the next program change brings
+    its effect", which reads as though a group selector in between would
+    consume it. It does not: "Dieser spezielle Programmwechsel 124 hat
+    keinen Einfluss darauf, wie andere Programmwechsel verstanden werden.
+    Wird einer der 'Steuer'-Programmwechsel fuer den gleichen Sound
+    gebraucht, senden Sie diesen **zwischen dem 124er und dem
+    eigentlichen Programmwechsel**." -- send the selector *between* the
+    124 and the real program change. That is this order.
     """
     if not 0 <= channel <= 15:
         raise ValueError(f"channel {channel} is outside 0-15")

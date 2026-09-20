@@ -43,7 +43,7 @@ def _table(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> str:
     return "\n".join(out)
 
 
-def _cmd_groups(args) -> None:
+def _cmd_groups(_device, args) -> None:
     rows = []
     for entry in banks.groups():
         rows.append([entry.id, entry.label, str(entry.count),
@@ -56,7 +56,7 @@ def _cmd_groups(args) -> None:
     print("The drum kits need none -- their program changes are absolute.")
 
 
-def _cmd_list(args) -> None:
+def _cmd_list(_device, args) -> None:
     entry = banks.group(args.group)
     catalog = cat.load(getattr(args, "catalog", None))
     rows = []
@@ -69,15 +69,15 @@ def _cmd_list(args) -> None:
     print(f"\n{entry.note}")
 
 
-def _cmd_reach(args) -> None:
+def _cmd_reach(_device, args) -> None:
     """What it takes to land on one sound. Prints, sends nothing."""
     try:
         target = banks.slot(args.group, args.number)
     except LookupError as exc:
         raise SystemExit(f"error: {exc}")
-    messages = banks.select_messages(target, args.channel - 1,
+    messages = banks.select_messages(target, args.reach_channel - 1,
                                      with_effect=args.with_effect)
-    print(f"to reach {target.display} on channel {args.channel}:\n")
+    print(f"to reach {target.display} on channel {args.reach_channel}:\n")
     for message in messages:
         pc = message[1]
         what = "sound"
@@ -95,7 +95,27 @@ def _cmd_reach(args) -> None:
           f"MIDI calls it {target.program_change}.")
 
 
-def _cmd_read(args) -> None:
+def _cmd_status(device, _args) -> None:
+    """Ask the unit for the sound it is on. Silent, and proves the link."""
+    record = device.read_current_sound()
+    print(f"port            {device.description}")
+    print(f"base channel    {device.channel + 1}")
+    print(f"current sound   {m.sound_name(record).rstrip()!r} "
+          f"({len(record)} bytes)")
+    print("\nThat is the sound the unit is on, edited if it is being "
+          "edited.\nThere is no request for a sound by number.")
+
+
+def _cmd_names(device, _args) -> None:
+    """Read the 80 internal sounds' names. Silent, **makes no sound**."""
+    names = device.read_names()
+    rows = [[f"{n + 1:03d}", str(n), text.rstrip()]
+            for n, text in sorted(names.items())]
+    print(f"Internal — {len(names)} sounds\n")
+    print(_table(rows, ["shown", "PC", "name"]))
+
+
+def _cmd_read(_device, args) -> None:
     """Read a .syx or .mid the instrument produced. No hardware."""
     library = dumps.read_file(args.file)
     print(f"{args.file}: {library.summary()}")
@@ -113,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Browse an Ensoniq SQ-R Plus's memory map. Nothing "
                     "here opens a MIDI port.")
     parser.add_argument("--catalog", help="path to a generated catalog")
+    parser.add_argument("--port", help="MIDI output port name")
+    parser.add_argument("--recv-port", help="MIDI input port, if different")
+    parser.add_argument("--channel", type=int,
+                        help="the unit's base MIDI channel, 1-16 "
+                             "(default: remembered, or 1)")
+    parser.add_argument("--config", help="path to the config file")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("groups", help="the four groups, the drums, the selectors")
@@ -121,24 +147,84 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("reach", help="what it takes to select one sound")
     sp.add_argument("group", choices=banks.group_ids())
     sp.add_argument("number", type=int)
-    sp.add_argument("--channel", type=int, default=1)
+    sp.add_argument("--channel", type=int, default=1, dest="reach_channel",
+                    help="MIDI channel to address, 1-16")
     sp.add_argument("--with-effect", action="store_true",
                     help="bring the sound's effect too (MULTI mode)")
     sp = sub.add_parser("read", help="read a .syx or .mid dump")
     sp.add_argument("file")
+    sub.add_parser("status", help="ask the unit what it is on (silent)")
+    sub.add_parser("names", help="read the internal bank's names (silent)")
     return parser
 
 
+#: Commands that need no instrument at all.
+OFFLINE = {"groups", "list", "reach", "read"}
+
 COMMANDS = {"groups": _cmd_groups, "list": _cmd_list, "reach": _cmd_reach,
-            "read": _cmd_read}
+            "read": _cmd_read, "status": _cmd_status, "names": _cmd_names}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    config_path = getattr(args, "config", None) or config.DEFAULT_PATH
+
+    if args.channel is not None and not 1 <= args.channel <= 16:
+        raise SystemExit("error: --channel is 1-16")
+    channel = ((args.channel - 1) if args.channel is not None
+               else (config.load_channel(config_path) or 0))
+    reach_channel = getattr(args, "reach_channel", None)
+    if reach_channel is not None and not 1 <= reach_channel <= 16:
+        raise SystemExit("error: --channel is 1-16")
+
+    device = None
+    if args.command not in OFFLINE:
+        from sq import bridge as b
+
+        try:
+            if args.port:
+                device = b.SqBridge.open(
+                    args.port,
+                    recv_port=(args.recv_port
+                               or config.load_last_recv_port(config_path)),
+                    channel=channel)
+            else:
+                remembered = config.load_last_port(config_path)
+                if remembered:
+                    try:
+                        device = b.SqBridge.open(
+                            remembered,
+                            recv_port=config.load_last_recv_port(config_path),
+                            channel=channel)
+                        device.read_current_sound(timeout=b.PROBE_TIMEOUT)
+                    except Exception:
+                        if device is not None:
+                            device.close()
+                        device = None
+                if device is None:
+                    device = b.SqBridge.autodetect(
+                        on_try=lambda n: print(f"  probing {n}...",
+                                               file=sys.stderr))
+            try:
+                if getattr(device, "port", None):
+                    config.save_last_port(device.port, config_path)
+                    config.save_channel(device.channel, config_path)
+                recv = getattr(device, "recv_port", None)
+                if recv and recv != getattr(device, "port", None):
+                    config.save_last_recv_port(recv, config_path)
+            except OSError:
+                pass
+        except Exception as exc:
+            raise SystemExit(f"error: {exc}")
+
     try:
-        COMMANDS[args.command](args)
-    except (LookupError, ValueError, OSError) as exc:
+        COMMANDS[args.command](device, args)
+    except (LookupError, TimeoutError, ValueError, RuntimeError,
+            OSError) as exc:
         raise SystemExit(f"error: {exc}")
+    finally:
+        if device is not None:
+            device.close()
     return 0
 
 

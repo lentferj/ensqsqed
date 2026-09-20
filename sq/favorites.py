@@ -134,7 +134,8 @@ def data_dir() -> str:
 def default_path() -> str:
     """Where the favourites database lives, per platform.
 
-    Overridable everywhere it is used — ``--favorites`` on both front ends —
+    Overridable everywhere it is used, so a test never writes into
+    the user's real store —
     so a user who wants it beside a project, on a stick, or in a synced
     folder can say so.
     """
@@ -358,7 +359,7 @@ class Favorites:
         """Every favourited slot, as ``BANK:NNN`` strings.
 
         One query for the whole set rather than a ``__contains__`` per row:
-        the browser needs to mark every visible line, and a bank is up to 128
+        a browser marks every visible line, and a group is 80
         lines redrawn on every cursor move.
         """
         return {
@@ -467,7 +468,7 @@ class Favorites:
         favourite carries a rating, tags, a note and the date it was made --
         the user's own work, and the only thing here that cannot be
         reconstructed from the instrument. Deleting the row put all four one
-        keystroke from destruction, since the browser's ``f`` unfavourites
+        keystroke from destruction, since a browser's ``f`` unfavourites
         without asking; keeping it means the same keystroke brings them
         back. :meth:`forget` is the one that really deletes.
         """
@@ -482,7 +483,7 @@ class Favorites:
     def forget(self, bank_id: str, number: int) -> bool:
         """Delete a slot's row outright, annotations and all.
 
-        What :meth:`remove` used to do. Nothing in the browser calls it: a
+        What :meth:`remove` used to do. Nothing a keystroke reaches calls it: a
         keystroke should not be able to reach it.
         """
         cursor = self._db.execute(
