@@ -16,37 +16,41 @@ synthetic.
 **Nothing has been tried against hardware** -- the SQ-R was not patched
 into the MIDI bay. Items 1 and 2 are both that.
 
-## 1. No bridge, because there was no instrument
+## 1. The bridge has never talked to the instrument
 
-**Status:** open. The largest missing piece.
+**Status:** open. `sq/bridge.py` exists and is unexercised.
 
-`sq/bridge.py` does not exist. The siblings all have one; this does not,
-because writing a transport against an instrument nobody can answer for
-would be writing fiction. What it needs, in order:
+It was written once the specification turned up, because the dump
+requests are documented (section 3.1.2-3.1.6) and transcribing a
+documented message is not the same as inventing one. What it needs, in
+order, when the SQ-R is patched in:
 
-* an Identity Request and its reply, which the specification documents in
-  full (section 1.2) and which nothing has observed
-* listening for a dump the user starts from the front panel, which is the
-  documented route and needs no request at all
-* only then, if it turns out one exists, a request
+* `sqcli` against `read_current_sound` -- 415 bytes, the smallest probe
+* `read_internal_bank` -- one request, eighty sounds, and if that works
+  the browser is essentially done
+* `autodetect`, whose sweep over sixteen base channels times every port
+  has never been run and may be too slow to be pleasant
 
 **Blocked on:** the SQ-R being patched in.
 
-## 2. The four-byte command message is only half decoded
+## 2. The four captured command messages — RESOLVED
 
-**Status:** open, and **not** to be closed by guessing.
+**Status:** closed by the specification, 2026-09-20.
 
-Four 11-byte messages in one capture: message type `00`, payloads
-`00 00 00 09` and `00 00 06 09`. Read as nibble pairs those are command
-type `00` -- virtual buttons -- then button `09` and button `69` hex,
-which is 105, which is 9 + 96, which the specification says is button 9
-*released*. So they are somebody's editor pressing the "bank 9" button
-twice.
+They are virtual button presses: message type `00`, command type `00`,
+then button 9 down and button 9 up (9 + 96, the documented offset).
 
-That reading is consistent and still untested. Nothing sends it.
+That reading was inferred before the specification surfaced and is now
+confirmed by its own worked example on page 4, which gives the Left
+Arrow -- logical button 25 -- as `... 00 00 00 01 09 F7` down and
+`... 07 09 F7` up. `messages.virtual_button` generates both byte for
+byte, which is pinned by a test.
 
-**Blocked on:** hardware, and on wanting it: driving a front panel
-remotely is a different program from this one.
+**And the inference that went with it was wrong.** Having decoded them as
+button presses, this project concluded that the family had no dump
+request and that an editor drove the front panel instead. Section 3.1.2
+to 3.1.6 documents five of them. Nothing here presses buttons; the
+function exists only so the capture is explicable.
 
 ## 3. Presets and sequences are not read
 

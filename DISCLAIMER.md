@@ -43,9 +43,26 @@ Ensoniq's SQ-R Bedienungsanleitung:
 size the specification gives. All 80 names in a bank decode to clean
 ASCII at the documented offset.
 
+## Checked without hardware, as far as that goes
+
+The specification prints a worked example: the Left Arrow button, logical
+number 25, pressed and released. `messages.virtual_button` generates both
+messages **byte for byte identically**. That exercises the header, the
+nibble order and the button offset together, and it is the only
+end-to-end check available without the instrument.
+
+The firmware ROMs were examined too, and the result is worth stating
+because it is a negative one. The pair interleaves into a valid 68000
+image -- upper ROM the high byte, a vector table with SSP 0 and PC
+`0x00C10102`, so the ROM is mapped near `0x00C10000` -- but a targeted
+search for the System Exclusive parser found only candidates that cannot
+be confirmed without disassembling at the right base address. The
+firmware neither corroborates nor contradicts the specification at the
+depth examined.
+
 ## Not verified, because the instrument was not reachable
 
-**Nothing here has been tried against hardware.** The SQ-R was not
+**Nothing here has been sent to an SQ-R.** The SQ-R was not
 patched into the MIDI bay during this work. So:
 
 - No message has been *sent* to an SQ-R by this program.
@@ -54,15 +71,14 @@ patched into the MIDI bay during this work. So:
   specification describes is not established; the specification itself
   says the two share only their common messages.
 
-That is the difference between this project and its siblings, and it is
-why `sq/bridge.py` does not exist yet.
+`sq/bridge.py` exists and is transcription, not experience.
 
 ## Deliberately not done
 
-`ensqsqed` sends nothing. The one message type whose meaning is not fully
-pinned down — the four-byte command seen in one capture — is **never
-sent**: an unknown opcode aimed at a synthesizer holding somebody's
-sounds is not an experiment worth running.
+`ensqsqed` never presses the instrument's buttons. `virtual_button`
+exists so that a capture in the owner's files is explicable, and nothing
+calls it: driving a front panel blind, with no display to read back, is a
+different program.
 
 ## Ensoniq's content is not redistributed here
 

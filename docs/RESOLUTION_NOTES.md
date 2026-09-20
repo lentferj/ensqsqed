@@ -133,3 +133,82 @@ escaped so a port name with a quote cannot poison the config; a bad
 catalog row is skipped rather than fatal; `config.toml` is disposable and
 gitignored while the favourites store is the user's own work; and the
 manufacturer's names are never committed.
+
+## 8. Dump requests exist after all, and the wrong conclusion that preceded them
+
+This project first concluded that the SQ family had no dump request: the
+owner's manual documents transfers only as something started from the
+front panel, and the four unexplained messages in a capture decoded as
+virtual button presses. From those two facts it inferred that an editor
+drove the panel remotely because there was nothing else to drive.
+
+The inference was wrong, and it was wrong in the most ordinary way: two
+true observations, one plausible story, no check.
+
+Specification section 3.1.2 to 3.1.6 documents five dump requests, as
+command types 01 to 05 of a message-type-00 command message:
+
+| command type | request |
+|---|---|
+| 01 | Single Sound Dump Request |
+| 02 | Internal Sound Banks Dump Request |
+| 03 | Single Sequence Dump Request |
+| 04 | All Sequence Dump Request |
+| 05 | Dump Everything Request |
+
+with the note that "the command type is the only byte in these commands"
+and — easy to miss and fatal to miss — that it "is considered data and
+must be nybble-ized". Sent as a plain byte, command type 02 would arrive
+as command type 0, which is virtual buttons, with a stray argument.
+
+So `internal_banks_request()` is nine bytes:
+``F0 0F 06 00 cc 00 00 02 F7``, and it returns all eighty internal
+sounds in one 32647-byte reply. `sq/bridge.py` was written once this was
+known.
+
+## 9. The one check available without the instrument
+
+Page 4 prints a worked example — the Left Arrow, logical button 25,
+pressed and released:
+
+```
+F0 0F 06 00 00  00  00 00  01 09  F7    button down
+F0 0F 06 00 00  00  00 00  07 09  F7    button up
+```
+
+`messages.virtual_button(25)` and `virtual_button(25, down=False)`
+generate exactly those bytes. That single comparison exercises the
+header, the nibble order (25 is 0x19, which is `01 09` high nibble
+first) and the button-up offset of 96 all at once. If any of the three
+were wrong it would not match.
+
+It is pinned by a test, and it is the closest thing to hardware
+verification this project has.
+
+## 10. The firmware, and a negative result worth recording
+
+The v2.03 ROM pair was examined to see whether it could corroborate the
+protocol independently.
+
+**What it established:** the two files interleave into a valid 68000
+image with the upper ROM supplying the high byte of each word. The
+vector table is well formed — initial SSP `0x00000000`, initial PC
+`0x00C10102`, then a run of handlers at `0x00C1065C` and every four
+bytes after it — which places the ROM near `0x00C10000` in the address
+map. The ROMs are unequal in size (64 kB and 128 kB), so only the first
+64 kB interleaves as code and the remainder of the upper ROM is
+something else.
+
+**What it did not establish:** anything about System Exclusive. Searching
+for the header bytes finds matches only inside what is plainly sound
+parameter data. Searching for word-aligned `CMPI.B` against `0x0F`,
+`0x06`, `0xF0` and `0xF7` yields a handful of candidates that cannot be
+told from data without disassembling at the correct base address, and
+the start of the image is data rather than code, so file offsets do not
+map simply onto the addresses the vector table points at.
+
+Verifying the parser properly is a disassembly project. It was not
+undertaken, because the protocol already agrees byte for byte with the
+manufacturer's own worked example and the only thing firmware analysis
+could add is a second opinion on a settled question. The ROM layout is
+recorded here so that anyone who does take it up starts further along.

@@ -109,47 +109,111 @@ class ProtocolError(ValueError):
 
 
 class Function:
-    """Opcodes seen in real dumps.
+    """Message types -- the last byte of the packet head.
 
-    Deliberately short. Opcodes that have been *observed* are named;
-    opcodes that Ensoniq's unavailable specification presumably also
-    defines are not invented here.
+    Not to be confused with :class:`CommandType`, which is the *first
+    data byte* of a message-type-00 message and is nibble-ized. The
+    specification is careful about the difference and so is this: "Message
+    types are part of the head and are sent as bytes, but Command types
+    are considered data and are sent as two nybbles."
     """
 
-    #: An 11-byte message seen four times in one capture, payloads
-    #: ``00 00 00 09`` and ``00 00 06 09``. It is not a dump. Community
-    #: archives list a "Data Dump Request" among this family's messages,
-    #: so this may be it -- or a mode change, or a handshake. Unknown, and
-    #: therefore **never sent** by this program. An unknown opcode sent to
-    #: a synthesizer holding somebody's sounds is not an experiment worth
-    #: running.
-    SHORT_COMMAND = 0x00
-
+    #: Command messages: virtual buttons, and the dump requests.
+    COMMAND = 0x00
+    #: Error messages: ACK, NAK, invalid button.
+    ERROR = 0x01
     #: One sound: 408 bytes. The front panel's "SAVE SOUND TO MIDI".
     SINGLE_SOUND_DUMP = 0x02
-
-    #: All 80 internal sounds in one message: 32640 bytes. The front
-    #: panel's "SAVE INT TO MIDI".
+    #: All 80 internal sounds: 32640 bytes. "SAVE INT TO MIDI".
     ALL_SOUNDS_DUMP = 0x03
+    SINGLE_SEQUENCE_DUMP = 0x04
+    ALL_SEQUENCES_DUMP = 0x05
 
     NAMES = {
-        0x00: "short command (meaning unknown)",
+        0x00: "Command Message",
+        0x01: "Error Message",
         0x02: "Single Sound Dump",
         0x03: "All Sounds Dump",
+        0x04: "Single Sequence Dump",
+        0x05: "All Sequences Dump",
     }
 
     #: What payload size each dump must have, as a check that a message is
-    #: what its opcode claims. Counted across 116 files from three
-    #: different people's instruments: 74 all-sounds dumps and 8 single
-    #: sounds, every one of them these exact sizes.
+    #: what its type claims. Counted across 116 files from three
+    #: instruments: 74 all-sounds dumps and 8 single sounds, every one of
+    #: them these exact sizes.
     PAYLOAD_SIZE = {
         0x02: 408,
         0x03: 80 * 408,
     }
 
     @staticmethod
-    def name(opcode: int) -> str:
-        return Function.NAMES.get(opcode, f"opcode {opcode:#04x}")
+    def name(message_type: int) -> str:
+        return Function.NAMES.get(message_type,
+                                  f"message type {message_type:#04x}")
+
+
+class CommandType:
+    """The first data byte of a command message. **Nibble-ized.**
+
+    Specification section 3.1. Command type 00 is virtual buttons; 01 to
+    05 are the dump requests, and for those "the command type is the only
+    byte in these commands".
+
+    The unit *receives* the dump requests and never sends them, so
+    anything of type 01-05 arriving on the wire came from a computer.
+    """
+
+    VIRTUAL_BUTTON = 0x00
+    SINGLE_SOUND_REQUEST = 0x01
+    INTERNAL_BANKS_REQUEST = 0x02
+    SINGLE_SEQUENCE_REQUEST = 0x03
+    ALL_SEQUENCE_REQUEST = 0x04
+    DUMP_EVERYTHING_REQUEST = 0x05
+    SINGLE_SEQUENCE_ALERT = 0x06
+    ALL_SEQUENCE_ALERT = 0x07
+
+    NAMES = {
+        0x00: "Virtual Button",
+        0x01: "Single Sound Dump Request",
+        0x02: "Internal Sound Banks Dump Request",
+        0x03: "Single Sequence Dump Request",
+        0x04: "All Sequence Dump Request",
+        0x05: "Dump Everything Request",
+        0x06: "Single Sequence Dump Alert",
+        0x07: "All Sequence Memory Dump Alert",
+    }
+
+    #: Which dump answers which request. The sequence requests are not
+    #: here: they are answered under the Sequence Dump Protocol, with an
+    #: alert and a handshake, which this program does not speak.
+    REPLY_TO = {
+        SINGLE_SOUND_REQUEST: Function.SINGLE_SOUND_DUMP,
+        INTERNAL_BANKS_REQUEST: Function.ALL_SOUNDS_DUMP,
+    }
+
+    #: Button up is button down plus this. Specification 3.1.1.
+    BUTTON_UP_OFFSET = 96
+
+    @staticmethod
+    def name(command: int) -> str:
+        return CommandType.NAMES.get(command, f"command {command:#04x}")
+
+
+class ErrorCode:
+    """The data byte of an error message. Specification 3.2.1."""
+
+    NAK = 0x00
+    ACK = 0x01
+    INVALID_BUTTON = 0x02
+
+    NAMES = {0x00: "NAK -- busy, or the message was unintelligible",
+             0x01: "ACK",
+             0x02: "invalid button number"}
+
+    @staticmethod
+    def name(code: int) -> str:
+        return ErrorCode.NAMES.get(code, f"error {code:#04x}")
 
 
 class Packet:
@@ -310,6 +374,60 @@ def sound_name(record: Sequence[int]) -> str:
             value = (accumulator >> bits) & 0x7F
             chars.append(chr(value) if 32 <= value < 127 else "?")
     return "".join(chars)
+
+
+def command_message(command: int, body: Sequence[int] = (), *,
+                    channel: int = 0) -> bytes:
+    """A message-type-00 command, with its data nibble-ized.
+
+    The command type and everything after it are *data*, so each byte
+    becomes two nibbles, high first. Getting that wrong sends a command
+    type of 0 and a button number made of the halves of two numbers.
+    """
+    return frame(Function.COMMAND, to_nibbles([command, *body]),
+                 device=channel)
+
+
+def single_sound_request(*, channel: int = 0) -> bytes:
+    """Ask for the sound the unit is on. Read-only, **makes no sound**.
+
+    Note *which* sound: the current one, edited if it is being edited.
+    There is no way to ask for a sound by number -- the protocol has none
+    -- so reaching a particular one means selecting it first, which does
+    make a sound. :mod:`sq.bridge` says so at the point of use.
+    """
+    return command_message(CommandType.SINGLE_SOUND_REQUEST, channel=channel)
+
+
+def internal_banks_request(*, channel: int = 0) -> bytes:
+    """Ask for all 80 internal sounds. Read-only, **makes no sound**.
+
+    The one request this program leans on: 80 sounds and their names in a
+    single 32647-byte reply.
+    """
+    return command_message(CommandType.INTERNAL_BANKS_REQUEST,
+                           channel=channel)
+
+
+def virtual_button(button: int, *, down: bool = True,
+                   channel: int = 0) -> bytes:
+    """Press or release a front-panel button remotely.
+
+    Provided because it explains the four otherwise unreadable messages
+    in one of the owner's captures, and because releasing a button that
+    was pressed is not optional -- the specification says to send an up
+    for every down. **Nothing in this program calls it.** Driving a front
+    panel blind is a different program, and a button number that is wrong
+    is answered with an INVALID BUTTON error rather than a refusal to act.
+    """
+    if not 0 <= button <= 95:
+        raise ProtocolError(
+            f"button {button} is outside 0-95; up is sent as the button "
+            f"number plus {CommandType.BUTTON_UP_OFFSET}, which is what "
+            f"`down=False` does")
+    value = button if down else button + CommandType.BUTTON_UP_OFFSET
+    return command_message(CommandType.VIRTUAL_BUTTON, [value],
+                           channel=channel)
 
 
 def identity_request() -> bytes:

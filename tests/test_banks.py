@@ -178,10 +178,12 @@ class TestReadingDumps:
         assert len(library.singles) == 1
         assert not library.sounds
 
-    def test_an_unknown_opcode_is_counted_not_dropped(self):
-        raw = m.frame(m.Function.SHORT_COMMAND, [0, 0, 0, 9])
+    def test_a_command_message_is_not_a_dump(self):
+        """It parses, and it is counted rather than filed as a sound."""
+        raw = m.virtual_button(9)
         library = dumps.read_bytes(raw)
         assert library.unknown == 1
+        assert not library.sounds
 
     def test_a_truncated_tail_does_not_stop_the_rest(self):
         library = dumps.read_bytes(_bank_message() + b"\xf0\x0f\x06")
@@ -199,3 +201,66 @@ class TestReadingDumps:
             + track
         library = dumps.read_bytes(smf, smf=True)
         assert library.is_full_bank
+
+
+class TestDumpRequests:
+    """Specification 3.1.2-3.1.6: command types 01-05.
+
+    "The command type is the only byte in these commands. Remember that
+    the command type byte is considered data and must be nybble-ized."
+    """
+
+    def test_the_internal_bank_request_is_one_nibble_ized_byte(self):
+        raw = m.internal_banks_request(channel=0)
+        assert list(raw) == [0xF0, 0x0F, 0x06, 0x00, 0x00,
+                             m.Function.COMMAND,
+                             0x00, 0x02,          # command type 02, nibbles
+                             0xF7]
+
+    def test_the_base_channel_rides_in_the_header(self):
+        raw = m.internal_banks_request(channel=10)
+        assert raw[4] == 10
+
+    def test_the_command_type_is_data_and_so_is_nibble_ized(self):
+        """Sent as a plain byte it would be command type 0 -- virtual
+        buttons -- with a stray argument."""
+        raw = m.single_sound_request()
+        assert list(raw[6:8]) == [0x00, 0x01]
+
+    def test_the_specifications_own_worked_example(self):
+        """Appendix A page 4 gives these two messages for the Left Arrow,
+        which is logical button 25, and its release at 25 + 96.
+
+        This is the only end-to-end check available without the
+        instrument: if the framing, the nibble order and the button
+        offset were wrong, these would not match.
+        """
+        assert list(m.virtual_button(25)) == [
+            0xF0, 0x0F, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x09, 0xF7]
+        assert list(m.virtual_button(25, down=False)) == [
+            0xF0, 0x0F, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x09, 0xF7]
+
+    def test_the_captured_messages_decode_as_button_nine(self):
+        """The four 11-byte messages in the owner's capture."""
+        down = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00,
+                      0x00, 0x00, 0x00, 0x09, 0xF7])
+        up = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00,
+                    0x00, 0x00, 0x06, 0x09, 0xF7])
+        for raw, expected in ((down, 9), (up, 9 + m.CommandType.BUTTON_UP_OFFSET)):
+            packet = m.parse(raw)
+            assert packet.function == m.Function.COMMAND
+            data = m.from_nibbles(packet.payload)
+            assert data[0] == m.CommandType.VIRTUAL_BUTTON
+            assert data[1] == expected
+
+    def test_a_button_number_must_be_a_button_number(self):
+        with pytest.raises(m.ProtocolError, match="0-95"):
+            m.virtual_button(96)
+
+    def test_every_command_type_has_a_name(self):
+        for code in (0x00, 0x01, 0x02, 0x03, 0x04, 0x05):
+            assert not m.CommandType.name(code).startswith("command ")
+
+    def test_error_codes_are_named(self):
+        assert "NAK" in m.ErrorCode.name(m.ErrorCode.NAK)
+        assert m.ErrorCode.name(m.ErrorCode.ACK) == "ACK"
