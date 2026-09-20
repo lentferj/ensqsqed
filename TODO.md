@@ -245,30 +245,48 @@ two-hour debugging session should be preserved. The `main()` catch list
 includes `OSError`, which `morphcli read` lacks — worth copying back
 across when the CLI grows its first hardware command.
 
-## ER-F1 — the bool sweep stopped at `device_id`; `load_channel` has the same bug (external review follow-up — GLM-5.3-Flash, 2026-09-20)
+## ER-F1 — `load_channel` had the same bug as `load_device_id` — FIXED
 
-**Status:** open, verified live in six projects.
+**Confirmed, reproduced on the wire, and fixed in all seven projects.**
 
-The emorphed ER-3 fix added the correct bool guard to `load_device_id` —
-verified live: a hand-edited `device_id = true` now comes back as `None`
-in this project too, with the comment naming why (`isinstance(True, int)`
-is True).
+The review is right on every point, including the one that makes it
+worth more than a type check. Reproduced here:
 
-**`load_channel`, one function away in the same file, was not swept.** It
-still reads `isinstance(value, int) and 0 <= value <= 15`, which passes
-for `True`: `channel = true` in TOML returns `True`, every downstream
-range check passes (`0 <= True <= 15` is true), and the wire effect is
-real — with the new CLI wiring, `select_messages(slot, True)` emits
-status `0xC1`, which is **MIDI channel 2**, not channel 1. Verified live
-against this checkout, and the same unfixed form is in
-`emorphed/emu/config.py`, `kwsed/kws/config.py:129`, `p2ked/p2k/config.py:130`,
-`x5ded/x5/config.py:129` and `nanosyned/nano/config.py:130`. rxved
-carries its channel logic in its bridge with its own panel-number range
-and needs the same check in its own terms.
+```
+load_channel("channel = true") -> True
+select_messages(slot, True)    -> 0xC1 0xC1
+                               => MIDI channel 2, asked for 1
+```
 
-The failure mode is the one the new `load_device_id` comment itself
-describes — a hand-edited value taking a plausible wrong form — one
-function from where it was just fixed. The sweep that propagated the
-device-ID guard to six projects should run for the channel loader too;
-`load_last_recv_port`'s `and value` truthiness check is of the same
-shape and worth a glance while there.
+`isinstance(True, int)` is True and `0 <= True <= 15` is true, so the
+value passed every downstream check and came out as a status byte for
+the wrong channel. A wrong channel is not an error anywhere: the
+instrument plays nothing, or something else does.
+
+**rxved's was worse than reported.** Its loader lives in the bridge and
+had `isinstance(value, int)` with **no range check at all**, so
+`channel = 99` also passed and produced a status byte belonging to a
+different MIDI message entirely. It now has both guards.
+
+The review's diagnosis of *why* it happened is the useful part: the
+device-ID guard was swept across six projects and the function one line
+below it was not looked at. So the fix is not six more one-line guards
+but a test that walks **every** loader whose return type mentions `int`
+and feeds each one a boolean and an absurd number:
+
+```
+tests: TestABoolIsNotANumber
+  test_there_are_numeric_loaders_to_check   (not vacuous)
+  test_no_numeric_loader_accepts_true
+  test_no_numeric_loader_accepts_an_absurd_value
+```
+
+It is in all seven projects, and reverting one guard was checked to make
+it fail. The next loader that grows this shape gets caught without
+anybody remembering to sweep.
+
+`load_last_port` and `load_last_recv_port` were checked too and are
+sound -- `bool` is not a `str`, so `isinstance(value, str)` already
+excludes it. The two were made consistent about rejecting an empty
+string while there.
+
