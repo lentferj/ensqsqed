@@ -1,0 +1,47 @@
+nanosyned — Terminal browser for the Ensoniq SQ-R Plus
+Copyright (C) 2026  nanosyned contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+The full, verbatim text of the GNU General Public License version 2 is in
+the file COPYING alongside this one. This file records only the project's
+copyright notice and its third-party attributions.
+
+-------------------------------------------------------------------------------
+Third-party references and their licenses
+-------------------------------------------------------------------------------
+
+nano/messages.py, nano/records.py, nano/dumps.py
+  The System Exclusive frame layout, the Alesis manufacturer and family
+  IDs, the function codes, the record sizes, the 8-into-7 bit packing and
+  the seven-bit name encoding are transcribed as data, and in part
+  derived, from:
+
+    Alesis QS6/QS7/QS8/QSR System Exclusive Specification, Alesis Corp.
+    System Exclusive dumps produced by the instrument itself
+
+nano/banks.py
+  The five banks, their Bank Select values, the sixteen front-panel
+  categories and the hardwired silent program are transcribed as data
+  from:
+
+    Ensoniq SQ-R Plus Reference Manual, Alesis Corp., 1998
+
+nano/bridge.py, nano/favorites.py, nano/config.py, nano/catalog.py
+  Ported from the sibling projects x5ded, kwsed, p2ked, rxved, s3ked and
+  k2kremote, which are under the same licence.
+
+  Facts and interface data, transcribed for interoperability. None of those
+  documents is redistributed here.
+

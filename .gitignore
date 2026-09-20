@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# The generated name catalog. Ensoniq's sound names are not ours to
+# redistribute: regenerate it locally with tools/extract_catalog.py.
+sq/data/catalog.json
+
+# A disposable cache of which port answered last.
+config.toml
