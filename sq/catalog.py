@@ -17,21 +17,24 @@
 
 Two sources, kept apart all the way to the screen:
 
-* **Printed** names, from the instrument-definition files shipped for the
-  X5 family. Generated locally into ``p2k/data/catalog.json``, which is
-  gitignored -- those names are Korg's and are not redistributed here.
+* **Printed** names, transcribed from the sound lists in the SQ-R Bedienungsanleitung. Generated locally into
+  ``sq/data/catalog.json``, which is gitignored -- those names are
+  Ensoniq's and are not redistributed here.
 * **Live** names, read from a unit over System Exclusive.
 
 A single mapping cannot keep them distinguishable, and the distinction is
-the useful part: a user bank whose live name differs from the printed one is
-a bank somebody has saved their own work into, and that is the single most
-informative thing this program can put on a screen.
+the useful part: a user slot whose live name differs from the printed one
+is one somebody has saved their own work into, and that is the single
+most informative thing this program can put on a screen.
 
-An SQ-R will not name one program on request; it dumps all hundred at once,
-which is a single silent message. So a catalog is a convenience for working
-without the unit rather than a substitute for asking it, and there is no
-"this will play the instrument" warning anywhere in ensqsqed -- reading names
-does not.
+**A dump carries its own names, so a catalog matters less here than in
+the siblings.** One Internal Sound Banks Dump Request returns all eighty
+internal sounds with their names in it. What a catalog is for is the
+three groups a dump cannot reach -- ROM, Card A and Card B -- which the
+protocol has no request for at all.
+
+Nothing in this module plays anything. Reading names is silent on this
+instrument whichever way it is done.
 """
 
 from __future__ import annotations
@@ -111,12 +114,13 @@ class Catalog:
         bank it cannot mean that -- ROM does not change -- so it means the
         printed list is wrong, and the unit is right.
 
-        That is not hypothetical. Reading all 640 presets of one ROM off a
-        unit on 2026-09-12 and comparing them with Korg's own patch list for
-        that ROM left 11 names differing, every one by internal whitespace
-        alone -- the instrument holds two spaces where the document prints
-        one. Callers should say which kind of disagreement they are
-        showing; see :meth:`disagreement` and ensqsqed/app.py.
+        **Nothing in this project has yet compared the two**: no unit has
+        answered ensqsqed, so every name it has seen came from a file or a
+        document. The sibling projects each found their disagreements to
+        be whitespace -- an instrument holding two spaces where a printed
+        list shows one -- and that is the shape to expect here, but
+        expecting is not knowing. Callers should say which kind of
+        disagreement they are showing; see :meth:`disagreement`.
         """
         live = self.live_name(bank_id, program_change)
         if live is None:

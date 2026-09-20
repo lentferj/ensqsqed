@@ -155,7 +155,13 @@ def save_last_recv_port(port: str, path: str = DEFAULT_PATH) -> None:
 
 def load_device_id(path: str = DEFAULT_PATH) -> Optional[int]:
     value = _read(path)[0].get("device_id")
-    return value if isinstance(value, int) else None
+    # `isinstance(True, int)` is True, so a hand-edited `device_id = true`
+    # would come back as device 1 -- a real device, and the wrong one. A
+    # wrong device ID is answered with silence by these instruments, which
+    # is the failure mode that hides behind every other.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 127 else None
 
 
 def save_device_id(device_id: int, path: str = DEFAULT_PATH) -> None:
