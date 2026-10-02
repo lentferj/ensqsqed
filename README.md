@@ -74,9 +74,9 @@ make check            # ruff, mypy, pytest + coverage, pip-audit, vulture,
 `test`, `audit`). `make check` fails on the first problem. It passes on the
 current tree because every pre-existing finding is baselined or ignored
 narrowly rather than switched off: see `docs/QUALITY_CHECKS.md` for what is
-suppressed, why, and the few items worth fixing outright. Formatting of the
-existing files is deferred — `make format` rewrites them when that is wanted,
-as its own commit.
+suppressed, why, and the few items worth fixing outright. Formatting is
+enforced too — `make lint` runs `ruff format --check`, and `make format`
+rewrites files when the check complains.
 
 ## Licence
 

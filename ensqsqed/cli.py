@@ -33,26 +33,36 @@ __all__ = ["main", "build_parser"]
 def _table(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> str:
     if not rows:
         return "(nothing)"
-    widths = [max(len(str(r[i])) for r in (*rows, headers))
-              for i in range(len(headers))]
-    out = ["  ".join(str(h).ljust(w) for h, w in zip(headers, widths)).rstrip(),
-           "  ".join("-" * w for w in widths)]
+    widths = [
+        max(len(str(r[i])) for r in (*rows, headers)) for i in range(len(headers))
+    ]
+    out = [
+        "  ".join(str(h).ljust(w) for h, w in zip(headers, widths)).rstrip(),
+        "  ".join("-" * w for w in widths),
+    ]
     for row in rows:
-        out.append("  ".join(str(c).ljust(w)
-                             for c, w in zip(row, widths)).rstrip())
+        out.append("  ".join(str(c).ljust(w) for c, w in zip(row, widths)).rstrip())
     return "\n".join(out)
 
 
 def _cmd_groups(_device, args) -> None:
     rows = []
     for entry in banks.groups():
-        rows.append([entry.id, entry.label, str(entry.count),
-                     "-" if entry.selector is None else str(entry.selector),
-                     "yes" if entry.readable else "no"])
+        rows.append(
+            [
+                entry.id,
+                entry.label,
+                str(entry.count),
+                "-" if entry.selector is None else str(entry.selector),
+                "yes" if entry.readable else "no",
+            ]
+        )
     print(_table(rows, ["id", "name", "sounds", "selector PC", "dumpable"]))
-    print(f"\n{banks.TOTAL_SOUNDS} sounds. The selector is a *program "
-          f"change*, not a Bank Select:\nsend it once and every later "
-          f"program change means that group, until the next one.")
+    print(
+        f"\n{banks.TOTAL_SOUNDS} sounds. The selector is a *program "
+        f"change*, not a Bank Select:\nsend it once and every later "
+        f"program change means that group, until the next one."
+    )
     print("The drum kits need none -- their program changes are absolute.")
 
 
@@ -61,9 +71,14 @@ def _cmd_list(_device, args) -> None:
     catalog = cat.load(getattr(args, "catalog", None))
     rows = []
     for item in banks.slots(entry.id):
-        rows.append([f"{item.number:03d}", str(item.program_change),
-                     str(item.bank),
-                     catalog.display_name(item.bank_id, item.program_change)])
+        rows.append(
+            [
+                f"{item.number:03d}",
+                str(item.program_change),
+                str(item.bank),
+                catalog.display_name(item.bank_id, item.program_change),
+            ]
+        )
     print(f"{entry.label} — {entry.count} sounds\n")
     print(_table(rows, ["shown", "PC", "bank", "name"]))
     print(f"\n{entry.note}")
@@ -75,8 +90,9 @@ def _cmd_reach(_device, args) -> None:
         target = banks.slot(args.group, args.number)
     except LookupError as exc:
         raise SystemExit(f"error: {exc}")
-    messages = banks.select_messages(target, args.reach_channel - 1,
-                                     with_effect=args.with_effect)
+    messages = banks.select_messages(
+        target, args.reach_channel - 1, with_effect=args.with_effect
+    )
     print(f"to reach {target.display} on channel {args.reach_channel}:\n")
     for message in messages:
         pc = message[1]
@@ -89,10 +105,14 @@ def _cmd_reach(_device, args) -> None:
             except LookupError:
                 if pc >= banks.DRUM_FIRST_PC:
                     what = "drum kit (absolute, needs no group)"
-        print(f"  {' '.join(f'{b:02X}' for b in message)}"
-              f"   program change {pc:3}   {what}")
-    print(f"\nThe unit shows this sound as {target.number:03d}; "
-          f"MIDI calls it {target.program_change}.")
+        print(
+            f"  {' '.join(f'{b:02X}' for b in message)}"
+            f"   program change {pc:3}   {what}"
+        )
+    print(
+        f"\nThe unit shows this sound as {target.number:03d}; "
+        f"MIDI calls it {target.program_change}."
+    )
 
 
 def _cmd_status(device, _args) -> None:
@@ -100,17 +120,19 @@ def _cmd_status(device, _args) -> None:
     record = device.read_current_sound()
     print(f"port            {device.description}")
     print(f"base channel    {device.channel + 1}")
-    print(f"current sound   {m.sound_name(record).rstrip()!r} "
-          f"({len(record)} bytes)")
-    print("\nThat is the sound the unit is on, edited if it is being "
-          "edited.\nThere is no request for a sound by number.")
+    print(f"current sound   {m.sound_name(record).rstrip()!r} ({len(record)} bytes)")
+    print(
+        "\nThat is the sound the unit is on, edited if it is being "
+        "edited.\nThere is no request for a sound by number."
+    )
 
 
 def _cmd_names(device, _args) -> None:
     """Read the 80 internal sounds' names. Silent, **makes no sound**."""
     names = device.read_names()
-    rows = [[f"{n + 1:03d}", str(n), text.rstrip()]
-            for n, text in sorted(names.items())]
+    rows = [
+        [f"{n + 1:03d}", str(n), text.rstrip()] for n, text in sorted(names.items())
+    ]
     print(f"Internal — {len(names)} sounds\n")
     print(_table(rows, ["shown", "PC", "name"]))
 
@@ -121,8 +143,9 @@ def _cmd_read(_device, args) -> None:
     print(f"{args.file}: {library.summary()}")
     names = library.names()
     if names:
-        rows = [[f"{n + 1:03d}", str(n), text.strip()]
-                for n, text in sorted(names.items())]
+        rows = [
+            [f"{n + 1:03d}", str(n), text.strip()] for n, text in sorted(names.items())
+        ]
         print()
         print(_table(rows, ["shown", "PC", "name"]))
 
@@ -131,13 +154,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sqcli",
         description="Browse an Ensoniq SQ-R Plus's memory map. Nothing "
-                    "here opens a MIDI port.")
+        "here opens a MIDI port.",
+    )
     parser.add_argument("--catalog", help="path to a generated catalog")
     parser.add_argument("--port", help="MIDI output port name")
     parser.add_argument("--recv-port", help="MIDI input port, if different")
-    parser.add_argument("--channel", type=int,
-                        help="the unit's base MIDI channel, 1-16 "
-                             "(default: remembered, or 1)")
+    parser.add_argument(
+        "--channel",
+        type=int,
+        help="the unit's base MIDI channel, 1-16 (default: remembered, or 1)",
+    )
     parser.add_argument("--config", help="path to the config file")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -147,10 +173,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("reach", help="what it takes to select one sound")
     sp.add_argument("group", choices=banks.group_ids())
     sp.add_argument("number", type=int)
-    sp.add_argument("--channel", type=int, default=1, dest="reach_channel",
-                    help="MIDI channel to address, 1-16")
-    sp.add_argument("--with-effect", action="store_true",
-                    help="bring the sound's effect too (MULTI mode)")
+    sp.add_argument(
+        "--channel",
+        type=int,
+        default=1,
+        dest="reach_channel",
+        help="MIDI channel to address, 1-16",
+    )
+    sp.add_argument(
+        "--with-effect",
+        action="store_true",
+        help="bring the sound's effect too (MULTI mode)",
+    )
     sp = sub.add_parser("read", help="read a .syx or .mid dump")
     sp.add_argument("file")
     sub.add_parser("status", help="ask the unit what it is on (silent)")
@@ -161,8 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
 #: Commands that need no instrument at all.
 OFFLINE = {"groups", "list", "reach", "read"}
 
-COMMANDS = {"groups": _cmd_groups, "list": _cmd_list, "reach": _cmd_reach,
-            "read": _cmd_read, "status": _cmd_status, "names": _cmd_names}
+COMMANDS = {
+    "groups": _cmd_groups,
+    "list": _cmd_list,
+    "reach": _cmd_reach,
+    "read": _cmd_read,
+    "status": _cmd_status,
+    "names": _cmd_names,
+}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -171,8 +211,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.channel is not None and not 1 <= args.channel <= 16:
         raise SystemExit("error: --channel is 1-16")
-    channel = ((args.channel - 1) if args.channel is not None
-               else (config.load_channel(config_path) or 0))
+    channel = (
+        (args.channel - 1)
+        if args.channel is not None
+        else (config.load_channel(config_path) or 0)
+    )
     reach_channel = getattr(args, "reach_channel", None)
     if reach_channel is not None and not 1 <= reach_channel <= 16:
         raise SystemExit("error: --channel is 1-16")
@@ -185,9 +228,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.port:
                 device = b.SqBridge.open(
                     args.port,
-                    recv_port=(args.recv_port
-                               or config.load_last_recv_port(config_path)),
-                    channel=channel)
+                    recv_port=(
+                        args.recv_port or config.load_last_recv_port(config_path)
+                    ),
+                    channel=channel,
+                )
             else:
                 remembered = config.load_last_port(config_path)
                 if remembered:
@@ -195,7 +240,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         device = b.SqBridge.open(
                             remembered,
                             recv_port=config.load_last_recv_port(config_path),
-                            channel=channel)
+                            channel=channel,
+                        )
                         device.read_current_sound(timeout=b.PROBE_TIMEOUT)
                     except Exception:
                         if device is not None:
@@ -203,8 +249,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         device = None
                 if device is None:
                     device = b.SqBridge.autodetect(
-                        on_try=lambda n: print(f"  probing {n}...",
-                                               file=sys.stderr))
+                        on_try=lambda n: print(f"  probing {n}...", file=sys.stderr)
+                    )
             try:
                 if getattr(device, "port", None):
                     config.save_last_port(device.port, config_path)
@@ -219,8 +265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         COMMANDS[args.command](device, args)
-    except (LookupError, TimeoutError, ValueError, RuntimeError,
-            OSError) as exc:
+    except (LookupError, TimeoutError, ValueError, RuntimeError, OSError) as exc:
         raise SystemExit(f"error: {exc}")
     finally:
         if device is not None:

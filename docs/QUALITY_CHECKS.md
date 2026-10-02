@@ -31,7 +31,6 @@ lockfile: the tools and their whole transitive closure are pinned exactly.
 |---|---|---|
 | `lint` | ruff | `ruff check` plus `ruff format --check` |
 | `format` | ruff | `ruff format`, rewriting files |
-| `format-check` | ruff | the same without rewriting |
 | `typecheck` | mypy | via `quality/check_mypy.py`, against a baseline |
 | `test` | pytest + pytest-cov | 74 tests, coverage with `term-missing` |
 | `audit-vulns` | pip-audit | runtime deps + the pinned toolchain |
@@ -96,24 +95,16 @@ among the scanned paths, so `quality/vulture_whitelist.py` is on vulture's
 command line in the Makefile. That makes the file real Python, so ruff lints
 it too; hence the `noqa` on its one line.
 
-## Formatting is deferred for existing files
+## Formatting is enforced
 
-The tree has never been through a formatter. `ruff format` would rewrite
-**13 of the 15 pre-existing Python files**. Enforcing that in `check` or in a
-pre-commit hook would mean rewriting the whole codebase in one commit, which
-is a decision for the owner and not a lint fix.
+`ruff format --check` runs as part of `make lint`, so `make check` fails on
+any file that is not `ruff format` clean, and the `ruff-format` pre-commit
+hook rewrites one on the way in. The whole tree was brought into line in the
+commit that cleared the original deferral; there is no exclusion list and
+none should be added.
 
-`make format` will do it whenever that is wanted, as its own commit so the
-diff stays reviewable. Until then the gap is real and worth naming: those 13
-files are excluded from `ruff format --check` and from the `ruff-format`
-pre-commit hook, while **every other file, including every file added from now
-on, is format-checked**. To clear the list: run `make format`, commit the
-result, then trim `FORMAT_DEFERRED` in the Makefile and the matching `exclude`
-in `.pre-commit-config.yaml`.
-
-The deferred files are `ensqsqed/{app,cli,demo}.py`,
-`sq/{banks,bridge,catalog,config,dumps,favorites,messages}.py` and
-`tests/{test_app,test_banks,test_store}.py`.
+`make format` is the fixer for when the check complains; it is deliberately
+not part of `make check`.
 
 ## shellcheck and shfmt are not wired
 

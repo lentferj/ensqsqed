@@ -38,8 +38,7 @@ class TestStartup:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.query_one("#bank-table").row_count == len(banks.GROUPS)
-            assert (app.query_one("#slot-table").row_count
-                    == banks.SOUNDS_PER_GROUP)
+            assert app.query_one("#slot-table").row_count == banks.SOUNDS_PER_GROUP
 
 
 class TestCursorIsSilent:
@@ -113,7 +112,9 @@ class TestSelectionSendsTheGroupFirst:
             slot, _ = app.device.selected_log[0]
             assert slot.needs_selector
             assert [msg[1] for msg in banks.select_messages(slot)] == [
-                slot.group.selector, slot.program_change]
+                slot.group.selector,
+                slot.program_change,
+            ]
 
     async def test_two_selections_in_a_row_send_one(self):
         app = EnsqsqedApp(DemoDevice(latency=0.5), catalog=cat.empty())
@@ -137,8 +138,7 @@ class TestOnlyInternalCanBeRead:
                 await pilot.pause()
             assert app.catalog.live_name("INT", 1) is not None
 
-    async def test_the_other_groups_are_refused_before_anything_is_sent(
-            self, app):
+    async def test_the_other_groups_are_refused_before_anything_is_sent(self, app):
         """They have no dump request of any kind."""
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -150,8 +150,7 @@ class TestOnlyInternalCanBeRead:
                     await pilot.pause()
                 assert app.catalog.live_name(group_id, 1) is None
 
-    async def test_the_dump_numbers_from_zero_and_the_unit_from_one(
-            self, app):
+    async def test_the_dump_numbers_from_zero_and_the_unit_from_one(self, app):
         """The catalog keys on what the unit shows."""
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -159,7 +158,8 @@ class TestOnlyInternalCanBeRead:
             for _ in range(30):
                 await pilot.pause()
             assert app.catalog.live_name("INT", 0) is None, (
-                "sound 0 of the dump is shown as 001")
+                "sound 0 of the dump is shown as 001"
+            )
             assert app.catalog.live_name("INT", 80) is not None
 
 
@@ -171,10 +171,9 @@ class TestFavouritesActOnTheRowNotThePane:
         async with app.run_test() as pilot:
             await pilot.pause()
             app.view_mode = VIEW_ALL_FAVOURITES
-            app._fill("INT")                 # pane elsewhere; row is CARDA 5
+            app._fill("INT")  # pane elsewhere; row is CARDA 5
             await pilot.pause()
-            assert [(e.bank_id, e.number) for e in app._current] == [
-                ("CARDA", 5)]
+            assert [(e.bank_id, e.number) for e in app._current] == [("CARDA", 5)]
             app.query_one("#slot-table").focus()
             await pilot.press("f")
             for _ in range(4):
@@ -193,25 +192,28 @@ class TestTheChannelIsRemembered:
 
     def test_remembering_a_channel_persists_it(self, tmp_path):
         path = str(tmp_path / "config.toml")
-        app = EnsqsqedApp(DemoDevice(), catalog=cat.empty(),
-                          config_path=path)
+        app = EnsqsqedApp(DemoDevice(), catalog=cat.empty(), config_path=path)
         app._remember_channel(9)
         assert config.load_channel(path) == 9
 
 
 class TestStructuralRules:
     def _workers(self):
-        path = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "ensqsqed", "app.py")
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "ensqsqed",
+            "app.py",
+        )
         with open(path, encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if any((isinstance(d, ast.Call)
-                    and getattr(d.func, "id", "") == "work")
-                   or getattr(d, "id", "") == "work"
-                   for d in node.decorator_list):
+            if any(
+                (isinstance(d, ast.Call) and getattr(d.func, "id", "") == "work")
+                or getattr(d, "id", "") == "work"
+                for d in node.decorator_list
+            ):
                 yield node
 
     def test_there_are_workers_to_check(self):
@@ -221,22 +223,29 @@ class TestStructuralRules:
         offenders = []
         for node in self._workers():
             for inner in ast.walk(node):
-                if (isinstance(inner, ast.Attribute)
-                        and inner.attr in ("favorites", "catalog")
-                        and isinstance(inner.value, ast.Name)
-                        and inner.value.id == "self"):
+                if (
+                    isinstance(inner, ast.Attribute)
+                    and inner.attr in ("favorites", "catalog")
+                    and isinstance(inner.value, ast.Name)
+                    and inner.value.id == "self"
+                ):
                     offenders.append(node.name)
         assert not offenders, (
             f"worker(s) {sorted(set(offenders))} reach self.favorites or "
-            f"self.catalog; workers do MIDI and hand off")
+            f"self.catalog; workers do MIDI and hand off"
+        )
 
     def test_no_worker_sets_the_busy_flag_itself(self):
         offenders = []
         for node in self._workers():
             for inner in ast.walk(node):
-                if (isinstance(inner, ast.Assign)
-                        and any(isinstance(t, ast.Attribute)
-                                and t.attr == "_busy" for t in inner.targets)
-                        and getattr(inner.value, "value", None) is True):
+                if (
+                    isinstance(inner, ast.Assign)
+                    and any(
+                        isinstance(t, ast.Attribute) and t.attr == "_busy"
+                        for t in inner.targets
+                    )
+                    and getattr(inner.value, "value", None) is True
+                ):
                     offenders.append(node.name)
         assert not offenders, f"worker(s) {offenders} set _busy themselves"

@@ -81,9 +81,19 @@ VIEW_LABELS = {
 }
 
 KEY_HINTS = (
-    "↑↓ move", "tab pane", "⏎ select on the unit", "r read names",
-    "/ search", "[ ] channel", "c set channel", "f favourite",
-    "F favourites view", "t tags", "n note", "i device", "? help",
+    "↑↓ move",
+    "tab pane",
+    "⏎ select on the unit",
+    "r read names",
+    "/ search",
+    "[ ] channel",
+    "c set channel",
+    "f favourite",
+    "F favourites view",
+    "t tags",
+    "n note",
+    "i device",
+    "? help",
     "q quit",
 )
 
@@ -138,8 +148,7 @@ class ReportScreen(ModalScreen[None]):
     ReportScreen .body { height: 1fr; overflow-y: auto; }
     """
 
-    BINDINGS = [Binding("escape", "close", "Close"),
-                Binding("q", "close", "Close")]
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
 
     def __init__(self, title: str, body: str) -> None:
         super().__init__()
@@ -226,8 +235,9 @@ class EnsqsqedApp(App):
         Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, device, *, catalog=None, favorites=None,
-                 config_path: Optional[str] = None) -> None:
+    def __init__(
+        self, device, *, catalog=None, favorites=None, config_path: Optional[str] = None
+    ) -> None:
         super().__init__()
         self.device = device
         self.catalog = catalog if catalog is not None else cat.empty()
@@ -258,31 +268,34 @@ class EnsqsqedApp(App):
     def on_mount(self) -> None:
         self.title = "ensqsqed"
         table = self.query_one("#bank-table", DataTable)
-        for label, key in (("group", "bank"), ("n", "n"), ("", "src"),
-                           ("♥", "fav")):
+        for label, key in (("group", "bank"), ("n", "n"), ("", "src"), ("♥", "fav")):
             table.add_column(label, key=key)
         for bank_id in self._bank_ids:
             entry = banks.group(bank_id)
             marked = len(self._favorite_keys(bank_id))
-            table.add_row(entry.label, str(entry.count),
-                          "" if entry.readable else "rom",
-                          # blank rather than "0": a column of zeroes is
-                          # noise, and the eye wants the few that differ
-                          str(marked) if marked else "", key=bank_id)
+            table.add_row(
+                entry.label,
+                str(entry.count),
+                "" if entry.readable else "rom",
+                # blank rather than "0": a column of zeroes is
+                # noise, and the eye wants the few that differ
+                str(marked) if marked else "",
+                key=bank_id,
+            )
 
         slots = self.query_one("#slot-table", DataTable)
         # The favourite marker leads the row rather than trailing it: it is
         # a gutter mark the eye runs down, and gluing it to the name would
         # carry it into anything that sorts or searches.
-        for label, key in (("♥", "fav"), ("#", "num"), ("name", "name"),
-                           ("PC", "pc")):
+        for label, key in (("♥", "fav"), ("#", "num"), ("name", "name"), ("PC", "pc")):
             slots.add_column(label, key=key)
         self._fill(self._current_bank)
         table.focus()
         self.notify_status(
-            f"{len(self.catalog)} names from the catalog" if self.catalog
+            f"{len(self.catalog)} names from the catalog"
+            if self.catalog
             else "no catalog -- numbers only. Build one with "
-                 "tools/extract_catalog.py, or press r to read from the unit."
+            "tools/extract_catalog.py, or press r to read from the unit."
         )
 
     # --- filling ------------------------------------------------------------
@@ -309,8 +322,7 @@ class EnsqsqedApp(App):
             numbers = wanted.get(bank_id)
             if not numbers:
                 continue
-            out.extend(e for e in banks.slots(bank_id)
-                       if e.number in numbers)
+            out.extend(e for e in banks.slots(bank_id) if e.number in numbers)
         return out
 
     def _visible(self, bank_id: str) -> List[banks.Slot]:
@@ -322,7 +334,6 @@ class EnsqsqedApp(App):
             entries = [e for e in entries if e.number in marked]
         return entries
 
-
     def _cursor_entry(self):
         """The row under the cursor, or None."""
         table = self.query_one("#slot-table", DataTable)
@@ -330,7 +341,6 @@ class EnsqsqedApp(App):
         if not self._current or row is None or row >= len(self._current):
             return None
         return self._current[row]
-
 
     # --- the send channel ---------------------------------------------------
 
@@ -343,8 +353,7 @@ class EnsqsqedApp(App):
         try:
             self.device.channel = channel
         except Exception:
-            self.notify_status("this device has no settable channel",
-                               refused=True)
+            self.notify_status("this device has no settable channel", refused=True)
             return
         self._remember_channel(channel)
         self.notify_status(f"sending on MIDI channel {channel + 1}")
@@ -382,8 +391,8 @@ class EnsqsqedApp(App):
             self._set_channel(value - 1)
 
         self.push_screen(
-            PromptScreen("MIDI channel (1-16):", str(self._channel() + 1)),
-            apply)
+            PromptScreen("MIDI channel (1-16):", str(self._channel() + 1)), apply
+        )
 
     def action_toggle_favorite(self) -> None:
         """Mark or unmark the slot under the cursor. Sends no MIDI."""
@@ -410,7 +419,6 @@ class EnsqsqedApp(App):
         self.notify_status(f"{'favourited' if now else 'unfavourited'} {name}")
         self._refill_keeping_place()
 
-
     def _favourite_under_cursor(self):
         """The favourite row for the slot under the cursor, if there is one.
 
@@ -433,8 +441,7 @@ class EnsqsqedApp(App):
         if where is None:
             return
         if existing is None:
-            self.notify_status("not a favourite yet -- press f first",
-                               refused=True)
+            self.notify_status("not a favourite yet -- press f first", refused=True)
             return
 
         def apply(value):
@@ -444,16 +451,14 @@ class EnsqsqedApp(App):
             self._refill_keeping_place()
             self.notify_status("tags set")
 
-        self.push_screen(PromptScreen("Tags (comma separated):",
-                                  existing.tags), apply)
+        self.push_screen(PromptScreen("Tags (comma separated):", existing.tags), apply)
 
     def action_edit_note(self) -> None:
         where, existing = self._favourite_under_cursor()
         if where is None:
             return
         if existing is None:
-            self.notify_status("not a favourite yet -- press f first",
-                               refused=True)
+            self.notify_status("not a favourite yet -- press f first", refused=True)
             return
 
         def apply(value):
@@ -482,11 +487,12 @@ class EnsqsqedApp(App):
         if self.view_mode == VIEW_ALL:
             self.notify_status(VIEW_LABELS[self.view_mode])
         elif not shown:
-            where = ("this bank" if self.view_mode == VIEW_BANK_FAVOURITES
-                     else "any bank")
+            where = (
+                "this bank" if self.view_mode == VIEW_BANK_FAVOURITES else "any bank"
+            )
             self.notify_status(
-                f"{VIEW_LABELS[self.view_mode]} - nothing favourited in "
-                f"{where} yet")
+                f"{VIEW_LABELS[self.view_mode]} - nothing favourited in {where} yet"
+            )
         else:
             self.notify_status(f"{VIEW_LABELS[self.view_mode]} - {shown}")
 
@@ -506,22 +512,25 @@ class EnsqsqedApp(App):
         try:
             table.clear()
             for entry in self._current:
-                name = self.catalog.display_name(entry.bank_id,
-                                                 entry.number)
+                name = self.catalog.display_name(entry.bank_id, entry.number)
                 if self.catalog.differs(entry.bank_id, entry.number):
                     shown = f"[b]{name}[/b] [dim]*[/dim]"
-                elif self.catalog.is_live(entry.bank_id,
-                                          entry.number):
+                elif self.catalog.is_live(entry.bank_id, entry.number):
                     shown = f"[b]{name}[/b]"
                 else:
                     shown = name
-                here = (self._favorite_keys(entry.bank_id)
-                        if self.view_mode == VIEW_ALL_FAVOURITES else marked)
+                here = (
+                    self._favorite_keys(entry.bank_id)
+                    if self.view_mode == VIEW_ALL_FAVOURITES
+                    else marked
+                )
                 table.add_row(
                     "[b]♥[/b]" if entry.number in here else "",
-                    f"{entry.number:03d}", shown,
+                    f"{entry.number:03d}",
+                    shown,
                     str(entry.program_change),
-                    key=entry.key)
+                    key=entry.key,
+                )
         finally:
             self._filling = False
         self._detail(0)
@@ -532,18 +541,26 @@ class EnsqsqedApp(App):
             return
         entry = self._current[row]
         name = self.catalog.display_name(entry.bank_id, entry.number)
-        source = ("read from the unit"
-                  if self.catalog.is_live(entry.bank_id, entry.number)
-                  else ("from the catalog" if entry.group.readable
-                        else "from the catalog -- this group cannot be "
-                             "read"))
+        source = (
+            "read from the unit"
+            if self.catalog.is_live(entry.bank_id, entry.number)
+            else (
+                "from the catalog"
+                if entry.group.readable
+                else "from the catalog -- this group cannot be read"
+            )
+        )
         if entry.needs_selector:
-            how = (f"program change [b]{entry.group.selector}[/b] selects "
-                   f"the {entry.group.label} group, then "
-                   f"[b]{entry.program_change}[/b] the sound")
+            how = (
+                f"program change [b]{entry.group.selector}[/b] selects "
+                f"the {entry.group.label} group, then "
+                f"[b]{entry.program_change}[/b] the sound"
+            )
         else:
-            how = (f"program change [b]{entry.program_change}[/b], "
-                   f"[dim]absolute -- a drum kit needs no group[/dim]")
+            how = (
+                f"program change [b]{entry.program_change}[/b], "
+                f"[dim]absolute -- a drum kit needs no group[/dim]"
+            )
         self.query_one("#detail", Static).update(
             f"[b]{entry.display}[/b]  {name}   [dim]bank {entry.bank}[/dim]\n"
             f"{how} · {source}"
@@ -599,19 +616,21 @@ class EnsqsqedApp(App):
             with self._lock:
                 self.device.select(entry)
         except Exception as exc:
-            self.call_from_thread(
-                self.notify_status, f"select: {exc}", refused=True)
+            self.call_from_thread(self.notify_status, f"select: {exc}", refused=True)
             return
         finally:
             self._busy = False
         self.call_from_thread(
             self.notify_status,
             f"selected {entry.display} — "
-            + (f"program change {entry.group.selector} for the group, then "
-               f"{entry.program_change}"
-               if entry.needs_selector
-               else f"program change {entry.program_change}, absolute")
-            + f", on channel {self.device.channel + 1}")
+            + (
+                f"program change {entry.group.selector} for the group, then "
+                f"{entry.program_change}"
+                if entry.needs_selector
+                else f"program change {entry.program_change}, absolute"
+            )
+            + f", on channel {self.device.channel + 1}",
+        )
 
     def action_read_names(self) -> None:
         if self._busy:
@@ -622,9 +641,10 @@ class EnsqsqedApp(App):
             self.notify_status(
                 f"{entry.label} has no dump request of any kind; only "
                 f"Internal can be read, and the rest come from a catalog",
-                refused=True)
+                refused=True,
+            )
             return
-        self._busy = True          # main thread; see action_select
+        self._busy = True  # main thread; see action_select
         self._read_worker()
 
     @work(thread=True)
@@ -637,13 +657,12 @@ class EnsqsqedApp(App):
         try:
             self.call_from_thread(
                 self.notify_status,
-                "asking for all eighty internal sounds in one message "
-                "(silent)...")
+                "asking for all eighty internal sounds in one message (silent)...",
+            )
             with self._lock:
                 names = self.device.read_names()
         except Exception as exc:
-            self.call_from_thread(
-                self.notify_status, f"read: {exc}", refused=True)
+            self.call_from_thread(self.notify_status, f"read: {exc}", refused=True)
             return
         finally:
             self._busy = False
@@ -656,13 +675,16 @@ class EnsqsqedApp(App):
             self.catalog.set_live_name("INT", number + 1, text.rstrip())
         if self.favorites is not None:
             self.favorites.refresh_names(
-                lambda bank, number: self.catalog.live_name(bank, number))
+                lambda bank, number: self.catalog.live_name(bank, number)
+            )
         self._fill(self._current_bank)
-        differing = sum(1 for number in names
-                        if self.catalog.differs("INT", number + 1))
+        differing = sum(
+            1 for number in names if self.catalog.differs("INT", number + 1)
+        )
         self.notify_status(
             f"read {len(names)} internal name(s)"
-            + (f"; {differing} differ from the catalog" if differing else ""))
+            + (f"; {differing} differ from the catalog" if differing else "")
+        )
 
     def action_search(self) -> None:
         def done(text) -> None:
@@ -678,8 +700,7 @@ class EnsqsqedApp(App):
                     entry = banks.slot(bank_id, program_change)
                 except LookupError:
                     continue
-                lines.append(f"{entry.display:<6} {name:<12} "
-                             f"PC {entry.number:>3}")
+                lines.append(f"{entry.display:<6} {name:<12} PC {entry.number:>3}")
             if len(hits) > 400:
                 lines.append(f"... and {len(hits) - 400} more")
             self.push_screen(ReportScreen("Search", "\n".join(lines)))
@@ -697,14 +718,16 @@ class EnsqsqedApp(App):
                 version = self.device.read_current_sound()
                 configuration = None
         except Exception as exc:
-            self.call_from_thread(
-                self.notify_status, f"device: {exc}", refused=True)
+            self.call_from_thread(self.notify_status, f"device: {exc}", refused=True)
             return
         self.call_from_thread(self._show_info, version, configuration)
 
     def _show_info(self, record, _unused) -> None:
-        lines = [f"connection      {self.device.description}",
-                 f"base channel    {self.device.channel + 1}", ""]
+        lines = [
+            f"connection      {self.device.description}",
+            f"base channel    {self.device.channel + 1}",
+            "",
+        ]
         lines.append(f"manufacturer    {msg.ENSONIQ_ID:02X}  (Ensoniq)")
         lines.append(f"family          {msg.SQ_FAMILY:02X}  (SQ)")
         lines.append(f"current sound   {msg.sound_name(record).rstrip()!r}")
@@ -717,12 +740,18 @@ class EnsqsqedApp(App):
         lines.append("carrying the wrong one is ignored in silence, which")
         lines.append("looks exactly like a wrong cable.")
         lines.append("")
-        lines.append(f"catalog         {len(self.catalog)} names"
-                     + (f" from {self.catalog.source}"
-                        if self.catalog.source else ""))
-        lines.append("favourites      "
-                     + (f"{len(self.favorites)}"
-                        if self.favorites is not None else "(none open)"))
+        lines.append(
+            f"catalog         {len(self.catalog)} names"
+            + (f" from {self.catalog.source}" if self.catalog.source else "")
+        )
+        lines.append(
+            "favourites      "
+            + (
+                f"{len(self.favorites)}"
+                if self.favorites is not None
+                else "(none open)"
+            )
+        )
         self.push_screen(ReportScreen("Device", "\n".join(lines)))
 
     def action_help(self) -> None:
@@ -775,20 +804,25 @@ Keys
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ensqsqed",
-        description="Browse an Ensoniq SQ-R Plus.")
+        prog="ensqsqed", description="Browse an Ensoniq SQ-R Plus."
+    )
     parser.add_argument("--port")
     parser.add_argument("--recv-port")
-    parser.add_argument("--demo", action="store_true",
-                        help="built-in demo device; opens no MIDI ports")
-    parser.add_argument("--midi-channel", type=int, default=None,
-                        help="the unit's global channel, 1-16")
+    parser.add_argument(
+        "--demo", action="store_true", help="built-in demo device; opens no MIDI ports"
+    )
+    parser.add_argument(
+        "--midi-channel", type=int, default=None, help="the unit's global channel, 1-16"
+    )
     parser.add_argument("--catalog", default=None)
-    parser.add_argument("--config", default=None,
-                        help="settings cache (default: ./config.toml)")
-    parser.add_argument("--favorites", default=None,
-                        help="favourites database (default: "
-                             "the per-platform data directory)")
+    parser.add_argument(
+        "--config", default=None, help="settings cache (default: ./config.toml)"
+    )
+    parser.add_argument(
+        "--favorites",
+        default=None,
+        help="favourites database (default: the per-platform data directory)",
+    )
     return parser
 
 
@@ -811,18 +845,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         # time, so it does not have to be given again every run.
         remembered = cfg.load_channel(config_path)
         try:
-            channel = ((args.midi_channel - 1) if args.midi_channel
-                       else (remembered if remembered is not None else 0))
+            channel = (
+                (args.midi_channel - 1)
+                if args.midi_channel
+                else (remembered if remembered is not None else 0)
+            )
             if args.port:
                 device = b.SqBridge.open(
                     args.port,
-                    recv_port=(args.recv_port
-                               or cfg.load_last_recv_port(config_path)),
-                    channel=channel)
+                    recv_port=(args.recv_port or cfg.load_last_recv_port(config_path)),
+                    channel=channel,
+                )
             else:
                 device = b.SqBridge.autodetect(
-                    on_try=lambda n: print(f"  probing {n}...",
-                                           file=sys.stderr))
+                    on_try=lambda n: print(f"  probing {n}...", file=sys.stderr)
+                )
         except Exception as exc:
             sys.exit(f"error: {exc}")
 
@@ -848,8 +885,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         # at all. Every other startup failure here leaves by sys.exit; these
         # two used to print a traceback.
         raise SystemExit(f"error: {exc}")
-    app = EnsqsqedApp(device, catalog=cat.load(args.catalog),
-                      favorites=store, config_path=config_path)
+    app = EnsqsqedApp(
+        device, catalog=cat.load(args.catalog), favorites=store, config_path=config_path
+    )
     try:
         app.run()
     finally:

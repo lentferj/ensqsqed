@@ -64,13 +64,27 @@ from __future__ import annotations
 from typing import List, Optional, Sequence, Tuple
 
 __all__ = [
-    "SYSEX_START", "SYSEX_END", "ENSONIQ_ID", "SQ_FAMILY",
-    "Function", "ProtocolError", "Packet",
-    "frame", "parse", "to_nibbles", "from_nibbles",
-    "identity_request", "NAME_ENCODING_UNKNOWN", "sound_name",
-    "NAME_OFFSET", "NAME_CHARS", "NAME_BYTES", "encode_name",
+    "SYSEX_START",
+    "SYSEX_END",
+    "ENSONIQ_ID",
+    "SQ_FAMILY",
+    "Function",
+    "ProtocolError",
+    "Packet",
+    "frame",
+    "parse",
+    "to_nibbles",
+    "from_nibbles",
+    "identity_request",
+    "NAME_ENCODING_UNKNOWN",
+    "sound_name",
+    "NAME_OFFSET",
+    "NAME_CHARS",
+    "NAME_BYTES",
+    "encode_name",
     "from_nibbles_low_first",
-    "SOUND_BYTES_PACKED", "SOUND_BYTES",
+    "SOUND_BYTES_PACKED",
+    "SOUND_BYTES",
 ]
 
 SYSEX_START = 0xF0
@@ -152,8 +166,7 @@ class Function:
 
     @staticmethod
     def name(message_type: int) -> str:
-        return Function.NAMES.get(message_type,
-                                  f"message type {message_type:#04x}")
+        return Function.NAMES.get(message_type, f"message type {message_type:#04x}")
 
 
 class CommandType:
@@ -210,9 +223,11 @@ class ErrorCode:
     ACK = 0x01
     INVALID_BUTTON = 0x02
 
-    NAMES = {0x00: "NAK -- busy, or the message was unintelligible",
-             0x01: "ACK",
-             0x02: "invalid button number"}
+    NAMES = {
+        0x00: "NAK -- busy, or the message was unintelligible",
+        0x01: "ACK",
+        0x02: "invalid button number",
+    }
 
     @staticmethod
     def name(code: int) -> str:
@@ -258,12 +273,13 @@ class Packet:
         return expected is None or len(self.payload) == expected
 
     def __repr__(self) -> str:
-        return (f"Packet(device={self.device}, {self.function_name!r}, "
-                f"{len(self.payload)} bytes)")
+        return (
+            f"Packet(device={self.device}, {self.function_name!r}, "
+            f"{len(self.payload)} bytes)"
+        )
 
 
-def frame(function: int, body: Sequence[int] = (), *,
-          device: int = 0) -> bytes:
+def frame(function: int, body: Sequence[int] = (), *, device: int = 0) -> bytes:
     """One Ensoniq message, ready to send.
 
     Used for building test fixtures. Nothing in this program frames a
@@ -278,14 +294,17 @@ def frame(function: int, body: Sequence[int] = (), *,
     if not 0 <= device <= 15:
         raise ProtocolError(
             f"device {device} is outside 0-15; this byte is the unit's "
-            f"base MIDI channel")
+            f"base MIDI channel"
+        )
     for byte in body:
         if not 0 <= byte <= 0x7F:
             raise ProtocolError(
                 f"{byte:#04x} is not a 7-bit data byte; SysEx carries no "
-                f"byte with bit 7 set")
-    return bytes([SYSEX_START, ENSONIQ_ID, SQ_FAMILY, 0x00, device,
-                  function, *body, SYSEX_END])
+                f"byte with bit 7 set"
+            )
+    return bytes(
+        [SYSEX_START, ENSONIQ_ID, SQ_FAMILY, 0x00, device, function, *body, SYSEX_END]
+    )
 
 
 def parse(message: Sequence[int]) -> Optional[Packet]:
@@ -315,7 +334,7 @@ def to_nibbles(data: Sequence[int]) -> bytes:
     for byte in data:
         if not 0 <= byte <= 0xFF:
             raise ProtocolError(f"{byte} is not a byte")
-        out.append((byte >> 4) & 0x0F)      # hi first, per section 2.3
+        out.append((byte >> 4) & 0x0F)  # hi first, per section 2.3
         out.append(byte & 0x0F)
     return bytes(out)
 
@@ -342,7 +361,8 @@ def from_nibbles(data: Sequence[int]) -> bytes:
         for part in (high, low):
             if not 0 <= part <= 0x0F:
                 raise ProtocolError(
-                    f"{part:#04x} is not a nibble; nibble data is 0x00-0x0F")
+                    f"{part:#04x} is not a nibble; nibble data is 0x00-0x0F"
+                )
         out.append((high << 4) | low)
     return bytes(out)
 
@@ -355,7 +375,8 @@ def from_nibbles_low_first(data: Sequence[int]) -> bytes:
         for part in (low, high):
             if not 0 <= part <= 0x0F:
                 raise ProtocolError(
-                    f"{part:#04x} is not a nibble; nibble data is 0x00-0x0F")
+                    f"{part:#04x} is not a nibble; nibble data is 0x00-0x0F"
+                )
         out.append((high << 4) | low)
     return bytes(out)
 
@@ -372,10 +393,11 @@ def sound_name(record: Sequence[int]) -> str:
     if len(record) < NAME_OFFSET + NAME_BYTES:
         raise ProtocolError(
             f"a sound is {SOUND_BYTES} bytes; this one is {len(record)}, "
-            f"which does not reach the name at {NAME_OFFSET}")
+            f"which does not reach the name at {NAME_OFFSET}"
+        )
     accumulator = bits = 0
     chars: List[str] = []
-    for byte in record[NAME_OFFSET:NAME_OFFSET + NAME_BYTES]:
+    for byte in record[NAME_OFFSET : NAME_OFFSET + NAME_BYTES]:
         accumulator = (accumulator << 8) | byte
         bits += 8
         while bits >= 7 and len(chars) < NAME_CHARS:
@@ -385,16 +407,16 @@ def sound_name(record: Sequence[int]) -> str:
     return "".join(chars)
 
 
-def command_message(command: int, body: Sequence[int] = (), *,
-                    channel: int = 0) -> bytes:
+def command_message(
+    command: int, body: Sequence[int] = (), *, channel: int = 0
+) -> bytes:
     """A message-type-00 command, with its data nibble-ized.
 
     The command type and everything after it are *data*, so each byte
     becomes two nibbles, high first. Getting that wrong sends a command
     type of 0 and a button number made of the halves of two numbers.
     """
-    return frame(Function.COMMAND, to_nibbles([command, *body]),
-                 device=channel)
+    return frame(Function.COMMAND, to_nibbles([command, *body]), device=channel)
 
 
 def single_sound_request(*, channel: int = 0) -> bytes:
@@ -414,12 +436,10 @@ def internal_banks_request(*, channel: int = 0) -> bytes:
     The one request this program leans on: 80 sounds and their names in a
     single 32647-byte reply.
     """
-    return command_message(CommandType.INTERNAL_BANKS_REQUEST,
-                           channel=channel)
+    return command_message(CommandType.INTERNAL_BANKS_REQUEST, channel=channel)
 
 
-def virtual_button(button: int, *, down: bool = True,
-                   channel: int = 0) -> bytes:
+def virtual_button(button: int, *, down: bool = True, channel: int = 0) -> bytes:
     """Press or release a front-panel button remotely.
 
     Provided because it explains the four otherwise unreadable messages
@@ -433,10 +453,10 @@ def virtual_button(button: int, *, down: bool = True,
         raise ProtocolError(
             f"button {button} is outside 0-95; up is sent as the button "
             f"number plus {CommandType.BUTTON_UP_OFFSET}, which is what "
-            f"`down=False` does")
+            f"`down=False` does"
+        )
     value = button if down else button + CommandType.BUTTON_UP_OFFSET
-    return command_message(CommandType.VIRTUAL_BUTTON, [value],
-                           channel=channel)
+    return command_message(CommandType.VIRTUAL_BUTTON, [value], channel=channel)
 
 
 def encode_name(record: bytearray, name: str) -> None:
@@ -450,21 +470,21 @@ def encode_name(record: bytearray, name: str) -> None:
     if len(record) < NAME_OFFSET + NAME_BYTES:
         raise ProtocolError(
             f"a sound is {SOUND_BYTES} bytes; this one is {len(record)}, "
-            f"which does not reach the name at {NAME_OFFSET}")
+            f"which does not reach the name at {NAME_OFFSET}"
+        )
     padded = f"{name:<{NAME_CHARS}}"[:NAME_CHARS]
     accumulator = bits = 0
     out = bytearray()
     for char in padded:
         value = ord(char)
         if not 32 <= value < 127:
-            raise ProtocolError(
-                f"{char!r} is outside this instrument's ASCII 32-126")
+            raise ProtocolError(f"{char!r} is outside this instrument's ASCII 32-126")
         accumulator = (accumulator << 7) | value
         bits += 7
         while bits >= 8:
             bits -= 8
             out.append((accumulator >> bits) & 0xFF)
-    record[NAME_OFFSET:NAME_OFFSET + NAME_BYTES] = out
+    record[NAME_OFFSET : NAME_OFFSET + NAME_BYTES] = out
 
 
 def identity_request() -> bytes:

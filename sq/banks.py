@@ -70,18 +70,32 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 __all__ = [
-    "Group", "Slot", "GROUPS", "SOUNDS_PER_GROUP", "DRUM_KITS",
-    "TOTAL_SOUNDS", "BANKS_PER_GROUP", "SOUNDS_PER_BANK",
-    "DRUM_FIRST_PC", "EFFECT_WITH_NEXT_PC", "PRESETS",
-    "group", "groups", "group_ids", "by_selector", "slots", "slot",
+    "Group",
+    "Slot",
+    "GROUPS",
+    "SOUNDS_PER_GROUP",
+    "DRUM_KITS",
+    "TOTAL_SOUNDS",
+    "BANKS_PER_GROUP",
+    "SOUNDS_PER_BANK",
+    "DRUM_FIRST_PC",
+    "EFFECT_WITH_NEXT_PC",
+    "PRESETS",
+    "group",
+    "groups",
+    "group_ids",
+    "by_selector",
+    "slots",
+    "slot",
     "lookup",
-    "readable_groups", "select_messages",
+    "readable_groups",
+    "select_messages",
 ]
 
 #: Each group is eight banks of ten.
 BANKS_PER_GROUP = 8
 SOUNDS_PER_BANK = 10
-SOUNDS_PER_GROUP = BANKS_PER_GROUP * SOUNDS_PER_BANK        # 80
+SOUNDS_PER_GROUP = BANKS_PER_GROUP * SOUNDS_PER_BANK  # 80
 
 #: Banks 8 and 9, twenty kits, in ROM and reachable from any group.
 DRUM_KITS = 20
@@ -118,25 +132,56 @@ class Group:
 
 #: In the order the front panel steps through them.
 GROUPS: Tuple[Group, ...] = (
-    Group("INT", "Internal", 124, SOUNDS_PER_GROUP, readable=True,
-          note="RAM. The only group that can be dumped, and the only one "
-               "that can be overwritten."),
-    Group("ROM", "ROM", 125, SOUNDS_PER_GROUP, readable=False,
-          note="Fixed in the instrument."),
-    Group("CARDA", "Card A", 126, SOUNDS_PER_GROUP, readable=False,
-          note="A memory card's first bank. Empty if no card is in."),
-    Group("CARDB", "Card B", 127, SOUNDS_PER_GROUP, readable=False,
-          note="A memory card's second bank."),
-    Group("DRUM", "Drum kits", None, DRUM_KITS, readable=False,
-          note="Banks 8 and 9. In ROM, and reachable from any group "
-               "without a selector: their program changes are absolute."),
+    Group(
+        "INT",
+        "Internal",
+        124,
+        SOUNDS_PER_GROUP,
+        readable=True,
+        note="RAM. The only group that can be dumped, and the only one "
+        "that can be overwritten.",
+    ),
+    Group(
+        "ROM",
+        "ROM",
+        125,
+        SOUNDS_PER_GROUP,
+        readable=False,
+        note="Fixed in the instrument.",
+    ),
+    Group(
+        "CARDA",
+        "Card A",
+        126,
+        SOUNDS_PER_GROUP,
+        readable=False,
+        note="A memory card's first bank. Empty if no card is in.",
+    ),
+    Group(
+        "CARDB",
+        "Card B",
+        127,
+        SOUNDS_PER_GROUP,
+        readable=False,
+        note="A memory card's second bank.",
+    ),
+    Group(
+        "DRUM",
+        "Drum kits",
+        None,
+        DRUM_KITS,
+        readable=False,
+        note="Banks 8 and 9. In ROM, and reachable from any group "
+        "without a selector: their program changes are absolute.",
+    ),
 )
 
-TOTAL_SOUNDS = sum(g.count for g in GROUPS)                 # 340
+TOTAL_SOUNDS = sum(g.count for g in GROUPS)  # 340
 
 _BY_ID: Dict[str, Group] = {g.id: g for g in GROUPS}
 _BY_SELECTOR: Dict[int, Group] = {
-    g.selector: g for g in GROUPS if g.selector is not None}
+    g.selector: g for g in GROUPS if g.selector is not None
+}
 
 
 @dataclass(frozen=True)
@@ -189,8 +234,8 @@ def group(group_id: str) -> Group:
         return _BY_ID[group_id]
     except KeyError:
         raise LookupError(
-            f"no group {group_id!r}; have "
-            f"{', '.join(g.id for g in GROUPS)}") from None
+            f"no group {group_id!r}; have {', '.join(g.id for g in GROUPS)}"
+        ) from None
 
 
 def groups() -> Tuple[Group, ...]:
@@ -222,8 +267,7 @@ def slots(group_id: str) -> List[Slot]:
     entry = group(group_id)
     if entry.id == "DRUM":
         # A drum kit's program change is absolute: kit 1 answers to 80.
-        return [Slot(entry, n + 1, DRUM_FIRST_PC + n)
-                for n in range(entry.count)]
+        return [Slot(entry, n + 1, DRUM_FIRST_PC + n) for n in range(entry.count)]
     return [Slot(entry, n + 1, n) for n in range(entry.count)]
 
 
@@ -232,7 +276,8 @@ def slot(group_id: str, number: int) -> Slot:
     if not 1 <= number <= entry.count:
         raise LookupError(
             f"{entry.label} holds {entry.count} sounds, numbered from 1, "
-            f"so {number} is not one of them")
+            f"so {number} is not one of them"
+        )
     return slots(group_id)[number - 1]
 
 
@@ -250,8 +295,9 @@ def lookup(program_change: int, current_group: str = "INT") -> Optional[Slot]:
     return None
 
 
-def select_messages(target: Slot, channel: int = 0,
-                    *, with_effect: bool = False) -> List[bytes]:
+def select_messages(
+    target: Slot, channel: int = 0, *, with_effect: bool = False
+) -> List[bytes]:
     """Every MIDI message needed to actually land on ``target``.
 
     The group selector first, then the sound -- always both, even when the

@@ -32,8 +32,7 @@ from typing import Dict, List, Optional, Sequence
 from sq import banks
 from sq import messages as m
 
-__all__ = ["Library", "read_file", "read_bytes", "split_sysex",
-           "sysex_from_smf"]
+__all__ = ["Library", "read_file", "read_bytes", "split_sysex", "sysex_from_smf"]
 
 
 @dataclass
@@ -68,9 +67,10 @@ class Library:
     def summary(self) -> str:
         parts = []
         if self.sounds:
-            parts.append(f"{len(self.sounds)} sound(s)"
-                         + (" -- a full internal bank" if self.is_full_bank
-                            else ""))
+            parts.append(
+                f"{len(self.sounds)} sound(s)"
+                + (" -- a full internal bank" if self.is_full_bank else "")
+            )
         if self.singles:
             parts.append(f"{len(self.singles)} single sound dump(s)")
         if self.device is not None:
@@ -97,7 +97,7 @@ def split_sysex(raw: bytes) -> List[bytes]:
         end = raw.find(b"\xf7", start)
         if end < 0:
             break
-        out.append(raw[start:end + 1])
+        out.append(raw[start : end + 1])
         cursor = end + 1
     return out
 
@@ -138,8 +138,8 @@ def sysex_from_smf(raw: bytes) -> List[bytes]:
     out: List[bytes] = []
     index = raw.find(b"MTrk")
     while index >= 0:
-        length = struct.unpack(">I", raw[index + 4:index + 8])[0]
-        body = raw[index + 8:index + 8 + length]
+        length = struct.unpack(">I", raw[index + 4 : index + 8])[0]
+        body = raw[index + 8 : index + 8 + length]
         cursor = 0
         pending: Optional[bytearray] = None
         while cursor < len(body):
@@ -153,7 +153,7 @@ def sysex_from_smf(raw: bytes) -> List[bytes]:
                 count, after = _varlen(body, at + 1)
             except m.ProtocolError:
                 break
-            chunk = body[after:after + count]
+            chunk = body[after : after + count]
             if body[at] == 0xF0:
                 if pending is not None:
                     # An F0 while one is open: the previous message was
@@ -194,8 +194,9 @@ def read_bytes(raw: bytes, *, smf: bool = False) -> Library:
             continue
         if packet.is_all_sounds:
             for number in range(banks.SOUNDS_PER_GROUP):
-                chunk = packet.payload[number * m.SOUND_BYTES_PACKED:
-                                       (number + 1) * m.SOUND_BYTES_PACKED]
+                chunk = packet.payload[
+                    number * m.SOUND_BYTES_PACKED : (number + 1) * m.SOUND_BYTES_PACKED
+                ]
                 library.sounds[number] = m.from_nibbles(chunk)
         elif packet.is_single_sound:
             library.singles.append(m.from_nibbles(packet.payload))

@@ -52,9 +52,17 @@ from typing import Callable, Dict, List, Optional, Tuple
 from sq import banks
 from sq import messages as m
 
-__all__ = ["SqBridge", "DeviceError", "DeviceRefused", "list_ports",
-           "likely_ports", "DEFAULT_TIMEOUT", "PROBE_TIMEOUT",
-           "BANK_TIMEOUT", "BUTTON_GAP"]
+__all__ = [
+    "SqBridge",
+    "DeviceError",
+    "DeviceRefused",
+    "list_ports",
+    "likely_ports",
+    "DEFAULT_TIMEOUT",
+    "PROBE_TIMEOUT",
+    "BANK_TIMEOUT",
+    "BUTTON_GAP",
+]
 
 
 class DeviceError(RuntimeError):
@@ -82,7 +90,7 @@ BUTTON_GAP = 0.150
 def _rtmidi():
     try:
         import rtmidi
-    except ImportError as exc:                      # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
         raise DeviceError(
             "python-rtmidi is not installed, so no MIDI port can be "
             "opened. ensqsqed still reads .syx and .mid files without it."
@@ -103,17 +111,22 @@ def list_ports() -> Tuple[List[str], List[str]]:
 def likely_ports() -> List[str]:
     """Ports whose name suggests the instrument. Only an ordering."""
     _, outs = list_ports()
-    wanted = ("sq-r", "sqr", "ensoniq", "sq1", "sq-1", "sq2",
-              "sq-2", "ks32", "ks-32")
+    wanted = ("sq-r", "sqr", "ensoniq", "sq1", "sq-1", "sq2", "sq-2", "ks32", "ks-32")
     return [p for p in outs if any(w in p.lower() for w in wanted)]
 
 
 class SqBridge:
     """One open pair of ports, and the requests this program makes."""
 
-    def __init__(self, midi_in, midi_out, *, channel: int = 0,
-                 description: str = "",
-                 timeout: float = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        midi_in,
+        midi_out,
+        *,
+        channel: int = 0,
+        description: str = "",
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
         self._in = midi_in
         self._out = midi_out
         #: The unit's **base MIDI channel**, 0-15. It is the fifth byte of
@@ -125,14 +138,19 @@ class SqBridge:
         self.port: Optional[str] = None
         self.recv_port: Optional[str] = None
         try:
-            self._in.ignore_types(sysex=False, timing=True,
-                                  active_sense=True)
-        except AttributeError:                      # a test double
+            self._in.ignore_types(sysex=False, timing=True, active_sense=True)
+        except AttributeError:  # a test double
             pass
 
     @classmethod
-    def open(cls, port: str, *, recv_port: Optional[str] = None,
-             channel: int = 0, timeout: float = DEFAULT_TIMEOUT) -> "SqBridge":
+    def open(
+        cls,
+        port: str,
+        *,
+        recv_port: Optional[str] = None,
+        channel: int = 0,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> "SqBridge":
         rtmidi = _rtmidi()
         ins, outs = list_ports()
         listen = recv_port or port
@@ -152,8 +170,13 @@ class SqBridge:
                 except Exception:
                     pass
             raise
-        bridge = cls(midi_in, midi_out, channel=channel,
-                     description=f"{port} -> {listen}", timeout=timeout)
+        bridge = cls(
+            midi_in,
+            midi_out,
+            channel=channel,
+            description=f"{port} -> {listen}",
+            timeout=timeout,
+        )
         bridge.port = port
         bridge.recv_port = listen
         return bridge
@@ -178,8 +201,9 @@ class SqBridge:
         while self._in.get_message() is not None:
             pass
 
-    def request(self, outgoing: bytes, wanted: int, *,
-                timeout: Optional[float] = None) -> m.Packet:
+    def request(
+        self, outgoing: bytes, wanted: int, *, timeout: Optional[float] = None
+    ) -> m.Packet:
         """Send a request and wait for the dump that answers it.
 
         ``wanted`` is the **message type** of the reply, never of the
@@ -208,8 +232,7 @@ class SqBridge:
                 code = m.from_nibbles(packet.payload)[:1]
                 value = code[0] if code else 0xFF
                 if value != m.ErrorCode.ACK:
-                    raise DeviceRefused(
-                        f"the unit refused: {m.ErrorCode.name(value)}")
+                    raise DeviceRefused(f"the unit refused: {m.ErrorCode.name(value)}")
                 continue
             if packet.function != wanted:
                 continue
@@ -231,8 +254,9 @@ class SqBridge:
 
     # --- reading, all of it silent -----------------------------------------
 
-    def read_internal_bank(self, *, timeout: Optional[float] = None
-                           ) -> Dict[int, bytes]:
+    def read_internal_bank(
+        self, *, timeout: Optional[float] = None
+    ) -> Dict[int, bytes]:
         """All 80 internal sounds. Read-only, and **makes no sound**.
 
         One request, one 32647-byte reply, eighty sounds. This is the one
@@ -242,20 +266,22 @@ class SqBridge:
         packet = self.request(
             m.internal_banks_request(channel=self.channel),
             m.Function.ALL_SOUNDS_DUMP,
-            timeout=BANK_TIMEOUT if timeout is None else timeout)
+            timeout=BANK_TIMEOUT if timeout is None else timeout,
+        )
         out: Dict[int, bytes] = {}
         for number in range(banks.SOUNDS_PER_GROUP):
-            chunk = packet.payload[number * m.SOUND_BYTES_PACKED:
-                                   (number + 1) * m.SOUND_BYTES_PACKED]
+            chunk = packet.payload[
+                number * m.SOUND_BYTES_PACKED : (number + 1) * m.SOUND_BYTES_PACKED
+            ]
             out[number] = m.from_nibbles(chunk)
         return out
 
-    def read_names(self, *, timeout: Optional[float] = None
-                   ) -> Dict[int, str]:
+    def read_names(self, *, timeout: Optional[float] = None) -> Dict[int, str]:
         """Every internal sound's name. Silent."""
-        return {number: m.sound_name(record)
-                for number, record in
-                self.read_internal_bank(timeout=timeout).items()}
+        return {
+            number: m.sound_name(record)
+            for number, record in self.read_internal_bank(timeout=timeout).items()
+        }
 
     def read_current_sound(self, *, timeout: Optional[float] = None) -> bytes:
         """The sound the unit is on, edits included. Silent **in itself**.
@@ -268,15 +294,20 @@ class SqBridge:
         """
         packet = self.request(
             m.single_sound_request(channel=self.channel),
-            m.Function.SINGLE_SOUND_DUMP, timeout=timeout)
+            m.Function.SINGLE_SOUND_DUMP,
+            timeout=timeout,
+        )
         return m.from_nibbles(packet.payload)
 
     # --- discovery ----------------------------------------------------------
 
     @classmethod
-    def autodetect(cls, *, timeout: float = PROBE_TIMEOUT,
-                   on_try: Optional[Callable[[str], None]] = None
-                   ) -> "SqBridge":
+    def autodetect(
+        cls,
+        *,
+        timeout: float = PROBE_TIMEOUT,
+        on_try: Optional[Callable[[str], None]] = None,
+    ) -> "SqBridge":
         """Find an SQ-R by asking each port, on each base channel, for the
         sound it is on.
 
@@ -294,8 +325,11 @@ class SqBridge:
         """
         hinted = likely_ports()
         _, outs = list_ports()
-        candidates = [p for p in hinted + [p for p in outs if p not in hinted]
-                      if "Midi Through" not in p]
+        candidates = [
+            p
+            for p in hinted + [p for p in outs if p not in hinted]
+            if "Midi Through" not in p
+        ]
 
         for channel in (0, *range(1, 16)):
             for port in candidates:

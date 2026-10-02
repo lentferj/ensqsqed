@@ -39,34 +39,8 @@ WHITELIST := quality/vulture_whitelist.py
 # one gap that matters. --exclude-standard keeps .venv and the caches out.
 PYFILES := $(shell git ls-files --cached --others --exclude-standard '*.py')
 
-# Files that predate the check pipeline and are not yet `ruff format` clean.
-# `make format` will rewrite them; the pipeline does not do that in passing,
-# because a reformat mixed into a change is a reformat nobody reviewed. They
-# are listed so that every OTHER file -- including every file added from now
-# on -- is format-checked. See docs/QUALITY_CHECKS.md.
-#
-# To clear this list: run `make format`, commit the result, delete the file
-# here (and the matching exclude in .pre-commit-config.yaml). The list should
-# only ever get shorter.
-FORMAT_DEFERRED := \
-	ensqsqed/app.py \
-	ensqsqed/cli.py \
-	ensqsqed/demo.py \
-	sq/banks.py \
-	sq/bridge.py \
-	sq/catalog.py \
-	sq/config.py \
-	sq/dumps.py \
-	sq/favorites.py \
-	sq/messages.py \
-	tests/test_app.py \
-	tests/test_banks.py \
-	tests/test_store.py
-
-FORMAT_FILES := $(filter-out $(FORMAT_DEFERRED),$(PYFILES))
-
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap lint format format-check typecheck typecheck-baseline \
+.PHONY: help bootstrap lint format typecheck typecheck-baseline \
         test coverage audit audit-vulns audit-dead audit-deps audit-secrets \
         secrets-baseline check clean
 
@@ -76,7 +50,6 @@ help:
 	@echo '  make bootstrap         install the project and the pinned toolchain'
 	@echo '  make lint              ruff check + ruff format --check'
 	@echo '  make format            ruff format (rewrites files; NOT run by check)'
-	@echo '  make format-check      ruff format --check on its own'
 	@echo '  make typecheck         mypy, vs quality/mypy-baseline.txt'
 	@echo '  make test              pytest + coverage (term-missing)'
 	@echo '  make audit             pip-audit, vulture, deptry, detect-secrets'
@@ -95,17 +68,10 @@ bootstrap:
 
 lint:
 	$(RUFF) check $(SRC)
-	@if [ -n "$(FORMAT_FILES)" ]; then \
-	    $(RUFF) format --check $(FORMAT_FILES); \
-	else \
-	    echo 'ruff format --check: no non-deferred files yet (see FORMAT_DEFERRED)'; \
-	fi
+	$(RUFF) format --check $(SRC)
 
 format:
 	$(RUFF) format $(SRC)
-
-format-check:
-	$(RUFF) format --check $(SRC)
 
 # --- type checking -----------------------------------------------------------
 #

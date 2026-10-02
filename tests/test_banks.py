@@ -29,8 +29,7 @@ class TestTheMemoryMap:
         assert banks.DRUM_KITS == 20
 
     def test_a_group_is_eight_banks_of_ten(self):
-        assert (banks.BANKS_PER_GROUP * banks.SOUNDS_PER_BANK
-                == banks.SOUNDS_PER_GROUP)
+        assert banks.BANKS_PER_GROUP * banks.SOUNDS_PER_BANK == banks.SOUNDS_PER_GROUP
         assert banks.slot("INT", 1).bank == 0
         assert banks.slot("INT", 11).bank == 1
         assert banks.slot("INT", 80).bank == 7
@@ -82,8 +81,7 @@ class TestReachingASound:
 
     def test_the_effect_command_comes_before_the_selector(self):
         out = banks.select_messages(banks.slot("ROM", 1), with_effect=True)
-        assert [msg[1] for msg in out] == [
-            banks.EFFECT_WITH_NEXT_PC, 125, 0]
+        assert [msg[1] for msg in out] == [banks.EFFECT_WITH_NEXT_PC, 125, 0]
 
     def test_the_channel_lands_in_the_status_byte(self):
         out = banks.select_messages(banks.slot("INT", 1), channel=9)
@@ -136,7 +134,7 @@ class TestMessages:
             while bits >= 8:
                 bits -= 8
                 out.append((acc >> bits) & 0xFF)
-        record[m.NAME_OFFSET:m.NAME_OFFSET + m.NAME_BYTES] = out
+        record[m.NAME_OFFSET : m.NAME_OFFSET + m.NAME_BYTES] = out
         assert m.sound_name(record) == text
 
     def test_the_wrong_nibble_order_is_silent_not_fatal(self):
@@ -172,8 +170,7 @@ class TestReadingDumps:
         assert library.device == 13
 
     def test_a_single_sound_is_kept_apart(self):
-        raw = m.frame(m.Function.SINGLE_SOUND_DUMP,
-                      m.to_nibbles(bytes(m.SOUND_BYTES)))
+        raw = m.frame(m.Function.SINGLE_SOUND_DUMP, m.to_nibbles(bytes(m.SOUND_BYTES)))
         library = dumps.read_bytes(raw)
         assert len(library.singles) == 1
         assert not library.sounds
@@ -194,11 +191,10 @@ class TestReadingDumps:
         import struct
 
         message = _bank_message()
-        count = len(message) - 1          # everything after the F0
+        count = len(message) - 1  # everything after the F0
         body = b"\x00\xf0" + _vlq(count) + message[1:]
         track = b"MTrk" + struct.pack(">I", len(body)) + body
-        smf = b"MThd" + struct.pack(">I", 6) + b"\x00\x00\x00\x01\x00\x60" \
-            + track
+        smf = b"MThd" + struct.pack(">I", 6) + b"\x00\x00\x00\x01\x00\x60" + track
         library = dumps.read_bytes(smf, smf=True)
         assert library.is_full_bank
 
@@ -212,10 +208,17 @@ class TestDumpRequests:
 
     def test_the_internal_bank_request_is_one_nibble_ized_byte(self):
         raw = m.internal_banks_request(channel=0)
-        assert list(raw) == [0xF0, 0x0F, 0x06, 0x00, 0x00,
-                             m.Function.COMMAND,
-                             0x00, 0x02,          # command type 02, nibbles
-                             0xF7]
+        assert list(raw) == [
+            0xF0,
+            0x0F,
+            0x06,
+            0x00,
+            0x00,
+            m.Function.COMMAND,
+            0x00,
+            0x02,  # command type 02, nibbles
+            0xF7,
+        ]
 
     def test_the_base_channel_rides_in_the_header(self):
         raw = m.internal_banks_request(channel=10)
@@ -236,16 +239,36 @@ class TestDumpRequests:
         offset were wrong, these would not match.
         """
         assert list(m.virtual_button(25)) == [
-            0xF0, 0x0F, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x09, 0xF7]
+            0xF0,
+            0x0F,
+            0x06,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x09,
+            0xF7,
+        ]
         assert list(m.virtual_button(25, down=False)) == [
-            0xF0, 0x0F, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x09, 0xF7]
+            0xF0,
+            0x0F,
+            0x06,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x07,
+            0x09,
+            0xF7,
+        ]
 
     def test_the_captured_messages_decode_as_button_nine(self):
         """The four 11-byte messages in the owner's capture."""
-        down = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00,
-                      0x00, 0x00, 0x00, 0x09, 0xF7])
-        up = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00,
-                    0x00, 0x00, 0x06, 0x09, 0xF7])
+        down = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x09, 0xF7])
+        up = bytes([0xF0, 0x0F, 0x06, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x06, 0x09, 0xF7])
         for raw, expected in ((down, 9), (up, 9 + m.CommandType.BUTTON_UP_OFFSET)):
             packet = m.parse(raw)
             assert packet.function == m.Function.COMMAND

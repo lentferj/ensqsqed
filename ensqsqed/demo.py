@@ -31,10 +31,32 @@ from sq import messages as m
 
 __all__ = ["DemoDevice", "demo_name"]
 
-_HEADS = ("Tin", "Glass", "Chalk", "Copper", "Velvet", "Cork", "Willow",
-          "Pewter", "Basalt", "Linen", "Amber", "Slate")
-_TAILS = ("Bell", "Drone", "Wash", "Sweep", "Hum", "Comb", "Gust", "Loom",
-          "Pluck", "Shine")
+_HEADS = (
+    "Tin",
+    "Glass",
+    "Chalk",
+    "Copper",
+    "Velvet",
+    "Cork",
+    "Willow",
+    "Pewter",
+    "Basalt",
+    "Linen",
+    "Amber",
+    "Slate",
+)
+_TAILS = (
+    "Bell",
+    "Drone",
+    "Wash",
+    "Sweep",
+    "Hum",
+    "Comb",
+    "Gust",
+    "Loom",
+    "Pluck",
+    "Shine",
+)
 
 
 def demo_name(group_id: str, number: int) -> str:
@@ -43,7 +65,7 @@ def demo_name(group_id: str, number: int) -> str:
     head = _HEADS[seed % len(_HEADS)]
     tail = _TAILS[(seed // len(_HEADS)) % len(_TAILS)]
     # Centred with spaces, the way this instrument centres its own.
-    text = f"{head} {tail}"[:m.NAME_CHARS]
+    text = f"{head} {tail}"[: m.NAME_CHARS]
     pad = m.NAME_CHARS - len(text)
     return " " * (pad // 2) + text + " " * (pad - pad // 2)
 
@@ -80,22 +102,24 @@ class DemoDevice:
         if self._closed:
             raise RuntimeError(
                 "this demo device is closed; a real bridge would be a "
-                "closed port and would fail less clearly")
+                "closed port and would fail less clearly"
+            )
         if self.latency:
             time.sleep(self.latency)
 
     # --- reading ------------------------------------------------------------
 
-    def read_internal_bank(self, *, timeout: Optional[float] = None
-                           ) -> Dict[int, bytes]:
+    def read_internal_bank(
+        self, *, timeout: Optional[float] = None
+    ) -> Dict[int, bytes]:
         self._tick()
-        return {n: _record("INT", n)
-                for n in range(banks.SOUNDS_PER_GROUP)}
+        return {n: _record("INT", n) for n in range(banks.SOUNDS_PER_GROUP)}
 
-    def read_names(self, *, timeout: Optional[float] = None
-                   ) -> Dict[int, str]:
-        return {n: m.sound_name(r)
-                for n, r in self.read_internal_bank(timeout=timeout).items()}
+    def read_names(self, *, timeout: Optional[float] = None) -> Dict[int, str]:
+        return {
+            n: m.sound_name(r)
+            for n, r in self.read_internal_bank(timeout=timeout).items()
+        }
 
     def read_current_sound(self, *, timeout: Optional[float] = None) -> bytes:
         """Whatever was last selected, or Internal 1 if nothing has been."""
