@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ensqsqed"
 version = "0.1.0"
 description = "A terminal browser for the Ensoniq SQ-R Plus"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-2.0-or-later" }
 dependencies = ["textual>=0.40", "python-rtmidi>=1.4"]
@@ -17,5 +18,150 @@ sqcli = "ensqsqed.cli:main"
 [tool.setuptools.packages.find]
 include = ["sq*", "ensqsqed*"]
 
+# --- ruff: linting and formatting (replaces flake8/isort/black/pyupgrade) ----
+#
+# See docs/QUALITY_CHECKS.md for why each pre-existing suppression exists.
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+# sq/data/ holds the generated name catalog and is gitignored.
+extend-exclude = ["sq/data"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "S",     # bandit
+    "SIM",   # flake8-simplify
+    "UP",    # pyupgrade
+    "C4",    # flake8-comprehensions
+    "PL",    # pylint
+    "RUF",   # ruff-specific
+    "C901",  # mccabe complexity
+]
+# Each of these conflicts with a convention this codebase follows on purpose.
+# They are disabled wholesale rather than per-file because they are properties
+# of the whole style, not of particular files; the counts are the number of
+# existing occurrences suppressed project-wide.
+ignore = [
+    # The project uses typing.Dict/List/Optional consistently under
+    # `from __future__ import annotations`; rewriting every annotation is a
+    # refactor, not a lint fix.
+    "UP006", "UP035", "UP045", "UP037",
+    # Local imports are deliberate: `rtmidi` is imported lazily so `sqcli`
+    # works with no MIDI backend, and the tests import inside functions.
+    "PLC0415",
+    # Protocol offsets, record sizes and function codes are compared as
+    # literals throughout, which is how binary formats read.
+    "PLR2004",
+    # Complexity / argument-count refactor suggestions, not defects.
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",
+    # Established stylistic conventions: `[a] + [b]`, class-level constant
+    # tables, and `__all__` ordered by protocol rather than alphabetically.
+    "RUF005", "RUF012", "RUF022",
+    # An explicit try/except reads better than contextlib.suppress here.
+    "SIM105",
+    # zip(strict=) changes runtime behaviour; enabling it is a decision.
+    "B905",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["sq", "ensqsqed"]
+
+# Existing findings only. A new file, or a new occurrence in a file not listed
+# here, is still reported.
+[tool.ruff.lint.per-file-ignores]
+# tests: S101 (assert) is what a test is for; F401 covers imports used for
+# registration or availability rather than for a name.
+"tests/*" = ["S101", "F401"]
+"tests/test_app.py" = ["I001"]
+"tests/test_banks.py" = ["I001"]
+"tests/test_store.py" = ["I001"]
+# The deliberate teardown and drain loops swallow failures on purpose.
+"sq/bridge.py" = ["S110", "S112"]
+# E501 is an unsplittable docstring line; I001 predates the pipeline.
+"sq/catalog.py" = ["E501", "I001"]
+# A module-level warn-once flag, and `"\u%04X" % ord(c)`.
+"sq/config.py" = ["PLW0603", "UP031"]
+# Dead `typing` imports left over from an earlier revision.
+"sq/dumps.py" = ["F401"]
+# E501 is an unsplittable SQL string. S608 is `PRAGMA user_version =
+# {SCHEMA_VERSION}`, an int constant. RUF023 is `_Result.__slots__`.
+"sq/favorites.py" = ["E501", "F401", "RUF023", "S608"]
+"sq/messages.py" = ["F401"]
+# The Textual event layer.
+"ensqsqed/app.py" = ["B904", "F401", "I001", "PLW0108"]
+# `main` is the CLI dispatcher and stays in one readable function.
+"ensqsqed/cli.py" = ["B904", "C901", "I001"]
+
+# --- mypy: type checking ----------------------------------------------------
+#
+# Non-strict. No module is --strict clean today, and strict-per-module would
+# mean editing annotated source to add type arguments. The flags below are the
+# strictness that costs nothing today; the rest of --strict is deliberately
+# off and can be dialled in per module later.
+[tool.mypy]
+python_version = "3.11"
+files = ["sq", "ensqsqed", "tests"]
+ignore_missing_imports = true
+warn_unused_configs = true
+# These four add no findings on the current tree.
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+warn_unreachable = true
+show_error_codes = true
+exclude = ['^sq/data/']
+
+# These two modules are clean under --strict today, so they are held to it.
+# The `strict = true` bundle cannot be used in a per-module override: in mypy
+# 2.4.0 it leaks out and applies to the whole run. These are the same flags,
+# scoped as intended. The rest of the codebase is not strict-clean, and
+# dialling it in means editing annotated source, which is out of scope for a
+# tooling pass.
+[[tool.mypy.overrides]]
+module = ["sq.catalog", "sq.messages"]
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+warn_return_any = true
+
+# --- pytest and coverage ----------------------------------------------------
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "--cov=sq --cov=ensqsqed --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["sq", "ensqsqed"]
+
+[tool.coverage.report]
+show_missing = true
+# No fail_under yet: the point of this pass is to start measuring, not to
+# set a gate. Add fail_under once the number is understood.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+# --- vulture: dead code ------------------------------------------------------
+[tool.vulture]
+min_confidence = 80
+paths = ["sq", "ensqsqed", "tests"]
+
+# --- deptry: dependency hygiene ---------------------------------------------
+[tool.deptry]
+extend_exclude = ["\\.venv"]

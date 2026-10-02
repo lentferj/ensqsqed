@@ -1,0 +1,72 @@
+# ensqsqed development toolchain -- exact pins.
+#
+# This is the lockfile: both the tools and every transitive dependency
+# are pinned, so every checkout gets the same linters. The runtime
+# dependencies stay in pyproject.toml, which is the single source of
+# truth; `make bootstrap` installs the project separately and editable.
+#
+# Install everything with:  make bootstrap
+#
+# Regenerate the transitive block after any upgrade with:
+#
+#     .venv/bin/pip install --dry-run --ignore-installed \
+#         --report report.json -r <direct-pins>
+#
+# then list report["install"] and drop the names pinned directly below.
+
+# --- tools ---
+deptry==0.25.1  # unused / missing / transitive dependency checks
+detect-secrets==1.5.0  # secret scanning
+mypy==2.4.0  # static type checking
+pip-audit==2.10.1  # dependency vulnerability scanning
+pre-commit==4.6.2  # git hook runner
+pytest==9.1.1  # test runner
+pytest-asyncio==1.4.0  # asyncio support for the Textual app tests
+pytest-cov==7.1.0  # coverage for pytest
+ruff==0.16.10  # linting and formatting (replaces flake8/isort/black/pyupgrade)
+vulture==2.16  # dead code detection
+
+# --- transitive dependencies (generated; do not edit) ---
+ast_serialize==0.12.0
+boolean.py==5.0
+CacheControl==0.14.4
+certifi==2026.7.22
+cfgv==3.5.0
+charset-normalizer==3.5.2
+click==8.5.0
+coverage==7.16.2
+cyclonedx-python-lib==11.12.0
+defusedxml==0.7.1
+distlib==0.4.3
+filelock==4.0.9
+identify==2.6.20
+idna==3.20
+iniconfig==2.3.0
+librt==0.16.0
+license-expression==30.4.4
+markdown-it-py==4.2.0
+mdurl==0.1.2
+msgpack==1.2.3
+mypy_extensions==1.1.0
+nodeenv==1.11.0
+packageurl-python==0.17.6
+packaging==26.3
+pathspec==1.1.1
+pip-requirements-parser==32.0.1
+pip_api==0.0.35
+platformdirs==4.12.2
+pluggy==1.6.0
+py-serializable==2.1.0
+Pygments==2.21.0
+pyparsing==3.3.3
+python-discovery==1.6.1
+PyYAML==6.0.3
+requests==2.34.2
+requirements-parser==0.13.1
+rich==15.0.0
+sortedcontainers==2.4.0
+tomli==2.4.1
+tomli_w==1.2.0
+typing_extensions==4.16.0
+urllib3==2.8.0
+virtualenv==21.14.5

@@ -57,6 +57,27 @@ covers the SQ-1 family and says the SQ-R recognises the same header.
 files. See `DISCLAIMER.md` for what is verified and what is not, and
 `docs/RESOLUTION_NOTES.md` for how each thing was established.
 
+## Development checks
+
+The toolchain is pinned in `requirements-dev.txt`. Create the virtual
+environment with `--system-site-packages` so the system `python-rtmidi`
+and `textual` are visible, then install and run everything:
+
+```
+python3 -m venv --system-site-packages .venv
+make bootstrap        # project + pinned toolchain + pre-commit hooks
+make check            # ruff, mypy, pytest + coverage, pip-audit, vulture,
+                      # deptry and detect-secrets, in that order
+```
+
+`make help` lists the individual targets (`lint`, `format`, `typecheck`,
+`test`, `audit`). `make check` fails on the first problem. It passes on the
+current tree because every pre-existing finding is baselined or ignored
+narrowly rather than switched off: see `docs/QUALITY_CHECKS.md` for what is
+suppressed, why, and the few items worth fixing outright. Formatting of the
+existing files is deferred — `make format` rewrites them when that is wanted,
+as its own commit.
+
 ## Licence
 
 GPL-2.0-or-later. AI assistance was used; see `DISCLAIMER.md`.

@@ -3,6 +3,17 @@ __pycache__/
 .venv/
 .pytest_cache/
 
+# Development-check byproducts. requirements-dev.txt is deliberately NOT
+# ignored: it is the pinned toolchain lockfile and is meant to be committed.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.audit-runtime-req.txt
+
 # The generated name catalog. Ensoniq's sound names are not ours to
 # redistribute: regenerate it locally with tools/extract_catalog.py.
 sq/data/catalog.json

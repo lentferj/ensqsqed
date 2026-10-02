@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-FileCopyrightText: Copyright (C) 2026  ensqsqed contributors
+#
+# ensqsqed development checks.
+#
+# Install with:  pre-commit install
+# Or run everything:  make check
+#
+# Every hook rev is pinned to a released tag. pre-commit builds its own
+# environments from these, so they are intentionally independent of the
+# versions pinned in requirements-dev.txt; keeping the two in step is not
+# required, because a hook that disagrees with `make check` shows up as a
+# disagreement rather than as silence.
+#
+# shellcheck and shfmt are deliberately absent: this repository contains no
+# shell scripts (no *.sh, no file with a bash/sh shebang), so the hooks would
+# never fire. Add them here alongside the first .sh file rather than leaving
+# them idle.
+
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  # --- ruff: linting and formatting -----------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^(sq|ensqsqed|tools|tests|quality)/
+      - id: ruff-format
+        # The same files as FORMAT_DEFERRED in the Makefile. Without this the
+        # hook would rewrite them on the first commit that touches them, which
+        # puts a whole-tree reformat inside an unrelated change. Kept in step
+        # with the Makefile deliberately: `make lint` and `git commit` must
+        # not disagree about what is formatted.
+        # To clear: run `make format`, commit, then trim both lists.
+        exclude: ^(ensqsqed/(app|cli|demo)\.py|sq/(banks|bridge|catalog|config|dumps|favorites|messages)\.py|tests/(test_app|test_banks|test_store)\.py)$
+
+  # --- mypy: type checking ---------------------------------------------------
+  # Delegates the pass to quality/check_mypy.py, which compares against the
+  # baseline. Without it this hook fails on all 10 pre-existing findings.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (vs quality/mypy-baseline.txt)
+        entry: .venv/bin/python quality/check_mypy.py
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+  # --- secrets ---------------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
