@@ -351,12 +351,13 @@ class EnsqsqedApp(App):
 
     def _remember_channel(self, channel: int) -> None:
         """Save it for next time. Only OSError is swallowed."""
-        if getattr(self, "_config_path", None) is None:
+        path = self._config_path
+        if path is None:
             return
-        from nano import config
+        from sq import config
 
         try:
-            config.save_channel(channel, self._config_path)
+            config.save_channel(channel, path)
         except OSError:
             pass
 

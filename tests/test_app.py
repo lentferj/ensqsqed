@@ -22,6 +22,7 @@ import pytest
 
 from sq import banks
 from sq import catalog as cat
+from sq import config
 from sq import favorites as fav
 from ensqsqed.app import VIEW_ALL_FAVOURITES, EnsqsqedApp
 from ensqsqed.demo import DemoDevice
@@ -181,6 +182,21 @@ class TestFavouritesActOnTheRowNotThePane:
             assert store.get("INT", 5) is None, "favourited the wrong group"
             assert store.get("CARDA", 5) is None
         store.close()
+
+
+class TestTheChannelIsRemembered:
+    """`c` writes the chosen channel to config.toml.
+
+    The import that did the writing once named a module (`nano`) that does
+    not exist, so every call raised ModuleNotFoundError instead of saving.
+    """
+
+    def test_remembering_a_channel_persists_it(self, tmp_path):
+        path = str(tmp_path / "config.toml")
+        app = EnsqsqedApp(DemoDevice(), catalog=cat.empty(),
+                          config_path=path)
+        app._remember_channel(9)
+        assert config.load_channel(path) == 9
 
 
 class TestStructuralRules:
