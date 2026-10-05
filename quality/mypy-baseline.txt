@@ -3,13 +3,9 @@
 # Line numbers are excluded on purpose -- see the module
 # docstring. Regenerate with:
 #     python quality/check_mypy.py --write
-ensqsqed/app.py|arg-type|Argument 1 to "save_last_port" has incompatible type "str | None"; expected "str"
 ensqsqed/app.py|assignment|Incompatible types in assignment (expression has type "SqBridge", variable has type "DemoDevice")
 ensqsqed/app.py|assignment|Incompatible types in assignment (expression has type "SqBridge", variable has type "DemoDevice")
 ensqsqed/app.py|misc|Too many values to unpack (3 expected, 4 provided)
 ensqsqed/app.py|var-annotated|Need type annotation for "out" (hint: "out: list[<type>] = ...")
 ensqsqed/app.py|var-annotated|Need type annotation for "wanted" (hint: "wanted: dict[<type>, <type>] = ...")
-ensqsqed/cli.py|arg-type|Argument 1 to "save_last_port" has incompatible type "str | None"; expected "str"
 sq/banks.py|list-item|List item 1 has incompatible type "int | None"; expected "SupportsIndex"
-sq/config.py|assignment|Incompatible types in assignment (expression has type "None", variable has type Module)
-sq/favorites.py|var-annotated|Need type annotation for "seen" (hint: "seen: list[<type>] = ...")

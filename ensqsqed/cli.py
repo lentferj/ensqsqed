@@ -26,6 +26,12 @@ from sq import catalog as cat
 from sq import config
 from sq import dumps
 from sq import messages as m
+from vinsynlib.cli import (
+    add_common_arguments,
+    channel_of,
+    make_parser,
+    validate_common,
+)
 
 __all__ = ["main", "build_parser"]
 
@@ -151,20 +157,22 @@ def _cmd_read(_device, args) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="sqcli",
-        description="Browse an Ensoniq SQ-R Plus's memory map. Nothing "
-        "here opens a MIDI port.",
+    parser = make_parser(
+        "sqcli",
+        "Browse an Ensoniq SQ-R Plus's memory map. Nothing here opens a MIDI port.",
     )
-    parser.add_argument("--catalog", help="path to a generated catalog")
-    parser.add_argument("--port", help="MIDI output port name")
-    parser.add_argument("--recv-port", help="MIDI input port, if different")
-    parser.add_argument(
-        "--channel",
-        type=int,
-        help="the unit's base MIDI channel, 1-16 (default: remembered, or 1)",
+    # --channel here has always meant the unit's own base channel, not the
+    # channel a program change is sent on, which is what the family calls
+    # --device-channel. Named accordingly, with the old spelling still
+    # accepted, rather than left as a second word for a different number.
+    add_common_arguments(
+        parser,
+        port=True,
+        recv_port=True,
+        device_channel=True,
+        catalog=True,
+        config=True,
     )
-    parser.add_argument("--config", help="path to the config file")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("groups", help="the four groups, the drums, the selectors")
@@ -209,13 +217,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = getattr(args, "config", None) or config.DEFAULT_PATH
 
-    if args.channel is not None and not 1 <= args.channel <= 16:
-        raise SystemExit("error: --channel is 1-16")
-    channel = (
-        (args.channel - 1)
-        if args.channel is not None
-        else (config.load_channel(config_path) or 0)
-    )
+    # The family's range checks, before anything is opened.
+    validate_common(args)
+    channel = channel_of(args, default=config.load_channel(config_path)) or 0
     reach_channel = getattr(args, "reach_channel", None)
     if reach_channel is not None and not 1 <= reach_channel <= 16:
         raise SystemExit("error: --channel is 1-16")
@@ -252,8 +256,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         on_try=lambda n: print(f"  probing {n}...", file=sys.stderr)
                     )
             try:
-                if getattr(device, "port", None):
-                    config.save_last_port(device.port, config_path)
+                port = getattr(device, "port", None)
+                if port:
+                    config.save_last_port(port, config_path)
                     config.save_channel(device.channel, config_path)
                 recv = getattr(device, "recv_port", None)
                 if recv and recv != getattr(device, "port", None):
