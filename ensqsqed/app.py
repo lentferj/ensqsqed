@@ -793,12 +793,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_arguments(
         parser,
         port=True,
+        scan=True,
         recv_port=True,
         device_channel=True,
         catalog=True,
         config=True,
         favorites=True,
-        scan=False,
     )
     return parser
 
@@ -836,14 +836,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                     channel=channel,
                 )
             else:
-                device = b.SqBridge.autodetect(
-                    on_try=lambda n: print(f"  probing {n}...", file=sys.stderr)
+                # One Single Sound Dump Request to the remembered port; the
+                # sweep only when there is nothing remembered, when the
+                # remembered port no longer answers, or on --scan.
+                device = b.SqBridge.connect(
+                    config_path=config_path,
+                    channel=channel,
+                    scan=args.scan,
+                    on_try=lambda n: print(f"  probing {n}...", file=sys.stderr),
                 )
         except Exception as exc:
             sys.exit(f"error: {exc}")
 
-        # Remember whatever channel is actually in use -- which after an
-        # autodetect is the one the unit reported, not the one asked for.
+        # Remember whatever channel is actually in use -- which after a
+        # sweep is the one the unit reported, not the one asked for.
         try:
             cfg.save_channel(getattr(device, "channel", 0), config_path)
             port = getattr(device, "port", None)

@@ -31,7 +31,7 @@ def test_flags_match_the_family() -> None:
     # Sequence, and mypy is right that a set is not one.
     assert not conformance.check_flags(
         build_parser(),
-        required=("port", "demo", "config", "catalog"),
+        required=("port", "scan", "recv-port", "demo", "config", "catalog"),
     )
 
 

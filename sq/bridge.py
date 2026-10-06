@@ -50,7 +50,9 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from sq import banks
+from sq import config as cfg
 from sq import messages as m
+from vinsynlib import midi
 
 __all__ = [
     "SqBridge",
@@ -65,12 +67,25 @@ __all__ = [
 ]
 
 
-class DeviceError(RuntimeError):
-    """Something about the connection, not about the music."""
+class DeviceError(midi.DeviceError):
+    """Something about the connection, not about the music.
+
+    The library's class, so a probe that finds nothing is recognised by
+    :func:`vinsynlib.midi.open_remembered_or_swept` and the sweep it falls
+    back to happens -- with an announcement, rather than as a launch that
+    quietly takes the slow path.
+    """
 
 
 class DeviceRefused(RuntimeError):
-    """The unit said no, which is different from saying nothing."""
+    """The unit said no, which is different from saying nothing.
+
+    Deliberately *not* a :class:`DeviceError` here, as it was not before:
+    every ``except DeviceError`` in this program means "the connection is
+    unusable", and a refusal to one request does not make it so. The
+    library does treat a refusal as something the remembered-port probe
+    should give up on, which is why the probe wraps it.
+    """
 
 
 DEFAULT_TIMEOUT = 2.0
@@ -300,6 +315,90 @@ class SqBridge:
         return m.from_nibbles(packet.payload)
 
     # --- discovery ----------------------------------------------------------
+
+    @classmethod
+    def connect(
+        cls,
+        *,
+        config_path: str = cfg.DEFAULT_PATH,
+        remembered: Optional[Tuple[str, str]] = None,
+        scan: bool = False,
+        channel: int = 0,
+        on_try: Optional[Callable[[str], None]] = None,
+    ) -> "SqBridge":
+        """Open the unit, sweeping every port only when that is necessary.
+
+        **The normal path is one Single Sound Dump Request, to the port
+        remembered in ``config_path``.** That is not only an optimisation,
+        and on this instrument the arithmetic is worth stating:
+        :meth:`autodetect` sweeps every port at each of the sixteen base
+        channels, which on a rig with thirty ports is about five minutes
+        before it gives up. A sweep also pings every piece of hardware on
+        the chain once per launch, and once the answer is known there is
+        nothing left to learn from asking again.
+
+        So: use the remembered port if there is one, sweep if there is not,
+        and sweep on request. ``scan=True`` is what ``--scan`` reaches,
+        which is what is needed after the unit moves to another port --
+        USB re-enumeration renumbers ALSA clients out from under a saved
+        name.
+
+        A remembered port that does not answer falls back to the sweep, but
+        **it says so first**. The guess is gone, and the announcement is
+        what keeps the fallback from looking like the fast path having
+        worked -- which is how a slow launch quietly becomes the normal one.
+        What the sweep then finds is written back, so the launch after this
+        one is fast again.
+
+        The policy itself is :func:`vinsynlib.midi.open_remembered_or_swept`,
+        written and tested once for the whole family; this is the SQ-R's
+        half of it, which is what a Single Sound Dump Request on a named
+        port means and where the answer is filed.
+
+        ``remembered`` defaults to what ``config_path`` holds. It is a
+        parameter so a caller can pass a pair it has already read, and so a
+        test can say what the file says without writing one.
+        """
+        remembered = (
+            remembered if remembered is not None else cfg.load_port_pair(config_path)
+        )
+
+        def probe(send: str, recv: str) -> "SqBridge":
+            """One round trip to the named port. Raises if nothing answers."""
+            try:
+                bridge = cls.open(
+                    send, recv_port=recv, channel=channel, timeout=PROBE_TIMEOUT
+                )
+            except Exception as exc:
+                raise DeviceError(str(exc)) from exc
+            try:
+                bridge.read_current_sound(timeout=PROBE_TIMEOUT)
+            except Exception as exc:
+                # DeviceRefused is deliberately not a DeviceError, so it is
+                # caught here and re-raised as one: a unit that answers "no"
+                # is not the instrument on this port either, and the policy
+                # decides what to do about that.
+                bridge.close()
+                raise DeviceError(
+                    f"no Single Sound Dump came back on {send!r}: {exc}"
+                ) from exc
+            bridge.timeout = DEFAULT_TIMEOUT
+            return bridge
+
+        def remember(bridge: "SqBridge") -> None:
+            if bridge.port and bridge.recv_port:
+                cfg.save_ports(bridge.port, bridge.recv_port, config_path)
+
+        return midi.open_remembered_or_swept(
+            probe=probe,
+            sweep=lambda try_hook: cls.autodetect(
+                timeout=PROBE_TIMEOUT, on_try=try_hook
+            ),
+            remembered=remembered,
+            scan=scan,
+            remember=remember,
+            on_try=on_try,
+        )
 
     @classmethod
     def autodetect(
