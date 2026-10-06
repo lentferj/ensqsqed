@@ -57,8 +57,19 @@ help:
 	@echo
 	@echo 'See docs/QUALITY_CHECKS.md for what is suppressed and why.'
 
-bootstrap:
+.PHONY: _need-vinsynlib
+# vinsynlib is the shared base of this family and is not on an index, so it
+# has to be a sibling checkout. Say that plainly rather than letting pip fail
+# on a path that is not there.
+_need-vinsynlib:
+	@test -d ../vinsynlib || { \
+		echo "vinsynlib is not beside this checkout. Get it first:"; \
+		echo "    git clone https://github.com/lentferj/vinsynlib.git ../vinsynlib"; \
+		exit 1; }
+
+bootstrap: _need-vinsynlib
 	$(PIP) install --upgrade pip
+	$(PIP) install --no-deps -e ../vinsynlib
 	$(PIP) install -r requirements-dev.txt
 	$(PIP) install -e .
 	$(PRE_COMMIT) install

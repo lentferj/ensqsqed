@@ -31,6 +31,29 @@ the browser always sends the selector first.
 The unit shows sounds as 001–080 and MIDI sends 000–079. Those are
 separate attributes and nothing converts between them silently.
 
+## Install
+
+Two checkouts, side by side — this project and the shared library it uses:
+
+```sh
+git clone https://github.com/lentferj/vinsynlib.git ../vinsynlib
+python3 -m venv .venv
+.venv/bin/pip install --no-deps -e ../vinsynlib
+.venv/bin/pip install -e .
+```
+
+Needs Python 3.11+, `python-rtmidi` and `textual`, plus **vinsynlib** — the
+shared base of this family of terminal instrument tools: the settings cache,
+the keymap and legend, the command line and the port listing. It is **not on
+PyPI**, so it is installed from the sibling checkout above, and installed
+*first* so that the second command finds the requirement already satisfied.
+
+`--no-deps` on the first install because vinsynlib's dependencies are this
+project's too, and a second copy of `textual` in the same venv is a version
+skew to diagnose somewhere else. With `uv`, `uv sync` takes the path from
+`[tool.uv.sources]` in `pyproject.toml`, so the checkout only has to exist
+and neither `pip` line is needed.
+
 ## Running it
 
 ```
