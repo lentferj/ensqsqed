@@ -160,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = make_parser(
         "sqcli",
         "Browse an Ensoniq SQ-R Plus's memory map. Nothing here opens a MIDI port.",
+        distribution="ensqsqed",
     )
     # --channel here has always meant the unit's own base channel, not the
     # channel a program change is sent on, which is what the family calls
