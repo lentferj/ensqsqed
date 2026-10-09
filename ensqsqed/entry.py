@@ -34,10 +34,38 @@ from __future__ import annotations
 import sys
 
 #: The minimum that has the API this project was written against.
-MINIMUM = (0, 1, 0)
+#:
+#: ``0.2.0`` is the version that added ``midi.open_remembered_or_swept``'s
+#: ``on_fallback`` hook, the per-file ownership guard in the settings cache,
+#: and the ``__version__`` whose absence used to be undetectable.
+MINIMUM = (0, 2, 0)
 
-#: Where to get it while it is not on an index.
-SOURCE = "vinsynlib @ git+https://github.com/lentferj/vinsynlib"
+#: Where to get it; on PyPI since 0.2.0.
+SOURCE = "vinsynlib>=0.2.0"
+
+
+def _release_parts(version: str, width: int) -> tuple[int, ...] | None:
+    """The leading numeric components of ``version``, or ``None``.
+
+    A component must begin with a digit; anything after the digits is a
+    pre-release or build marker and is ignored, so ``"0.2rc1"`` compares as
+    ``0.2``. A component that does not begin with a digit at all
+    (``"0.1.x"``) makes the whole string unusable rather than being guessed
+    at. Standard library only, on purpose -- see the module docstring.
+    """
+    parts: list[int] = []
+    for piece in version.split(".")[:width]:
+        digits = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return None
+        parts.append(int(digits))
+    if not parts:
+        return None
+    return tuple(parts + [0] * (width - len(parts)))
 
 
 def _diagnose(command: str) -> str | None:
@@ -51,14 +79,15 @@ def _diagnose(command: str) -> str | None:
     version = getattr(vinsynlib, "__version__", None)
     if not isinstance(version, str):
         return _missing(command)
-    if not vinsynlib.is_compatible_version(version, MINIMUM):
+    parts = _release_parts(version, len(MINIMUM))
+    if parts is None or parts < MINIMUM:
         return _too_old(command, version)
     return None
 
 
 def _how_to_install() -> str:
     return (
-        "Install it from source (it is not on PyPI yet):\n"
+        "Install it:\n"
         "\n"
         f'    pip install "{SOURCE}"\n'
         "\n"

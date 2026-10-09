@@ -57,19 +57,8 @@ help:
 	@echo
 	@echo 'See docs/QUALITY_CHECKS.md for what is suppressed and why.'
 
-.PHONY: _need-vinsynlib
-# vinsynlib is the shared base of this family and is not on an index, so it
-# has to be a sibling checkout. Say that plainly rather than letting pip fail
-# on a path that is not there.
-_need-vinsynlib:
-	@test -d ../vinsynlib || { \
-		echo "vinsynlib is not beside this checkout. Get it first:"; \
-		echo "    git clone https://github.com/lentferj/vinsynlib.git ../vinsynlib"; \
-		exit 1; }
-
-bootstrap: _need-vinsynlib
+bootstrap:
 	$(PIP) install --upgrade pip
-	$(PIP) install --no-deps -e ../vinsynlib
 	$(PIP) install -r requirements-dev.txt
 	$(PIP) install -e .
 	$(PRE_COMMIT) install
@@ -115,18 +104,15 @@ audit: audit-vulns audit-dead audit-deps audit-secrets
 # the ambient environment. Auditing the venv would report CVEs in unrelated
 # system packages and drown the project's own dependencies in noise.
 #
-# vinsynlib is filtered out of the list handed to pip-audit: it is a
-# sibling checkout rather than a package on an index (see [tool.uv.sources]
-# in pyproject.toml), so pip cannot resolve it and pip-audit would fail
-# resolving rather than auditing anything. It is this project's own source
-# that has already been reviewed in this repository, and it carries no
-# third-party dependencies of its own at this layer.
+# vinsynlib is an index dependency now (it is on PyPI), so it is audited with
+# the rest. It used to be filtered out, because as a sibling checkout pip
+# could not resolve it and pip-audit would fail resolving rather than
+# auditing anything.
 audit-vulns:
 	$(PYTHON) -c "import pathlib, tomllib; \
 	    data = tomllib.load(open('pyproject.toml', 'rb')); \
 	    pathlib.Path('.audit-runtime-req.txt').write_text(\
-	        ''.join(r + chr(10) for r in data['project']['dependencies'] \
-	        if not r.startswith('vinsynlib')))"
+	        ''.join(r + chr(10) for r in data['project']['dependencies']))"
 	@$(PIP_AUDIT) --progress-spinner=off -r .audit-runtime-req.txt; \
 	    status=$$?; rm -f .audit-runtime-req.txt; exit $$status
 	$(PIP_AUDIT) --progress-spinner=off --no-deps -r requirements-dev.txt

@@ -9,7 +9,7 @@ description = "A terminal browser for the Ensoniq SQ-R Plus"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-2.0-or-later" }
-dependencies = ["textual>=0.40", "python-rtmidi>=1.4", "vinsynlib"]
+dependencies = ["textual>=0.40", "python-rtmidi>=1.4", "vinsynlib>=0.2.0"]
 
 [project.scripts]
 ensqsqed = "ensqsqed.entry:app"
@@ -17,14 +17,6 @@ sqcli = "ensqsqed.entry:cli"
 
 [tool.setuptools.packages.find]
 include = ["sq*", "ensqsqed*"]
-
-# vinsynlib is not on PyPI. It is the shared base of this family of
-# terminal instrument browsers and lives in a sibling checkout, so it is
-# installed from the working tree rather than from an index. Editable,
-# because a change to the library is a change here and should not need
-# a reinstall to see.
-[tool.uv.sources]
-vinsynlib = { path = "../vinsynlib", editable = true }
 
 # --- ruff: linting and formatting (replaces flake8/isort/black/pyupgrade) ----
 #

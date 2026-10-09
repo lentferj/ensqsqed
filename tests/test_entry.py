@@ -18,7 +18,7 @@ REQUIRED_BITS = (
     "error:",
     "vinsynlib",
     "pip install",
-    "git+https://github.com/lentferj/vinsynlib",
+    "vinsynlib>=0.2.0",
 )
 
 
@@ -69,5 +69,28 @@ def test_an_older_library_is_named_rather_than_ignored(
     monkeypatch.setattr(vinsynlib, "__version__", "0.0.9")
     problem = entry._diagnose("ensqsqed")
     assert problem is not None
-    assert "0.1.0" in problem
+    assert "0.2.0" in problem
     assert "0.0.9" in problem
+
+
+def test_a_library_that_cannot_report_a_version_reads_as_missing(
+    monkeypatch: Any,
+) -> None:
+    """No ``__version__`` is the one case that must not be guessed at.
+
+    The comparison lives here, in stdlib only, precisely so that a library
+    too old to describe itself is diagnosed rather than crashed on.
+    """
+    import vinsynlib
+
+    monkeypatch.delattr(vinsynlib, "__version__", raising=False)
+    problem = entry._diagnose("ensqsqed")
+    assert problem is not None
+    assert "is not installed" in problem
+
+
+def test_a_pre_release_at_the_floor_is_not_called_too_old() -> None:
+    """A pre-release marker is not a version: ``0.2rc1`` is ``0.2``."""
+    assert entry._release_parts("0.2rc1", 3) == (0, 2, 0)
+    assert entry._release_parts("0.2", 3) == (0, 2, 0)
+    assert entry._release_parts("0.1.x", 3) is None
