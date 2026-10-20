@@ -372,7 +372,108 @@ CONCERT HALL). **verified bytes only.**
 
 ---
 
-## 9. Contradictions / notes vs. spec
+## 9. Edit-buffer semantics (T2, probed 2026-10-20)
+
+What a preset dump *does* to the unit, measured on the bench with
+`tools/probe_preset_write.py`. Everything in this section is **empirical**:
+one unit, one day, three runs with the same result. The manual says what the
+unit does with a received preset (Part 8, "Empfang von MIDI Sys-Ex Daten":
+the display shows "Press ENTER to save new preset", the preset becomes the
+**Edit Preset**, the unit switches to Preset Select Mode with the Edit Preset
+LED blinking) but not what a dump request returns while that Edit Preset is
+live. That is the gap this section closes.
+
+### 9.1 The write path that works
+
+A preset is received as the specification's two-message handshake — alert,
+ACK, then the dump (§3.1.7, §3.2.1, §3.3.3) — and the unit takes it:
+
+| step | message | bytes on the wire |
+|---|---|---|
+| 1 | command 06, Single Sequence Dump Alert | 6 head + 12 payload + 1 tail |
+| 2 | error message 01, code 01 = ACK | 6 head + 2 payload + 1 tail |
+| 3 | message type 04, Single Sequence Dump | 6 head + 432 payload + 1 tail |
+
+The alert's body de-nibbles to `06 00 00 00 30 00`: command byte 06, the
+sequence-data size as a big-endian long word (0x30 = 48), and the
+sequence/song flag (0x00 = sequence). **The size counts the sequence-data
+segment only** — the 168-byte preset is not in it — so the alert carries
+`len(seq_blob)`, not the length of the whole dump. The type-04 message
+carries all 216 bytes nibble-ized: `00 00 00 30 …` (48 bytes of sequence
+data) followed by the 168-byte preset, which is the same order the unit
+itself sends them in.
+
+### 9.2 The ACK, and how fast it comes
+
+**The ACK arrives, every time, in about eleven milliseconds.** Nine
+handshakes over three runs: 0.011 s each. No NAK was ever observed, and
+never silence inside the window.
+
+The one-second window of §3 ("If the receiver does not respond within one
+second, the transmitter will send the dump message anyway") exists for
+*dumb* SysEx recorders that cannot answer. This unit is not one: it is
+ready for the dump eleven milliseconds after the alert, which is about 1%
+of the window. A writer may therefore wait a full second for the ACK and
+still be prompt in practice; one tenth of a second would do.
+
+The ACK is about the *message*, not about a change: the unchanged snapshot
+was ACKed in the same eleven milliseconds as the edit.
+
+### 9.3 What the read-back returns: the Edit Preset
+
+| question | answer |
+|---|---|
+| Did the unit ACK the alert? | **yes**, in ~11 ms, every time |
+| Does command 03 after a write return the stored slot or the Edit Preset? | **the Edit Preset** |
+| Is a one-byte change visible in the read-back? | **yes** |
+| Does the restore come back clean? | **yes**, byte-identical |
+
+The measurement, in order:
+
+1. **Snapshot** — command 03 returned 216 bytes, preceded by the alert
+   `06 00 00 00 30 00`; the blob's own long word said 48, and 48 + 168 = 216
+   held. The bytes are the committed fixture
+   `tests/fixtures/single_seq_default.bin`, byte for byte.
+2. **Send unchanged** — alert → ACK (0.011 s) → the same 216 bytes. The
+   read-back was byte-identical to the snapshot. *On its own this proves
+   nothing*: an unchanged send cannot tell the stored preset from the Edit
+   Preset, because they are the same bytes.
+3. **Send with one byte changed** — track 1's volume (preset offset 34, dump
+   offset 82) went from 127 to 126. The read-back returned **126**, and the
+   other 215 bytes were exactly what had been sent.
+4. **Restore** — the original 216 bytes were sent again; the read-back was
+   byte-identical to the original. An independent read after the run also
+   matched the committed fixture exactly, with track 1's volume back at 127.
+
+Step 3 is the decisive one. **No button was pressed on the unit, so
+nothing could have been stored** — storing needs ENTER on the front panel.
+The read-back therefore returned the *Edit Preset buffer*, not the stored
+slot. Command 03 reads the Edit Preset whenever one is live.
+
+### 9.4 What this means for the app
+
+* **Apply-then-verify is meaningful.** `send_current_preset()` followed by
+  `read_current_preset()` compares the bytes that were sent, and a
+  mismatch is a real failure rather than a formality.
+* **The verification does not mean the preset is stored.** The unit is
+  holding the change in a buffer and the display says
+  "Press ENTER to save new preset". Storing is a front-panel act; the UI
+  has to say so.
+* **A read taken before any write is the stored preset; a read taken after
+  one is the Edit Preset.** An editor that reads once and writes later must
+  read again to see its own change — the two reads are not the same thing,
+  even though the request is the same.
+* **The undo record can hold the whole dump.** Re-sending the previous
+  216 bytes restores the previous state exactly, as measured above.
+
+How to check: run `python3 tools/probe_preset_write.py --yes` against the
+unit. The run log is written to `/tmp/opencode/sqrex/probe_write.log` and
+the snapshot to `/tmp/opencode/sqrex/probe_snapshot_before.bin`; the
+committed fixture is what the run must reproduce.
+
+---
+
+## 10. Contradictions / notes vs. spec
 
 1. Alert 07 "size" (0x10D4 = 4308) equals the track-data end offset, not the
    3900-byte payload size. Spec §3.1.8 calls it "size of the sequence data
@@ -388,15 +489,19 @@ CONCERT HALL). **verified bytes only.**
    code paths are unverified by this fixture.
 6. The spec says preset table has "100 word entries" — confirmed (200 bytes);
    only 80 non-zero (matches alert count).
+7. The single-sequence alert's size field counts the sequence-data segment
+   only (48), not the whole 216-byte dump — measured, §9.1.
 
 ---
 
-## 10. Cross-references
+## 11. Cross-references
 
 - `tests/fixtures/single_seq_default.bin` — single sequence dump (48-byte blob +
   168-byte preset); confirms preset layout and edit-point/seq-size fields.
 - `tests/fixtures/all_seq.bin` — full dump analyzed here.
 - Throwaway verification script: `/tmp/opencode/sqrex/verify_layout.py`.
+- `tools/probe_preset_write.py` — the edit-buffer probe (§9); run log at
+  `/tmp/opencode/sqrex/probe_write.log`.
 - German manual: `/tmp/opencode/sqrplusd.txt` (Part 2 system bank, Part 3
   presets, Part 8 SysEx storage).
 - English spec: `SQ1-SysEx.md` §4.6–§4.8.2, §3.1.7/3.1.8.
