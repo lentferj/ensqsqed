@@ -1,0 +1,402 @@
+# Preset Framing — `all_seq.bin` layout
+
+This document is the byte-accurate map of `tests/fixtures/all_seq.bin` (17977 bytes,
+reply type 05 to command 04, captured 2026-10-20 from a real Ensoniq SQ-R Plus).
+It is the contract the `sq/presets.py` / `sq/bridge.py` parsers implement against.
+Every numeric claim below has a "How to check" line; all were verified against the
+fixture by ` /tmp/opencode/sqrex/verify_layout.py`.
+
+Spec references: SQ-1 SysEx §3.1.7/3.1.8 (alerts), §4.6 (single sequence), §4.7
+(all sequences), §4.8/§4.8.1/§4.8.2 (preset + track), §5.1/§5.2 (effects),
+Notes 3/5/6/7. Rack semantics: German SQ-R Plus manual Part 2 (system bank) and
+Part 3 (presets), Part 8 (SysEx storage).
+
+Status legend: **verified** = checked against the fixture; **empirical** = observed
+once on this unit, not guaranteed by spec; **unverified** = best guess, single
+data point.
+
+---
+
+## 0. Alert 07 (preceding the dump)
+
+File: `/tmp/opencode/sqrex/all_seq.bin.alert` = `07 00 00 10 D4 50` (6 bytes:
+command byte + 5 payload bytes per §3.1.8).
+
+| Field | Bytes | Value | Meaning (spec §3.1.8) |
+|---|---|---|---|
+| command | 07 | 07 | All Sequence Memory Dump Alert |
+| size (4 bytes) | 00 00 10 D4 | 0x000010D4 = 4308 | "size of the sequence data segment" |
+| count | 50 | 0x50 = 80 | number of defined sequence presets [2..100] |
+
+**verified** — `python3 -c "d=open('/tmp/opencode/sqrex/all_seq.bin.alert','rb').read(); print(d[1:].hex(), d[5])"` → `000010d4 80`.
+
+Empirical note: 4308 = 408 + 3900 = (alloc vars 8 + track table 400) + (track-data
+payload size). I.e. the alert's "size" is the byte offset where the track-data
+region ends / the preset table's alloc vars begin, not the raw payload size.
+The raw track-data payload is 3900 bytes (see §2). The parser MUST NOT use the
+alert size to locate the preset area; use the count (last byte) only.
+
+---
+
+## 1. Top-level layout (one-line rule)
+
+```
+preset_area_start = len(dump) - 21 - 168 * count
+```
+
+where `count` is alert 07's last byte (0x50 = 80 here). For this fixture:
+`17977 - 21 - 168*80 = 4516` **verified**.
+
+Full map:
+
+| Offset range | Size | Contents |
+|---|---|---|
+| `[0:8]` | 8 | Track-data table alloc vars (empirical) |
+| `[8:408]` | 400 | Track-data offset table: 100 × big-endian 32-bit |
+| `[408:4308]` | 3900 | Track data: 80 sequence-data blobs (70 × 48 B + 10 × 54 B) |
+| `[4308:4316]` | 8 | Preset table alloc vars (empirical) |
+| `[4316:4516]` | 200 | Preset word table: 100 × big-endian 16-bit |
+| `[4516:17956]` | 13440 | 80 presets × 168 B (contiguous) |
+| `[17956:17977]` | 21 | Global parameters |
+
+How to check: `python3 -c "
+d=open('tests/fixtures/all_seq.bin','rb').read()
+print(len(d), len(d)-21-168*80, 4516+80*168)"` → `17977 4516 17956`.
+
+---
+
+## 2. Track-data table (`[8:408]`)
+
+100 big-endian 32-bit entries. **80 are non-zero** (indices 0..79); entries
+80..99 are zero. **verified** — `sum(1 for i in range(100) if struct.unpack('>I',d[8+i*4:8+i*4+4])[0])` = 80.
+
+Stride between consecutive used entries is 48 bytes for entries 0..69 and 54 bytes
+for entries 70..79 (each blob is self-describing via its leading size long-word).
+
+### Constant C (track table)
+
+**C = 0.** Table entry value + 0 = absolute offset of that blob in the dump.
+Verified on all 80 non-zero entries: every entry points at a location whose first
+4 bytes are a plausible size (48 or 54) and `offset + size <= 4308`.
+
+How to check:
+```
+python3 -c "
+import struct
+d=open('tests/fixtures/all_seq.bin','rb').read()
+tbl=[struct.unpack('>I',d[8+i*4:8+i*4+4])[0] for i in range(100)]
+bad=0
+for v in tbl:
+    if v==0: continue
+    sz=struct.unpack('>I',d[v:v+4])[0]
+    if not (1<=sz<=4308 and v+sz<=4308): bad+=1
+print('used=',sum(1 for v in tbl if v),'bad=',bad)
+"   # -> used= 80 bad= 0
+```
+
+Empirical note on the spec wording: §4.7 says entries are "based on the beginning
+of track data minus 8 (i.e. the beginning of the Memory Allocation Variables for
+this table)". The fixture resolves this to a base of 0 (the alloc vars at file
+offset 0): entry value is already an absolute file offset. The alternative bases
+(8, 400, 408, 416) give 0/80 valid blobs. **Believe the fixture: C = 0.**
+
+---
+
+## 3. The 48/54-byte sequence-data blob
+
+Spec §4.6/§4.7: "The sequencer data format is not currently documented" — we
+record only what the fixture shows. The blob begins with its own length as a
+big-endian 32-bit long-word (spec's "Data Size" convention).
+
+`tests/fixtures/single_seq_default.bin` (216 bytes): alert `06 00 00 00 30 00`
+(size 0x30 = 48, flag 0 = sequence). Layout: `[48-byte blob][168-byte preset]`.
+The blob is `00 00 00 30` followed by 44 zero bytes — i.e. an empty sequence.
+
+In `all_seq.bin`:
+
+- **70 blobs are 48 bytes**: `00 00 00 30` + 44 zero bytes. (empty sequences)
+- **10 blobs are 54 bytes**: `00 00 00 36` + 40 zero bytes +
+  `00 00 00 30 00 00 00 06 80 e9` (the last 10 bytes are identical in all 10).
+
+Full 54-byte blob (all 10 identical):
+```
+00 00 00 36  00 00 00 00  00 00 00 00  00 00 00 00
+00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00
+00 00 00 00  00 00 00 00  00 00 00 30  00 00 00 06
+80 e9
+```
+How to check:
+```
+python3 -c "
+import struct
+d=open('tests/fixtures/all_seq.bin','rb').read()
+tbl=[struct.unpack('>I',d[8+i*4:8+i*4+4])[0] for i in range(100)]
+from collections import Counter
+print(Counter(struct.unpack('>I',d[v:v+4])[0] for v in tbl if v))
+"   # -> Counter({48: 70, 54: 10})
+```
+
+The blobs at table indices 70..79 are the 54-byte ones and are referenced by
+preset slots 0..9 (whose `seq` field = 70..79). The 48-byte blobs (indices 0..69)
+are referenced by preset slots 10..79. **verified**.
+
+No further field-level meaning is assigned (undocumented).
+
+---
+
+## 4. Preset word table (`[4316:4516]`)
+
+100 big-endian 16-bit entries. **80 are non-zero** (entries 0..79); entries
+80..99 are zero. **verified**.
+
+### Constant C (preset table)
+
+**C = 4308.** Entry value + 4308 = absolute offset of the referenced 168-byte
+preset. Verified on all 80 non-zero entries: each result lands inside the preset
+area at `4516 + 168*k` for a unique `k` in 0..79.
+
+How to check:
+```
+python3 -c "
+import struct
+d=open('tests/fixtures/all_seq.bin','rb').read()
+pt=[struct.unpack('>H',d[4316+i*2:4316+i*2+2])[0] for i in range(100)]
+nz=[v for v in pt if v]
+print('nonzero=',len(nz))
+hits=sum(1 for v in nz if (v+4308-4516)%168==0 and 0<=(v+4308-4516)//168<80)
+print('hits=',hits)
+"   # -> nonzero= 80 hits= 80
+```
+
+Semantics: entry `i` is the preset offset for sequence/preset slot `i`. Non-zero
+means that slot is defined. The mapping is a cyclic shift by 10:
+entry 0..69 → preset slots 10..79; entry 70..79 → preset slots 0..9 (because
+those 10 presets carry `seq` 70..79). This is consistent with the preset's own
+`seq` field (byte 0 of the preset) and the 54-byte blobs above. **verified.**
+
+Alloc vars at `[4308:4316]` = `00 00 35 50 ff ff e0 7c` (empirical, not
+interpreted).
+
+---
+
+## 5. Alloc vars `[0:8]`
+
+`00 00 5b 6a 00 00 00 15` (empirical). The trailing byte `0x15 = 21` equals
+the global-block size; treat as empirical, not spec fact. `0x5b6a = 23402` not
+interpreted. **verified bytes only.**
+
+---
+
+## 6. The 168-byte preset (§4.8.2)
+
+Offsets within a preset:
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | Sequence Number | 0..99; which sequence blob this preset uses |
+| 1 | 1 | Sequence Flags | |
+| 2 | 16 | Name | ASCII, bit 7 = mute status (Note 3); display = byte & 0x7F |
+| 18 | 2 | Bar Length | big-endian 16-bit, 0..999 |
+| 20 | 2 | Time Signature | 16-bit |
+| 22 | 4 | Edit Start Point 1 | preserve verbatim |
+| 26 | 4 | Edit Start Point 2 | preserve verbatim |
+| 30 | 1 | Tempo | 25..250 (0 observed on 10 empty presets) |
+| 31 | 1 | Number of Song Steps | 0..255 |
+| 32 | 112 | Tracks 1..8 | 8 × 14 bytes (§4.8.1) |
+| 144 | 8 | Track Pile | Note 6: byte 0 = primary track; bytes 1..7 = non-zero layered track numbers |
+| 152 | 11 | Preset Effect | 10 bytes + effect number byte (§5.1) |
+| 163 | 3 | Size of Sequence | 24-bit; preserve |
+| 166 | 2 | Reserved | preserve |
+
+Total 168. **verified** (single fixture and all 80 presets decode without error).
+
+Name field: bit 7 carries mute status (Note 3). Display decode is `bytes & 0x7F`.
+Never strip or alter bit 7 on round-trip. Verified: all 80 presets have the first
+8 name bytes with bit 7 set and the rest clear (`Preset-NN       `).
+
+How to check (single fixture):
+```
+python3 -c "
+d=open('tests/fixtures/single_seq_default.bin','rb').read()
+p=d[48:48+168]
+print('len',len(p))
+print('name raw',p[2:18].hex())
+print('name disp',bytes(b&0x7F for b in p[2:18]))
+print('edit1',p[22:26].hex(),'edit2',p[26:30].hex())
+print('seqsize+reserved',p[163:168].hex())
+"   # -> len 168, edit1 00000000, edit2 00000000, seqsize+reserved 0000000000
+```
+
+### Track byte 8 (§4.8.1) — verified bit positions
+
+```
+byte8 = (midi_status << 6) | (pressure << 4) | (midi_channel & 0x0F)
+```
+- bits 7-6: MIDI Status — 0=BOTH, 1=LOCAL, 2=MIDI, 3=*EXT*
+- bits 5-4: Pressure — 0=NONE, 1=KEY, 2=CHANNEL
+- bits 3-0: MIDI Channel (0-based stored, 1..16 displayed)
+
+**verified against all 640 tracks (80 presets × 8):**
+- status (>>6) is 1 (LOCAL) for all 640 tracks.
+- pressure ((>>4)&3) is 1 (KEY) for all 640 tracks.
+- channel (&0x0F) is 0..7 for tracks 1..8 (displayed 1..8), plus 10/11 on two
+  tracks (the unit's base channel 10/11, 0-based/1-based).
+
+How to check:
+```
+python3 -c "
+import collections
+d=open('tests/fixtures/all_seq.bin','rb').read()
+ps=4516
+st=collections.Counter(); pr=collections.Counter(); ch=collections.Counter()
+for k in range(80):
+    p=d[ps+k*168:ps+(k+1)*168]
+    for t in range(8):
+        b=p[32+t*14+8]
+        st[b>>6]+=1; pr[(b>>4)&3]+=1; ch[b&0x0F]+=1
+print('status',dict(st),'pressure',dict(pr),'channel',dict(ch))
+"   # -> status {1:640} pressure {1:640} channel {0:79,1:79,...,7:80,10:1,11:1}
+```
+
+### Track OFF resolution (UI-critical)
+
+The fixture does **not** exercise BOTH/MIDI/*EXT* or NONE/CHANNEL — every track has
+status=LOCAL and pressure=KEY. Therefore the fixture cannot confirm the meaning of
+status value 3 (*EXT*). However, the fixture does settle where the OFF state lives:
+
+- Tracks 2..8 of every preset have full parameter data (sound, volume, channel, …)
+  yet their status byte is still LOCAL (1) — identical to the sounding track 1.
+  So OFF is **not** encoded in the status byte.
+- The pile byte for tracks 2..8 is 0 in all 80 presets, while track 1's pile byte
+  is 1. Tracks with pile byte 0 are the panel's "—" (off) tracks.
+
+**Conclusion (supported by the fixture): the track on/off toggle lives in the pile
+byte — 0 = off (not active/layered), n = on (track n active/layered in the pile).
+The primary track (pile byte 0) is always on. Status value *EXT* (3) remains
+spec-defined but unverified by this fixture; do not map OFF to it.** Marked
+empirical/unverified for the *EXT* interpretation; the pile-based OFF is verified
+against the fixture's observed data.
+
+### Other track bytes (verified values)
+
+| Byte | Spec field | Fixture value (all 640 tracks) |
+|---|---|---|
+| 0-1 | Sound Number (Note 5) | 0x0000..0x0007 (INT sounds 0..7) on default presets |
+| 2 | Volume (0..127) | 127 |
+| 3 | Pan (-128..127; -128=SOUND) | 128 (-128 = SOUND) |
+| 4 | Timbre (0..127) | 0 |
+| 5 | Release (-64..63) | 0 |
+| 6 | reserved (spec) | 0x80 in all 640 tracks — preserve verbatim; meaning unknown |
+| 7 | Output (0..4 DRY/FX1/FX2/VOICE/CONTROL) | 4 (CONTROL) |
+| 9 | Sustain (bit 7) packed with MIDI Program (bits 6..0) | 0x80..0x87 (sustain ON, program 0..7) |
+| 10 | Key Range Low (21..108) | 21 (A0) |
+| 11 | Transposition (-59..59) | 0 |
+| 12 | Key Range High (21..108) | 108 (C8) |
+| 13 | reserved | 0 |
+
+How to check byte 6 / 9 etc.:
+```
+python3 -c "
+import collections
+d=open('tests/fixtures/all_seq.bin','rb').read(); ps=4516
+c=collections.Counter()
+for k in range(80):
+    p=d[ps+k*168:ps+(k+1)*168]
+    for t in range(8):
+        tr=p[32+t*14:32+(t+1)*14]
+        c[tr[6]]+=1
+print('byte6',dict(c))
+"   # -> byte6 {128: 640}
+```
+
+---
+
+## 7. Global parameters (last 21 bytes)
+
+`[17956:17977]` = `00 00 00 00 10 d4 7f 00 02 00 02 02 02 01 00 00 01 00 00 00 35`
+(21 bytes). **verified bytes.**
+
+The spec (§4.7) and the German manual (Part 8) do **not** document the field
+layout of this block. The manual Part 2 documents the system-bank parameters
+(MIDI Mode OMNI/POLY/MULTI/MONO A/MONO B; Base Channel 1..16; Retransmit;
+Preset Prog; MIDI Loop/XCtrl 1..95; Controllers/System Excl; Prog Change; All
+Note Off; Master Tune; Global Bend) but gives no byte mapping. Best-effort
+guesses below are single-data-point and **unverified**.
+
+| Idx | Hex | Dec | Best guess (low confidence) |
+|---|---|---|---|
+| 0 | 00 | 0 | reserved / zero |
+| 1 | 00 | 0 | reserved / zero |
+| 2 | 00 | 0 | reserved / zero |
+| 3 | 00 | 0 | reserved / zero |
+| 4-5 | 10 d4 | 4308 | echoes alert size / track-data end offset (structural) |
+| 6 | 7f | 127 | unknown (possibly master-tune offset or mask) |
+| 7 | 00 | 0 | reserved / zero |
+| 8 | 02 | 2 | candidate: MIDI Mode = MULTI (if 0=OMNI,1=POLY,2=MULTI,3=MONO A,4=MONO B) — matches unit config; unverified (other 2s at 10-12) |
+| 9 | 00 | 0 | reserved / zero |
+| 10 | 02 | 2 | unknown (same value as idx 8) |
+| 11 | 02 | 2 | unknown (same value as idx 8) |
+| 12 | 02 | 2 | unknown (same value as idx 8) |
+| 13 | 01 | 1 | candidate: Base Channel = 1 (0-based?) — conflicts with config base channel 10; alternatively a flag |
+| 14 | 00 | 0 | reserved / zero |
+| 15 | 00 | 0 | reserved / zero |
+| 16 | 01 | 1 | candidate: Preset Prog / Retransmit / a boolean flag |
+| 17 | 00 | 0 | reserved / zero |
+| 18 | 00 | 0 | reserved / zero |
+| 19 | 00 | 0 | reserved / zero |
+| 20 | 35 | 53 | candidate: XCtrl controller number (range 1..95) — unverified |
+
+How to check bytes:
+```
+python3 -c "
+d=open('tests/fixtures/all_seq.bin','rb').read()
+g=d[-21:]
+print(g.hex())
+for i,b in enumerate(g): print(i,b)
+"   # -> 00 00 00 00 10 d4 7f 00 02 00 02 02 02 01 00 00 01 00 00 00 35
+```
+
+No field-level claims here should be treated as spec fact. The parser should
+preserve these 21 bytes verbatim on round-trip.
+
+---
+
+## 8. Effect block (preset bytes 152..162)
+
+11 bytes per §5.1: 10 parameter bytes + effect number byte (byte 10 of the 10-byte
+structure, i.e. preset offset 162). Six parameter sets (§5.2.1..5.2.6) selected by
+effect number (0..12). Modulation sources (§5.1.2). Effect number mapping
+(§5.1.1): 0 CONCERT HALL … 12 CMPRSS+DIST+VERB. The fixture's 80 presets all
+carry effect bytes `38 06 20 10 25 00 8f 54 20 20 00` (effect number 0 =
+CONCERT HALL). **verified bytes only.**
+
+---
+
+## 9. Contradictions / notes vs. spec
+
+1. Alert 07 "size" (0x10D4 = 4308) equals the track-data end offset, not the
+   3900-byte payload size. Spec §3.1.8 calls it "size of the sequence data
+   segment"; the fixture shows it includes the 408-byte header. Use count only.
+2. Track table base C = 0, although §4.7's "beginning of track data minus 8"
+   wording suggests a non-zero base. Fixture supports C = 0 (all 80 entries valid).
+3. Track byte 6 (spec "reserved") is 0x80 in all 640 tracks, not 0. Preserve
+   verbatim; meaning unknown.
+4. Tempo (byte 30) is 0 on 10 presets (out of spec range 25..250) — likely
+   empty/uninitialized presets; parser should not reject, preserve verbatim.
+5. No preset in the fixture exercises MIDI Status values BOTH/MIDI/*EXT*, Pressure
+   values NONE/CHANNEL, or layered piles beyond a single primary track. Those
+   code paths are unverified by this fixture.
+6. The spec says preset table has "100 word entries" — confirmed (200 bytes);
+   only 80 non-zero (matches alert count).
+
+---
+
+## 10. Cross-references
+
+- `tests/fixtures/single_seq_default.bin` — single sequence dump (48-byte blob +
+  168-byte preset); confirms preset layout and edit-point/seq-size fields.
+- `tests/fixtures/all_seq.bin` — full dump analyzed here.
+- Throwaway verification script: `/tmp/opencode/sqrex/verify_layout.py`.
+- German manual: `/tmp/opencode/sqrplusd.txt` (Part 2 system bank, Part 3
+  presets, Part 8 SysEx storage).
+- English spec: `SQ1-SysEx.md` §4.6–§4.8.2, §3.1.7/3.1.8.
