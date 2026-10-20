@@ -6,6 +6,16 @@
 What is open. *How* anything was resolved goes in
 `docs/RESOLUTION_NOTES.md`.
 
+## Status, 2026-10-21 (MULTI mode & presets)
+
+The MULTI-mode feature landed on `feature/multi-and-fx`: the unit's 80
+presets are read, browsed and edited (eight tracks and the one shared
+effect), and written back to the unit's **Edit Preset** buffer behind the
+write gate. Item 3 is closed by it. What remains is in that item's tail:
+storing a preset to a memory slot still needs the unit's ENTER, because no
+SysEx message stores one. `docs/RESOLUTION_NOTES.md` §11 records how the
+framing was measured.
+
 ## Status, 2026-09-20 (first session)
 
 The protocol is transcribed from Ensoniq's specification v1.43 and
@@ -45,9 +55,12 @@ interface rather than global.
 unit's SysEx device byte uses, and on this single-timbral instrument that
 is the same number as the send channel.
 
-What remains open: a write path. Ensoniq's specification v1.43 documents
-only dump *requests* (commands 01-05) — nothing that stores a sound — so
-`tests/test_hardware.py` still skips its write test with that reason.
+What remains open: a sound-write path. Ensoniq's specification v1.43
+documents only dump *requests* (commands 01-05) — nothing that stores a
+sound — so `tests/test_hardware.py` still skips its sound-write test with
+that reason. A preset write path exists now (RESOLUTION_NOTES §11): it
+sends a whole preset to the unit's **Edit Preset** buffer, and stores
+nothing without the unit's ENTER.
 
 
 ## 2. The four captured command messages — RESOLVED
@@ -69,17 +82,30 @@ request and that an editor drove the front panel instead. Section 3.1.2
 to 3.1.6 documents five of them. Nothing here presses buttons; the
 function exists only so the capture is explicable.
 
-## 3. Presets and sequences are not read
+## 3. Presets and sequences are not read — RESOLVED 2026-10-21
 
-**Status:** open, by choice for now.
+**Status:** closed. Presets are read and editable now; the framing is in
+`docs/RESOLUTION_NOTES.md` §11 and the byte map in
+`docs/PRESET-FRAMING.md`.
 
 The unit holds 80 presets (performance setups) and a sequencer. Message
 types `04` and `05` carry sequences, under a handshake protocol with ACK
-and NAK and a one-second timeout. The manual describes saving presets
-over SysEx but no message type for them was seen in any of the 116 files.
+and NAK and a one-second timeout. The manual describes saving presets over
+SysEx but no message type for them was seen in any of the 116 files. That
+was the gap: there is a message type, and it is 04/05, and the all-dump
+layout is measured now.
 
-ensqsqed browses sounds. Presets would be a second pane; sequences are a
-different program.
+`read_current_preset` / `read_all_presets` read them; `sqcli multi`, and
+`m` / `x` / `p` in the browser, edit the eight tracks and the effect;
+`sqcli send` writes an edited preset back. Two fixtures, captured on the
+unit, pin the layout.
+
+**What remains open: storing to a memory slot without the front panel.**
+No SysEx message stores a preset; the unit holds the edit in its Edit Preset
+buffer until somebody presses ENTER, and driving the front panel via virtual
+buttons is deliberately out of scope. The 21-byte global block, the *EXT*
+MIDI status and the 54-byte blobs' trailing bytes are also undecoded
+(RESOLUTION_NOTES §11). Sequences themselves are still a different program.
 
 ## 4. The browser — DONE 2026-09-20
 

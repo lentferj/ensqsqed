@@ -227,6 +227,9 @@ database with ratings, tags and notes.
   * rating
   V rating filter
   C category
+  m multi tracks
+  x effect
+  p preset list
   t tags
   n note
   z undo
@@ -238,6 +241,80 @@ database with ratings, tags and notes.
   ? help
   q quit
   ```
+
+## MULTI mode & presets
+
+The browser edits sounds. A **preset** is the other thing the unit holds: a
+performance setup of eight tracks — each with its own sound, mix, key range and
+MIDI settings — and one effect that all eight share. The SQ-R's MULTI mode is
+the panel's reading of that: each track that is on receives on its own MIDI
+channel, and a track that is off does not receive at all. Three keys reach it.
+
+- **`p` — the eighty presets.** Reads them all in one message (about twelve
+  seconds, and it says so), lists them by the unit's own number and name, and
+  hands the chosen one to the editors.
+- **`m` — the eight-track editor.** The preset's eight tracks as a table.
+- **`x` — the effect editor.** The preset's one effect.
+
+The track editor's columns are grouped, and `tab` cycles the groups the way
+rxved's does. Two columns are in every group — `trk`, the track's own number,
+and `on`, whether the track is in the pile — then:
+
+| group | columns | what the panel calls them |
+|---|---|---|
+| **PRG** | `spot`, `name`, `prog` | the sound — group and slot — its name, and the program change it answers to |
+| **MIDI** | `ch`, `status`, `press`, `sustain` | the MIDI channel (1-16), Status BOTH/LOCAL/MIDI/*EXT*, Pressure NONE/KEY/CHANNEL, and the sustain switch |
+| **MIX** | `vol`, `pan`, `timbre`, `rel`, `out` | Volume 0-99, Pan SOUND or -98..+99, Timbre 0-99, Release -64..+64, Output DRY/FX1/FX2/VOICE/CONTROL |
+| **KEY** | `low`, `high`, `transp` | the key range as note names (A0..C8) and the transpose (octave and semitone) |
+
+`⏎` edits the cell under the cursor — a list to pick from when the values are
+words, a number to type when they are numbers — a digit starts that number,
+`+`/`-` nudge it, and `space` switches the whole track on or off. A track's
+on/off state lives in the **pile**, not the MIDI status byte: the status byte
+says BOTH/LOCAL/MIDI/*EXT* and has no off at all, while the panel shows a track
+as `—` when it is off. The primary track cannot be switched off.
+
+The effect editor lists the thirteen effects by the panel's own names (CONCERT
+REVERB … CMPRSS+DIST+VERB), then the parameters of the active set, the FX1/FX2
+mix, and the modulation destination/source/amount. The rows come from the
+model, not from a hand-written list, so a byte that holds two parameters (the
+modulation destination and source share one) is two rows that each mask the bits
+they own.
+
+**A change is sent as a whole preset** — the sequence data and the 168 bytes of
+the preset — because this protocol has no field-level write. The unit takes it
+into its **Edit Preset** buffer and its display says *"Press ENTER to save new
+preset"*. **Storing it is a front-panel act, and nothing this program does
+stores a preset**: there is no SysEx message that stores one, and the editors
+are deliberately fenced off from the front panel. The write gate (`w`) must be
+armed first, and every change is read back and compared byte for byte — a
+refused or unmatched write is reported, not assumed.
+
+Two MULTI rules are worth knowing, and both live on the unit:
+
+- **MIDI Mode=MULTI is a setting in the unit's System bank**, not a message
+  this program can send. Set it on the unit; the screen says so where it
+  matters.
+- **Never put a track on the base channel while Preset Prog is ON**, and give
+  one track per channel — the lowest track number wins a channel.
+
+Command line:
+
+```sh
+sqcli multi                        # the eight tracks of the preset the unit is on
+sqcli multi --preset 12            # one of the eighty stored presets (reads all of them)
+sqcli multi --out p.syx            # write the raw dump (the wire bytes `send` takes)
+sqcli presets                      # the current preset as .syx (silent)
+sqcli presets --all                # all eighty, as .syx (silent)
+sqcli send preset-current.syx --yes   # WRITE it into the unit's Edit Preset
+```
+
+**What this deliberately does not do.** It does not store a preset to a memory
+slot: a stored slot changes only when somebody presses ENTER on the unit, and
+the editors never press it. It does not decode the 21-byte global block, the
+*EXT* MIDI status, or the trailing bytes of the ten 54-byte sequence blobs — the
+dumps do not exercise them, and `docs/RESOLUTION_NOTES.md` says so. And it does
+not change what the unit is playing by moving the cursor: reading is silent.
 
 ## What it knows
 

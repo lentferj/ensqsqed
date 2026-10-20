@@ -212,3 +212,121 @@ undertaken, because the protocol already agrees byte for byte with the
 manufacturer's own worked example and the only thing firmware analysis
 could add is a second opinion on a settled question. The ROM layout is
 recorded here so that anyone who does take it up starts further along.
+
+## 11. MULTI mode (presets) & FX — how it was established (2026-10-21)
+
+The SQ-R's presets and their effect had not been read before this. This
+section records how the framing was measured, what the parsers now rely on,
+and what remains unverified. Everything here was probed on one real SQ-R
+Plus, base channel 11, on 2026-10-20. The byte-accurate contract the
+parsers implement is `docs/PRESET-FRAMING.md`; that document is the
+authority, and this one adds the *why* and the probes behind it.
+
+**Probe chronology.** Three read-only probes, in order, established the read
+path.
+
+1. **T1 — the all-dump layout (offline).** `tests/fixtures/all_seq.bin`
+   (17977 bytes) was decoded without hardware and mapped field by field;
+   `docs/PRESET-FRAMING.md` is the result. It confirms the one-line rule the
+   parsers use: `preset_area_start = len(dump) − 21 − 168·count`, where
+   `count` is the last byte of the alert that precedes the dump. For this
+   fixture that is `17977 − 21 − 168·80 = 4516`. A second fixture,
+   `tests/fixtures/single_seq_default.bin` (216 bytes), pins the single-preset
+   layout: a 48-byte sequence-data blob followed by the 168-byte preset.
+2. **T2 — the edit-buffer semantics (hardware).**
+   `tools/probe_preset_write.py` read the current preset, sent it back
+   unchanged, changed one byte, sent again, and restored. Its run log is
+   `/tmp/opencode/sqrex/probe_write.log`, its snapshot
+   `/tmp/opencode/sqrex/probe_snapshot_before.bin`. It established the write
+   handshake and what a read-back returns (below). Its findings are written
+   into `docs/PRESET-FRAMING.md` §9.
+3. **T12 — live end-to-end** was planned but had not run when this section
+   was written; `/tmp/opencode/sqrex/e2e.log` does not exist yet. It is the
+   one remaining confirmation, and it is not a blocker for the read path,
+   which the two fixtures already pin.
+
+**The alert that precedes a dump carries a size and, for the all-dump, a
+count.** For the all-sequence dump the alert is command 07 and its body
+`00 00 10 D4 50` means size 4308 and count 80. The "size" is not the raw
+sequence payload (3900 bytes) but the offset at which the track-data region
+ends — the specification's "size of the sequence data segment" includes the
+408-byte header. The parser must not use the size to find the preset area;
+it uses the count only. For the single-sequence alert (command 06, body
+`00 00 00 30 00`) the size is 48 — the sequence-data segment only, not the
+168-byte preset that follows it in the type-04 message. Both are measured,
+not read.
+
+**The track-data table's constant C is 0.** Section 4.7 of the
+specification says its entries are "based on the beginning of track data
+minus 8", which reads like a non-zero base. The fixture resolves it: entry
+value + 0 = absolute file offset, and all 80 non-zero entries land on a
+plausible self-describing blob (70 × 48 B, 10 × 54 B). Bases 8, 400, 408
+and 416 give no valid blobs. The parser uses C = 0.
+
+**A track's on/off state lives in the pile, not the MIDI status byte.** The
+specification's track structure has no off state at all — byte 8's status
+field says BOTH, LOCAL, MIDI or *EXT*. The manual's panel shows a track as
+`—` when it is off. In all 80 presets, tracks 2–8 carry full parameter data
+(sound, volume, channel, …) **and the same status byte as the sounding track
+1** — LOCAL (1) — so the status byte cannot be where OFF lives. The pile is:
+track 1's pile byte is 1, tracks 2–8's are 0, and 0 is the panel's `—`. The
+parsers therefore read and write the on/off state through the pile, and the
+status value *EXT* (3) is left alone — no dump exercises it.
+
+**The pan rule is stated by the model, not settled by the documents.** Note 7
+says a value stored 0–127 and shown 0–99 is converted through a 128-entry
+table, and that for a negative internal value the sign bit is ignored to get
+the table index. That makes the pan byte a sign-and-magnitude pair, with
+0x80 — a "-0" the panel has no use for — reserved for the word SOUND. So
+0x80 is SOUND, any other top-bit byte is a left pan (0x81 = −1, 0xFF = −99),
+and a top-bit-clear byte is a right pan (0x00 = 0, 0x7F = +99). The manual
+prints the panel's range as −98..+99 while the table reaches −99 at the hard
+left; no dump this project has holds anything but SOUND, so the difference
+of one is at an end nothing exercises. `pan_display` / `pan_stored` state
+the rule.
+
+**The modulation destination/source nibble split was settled by the
+fixture.** The specification prints the destination and source as two rows
+at one offset and does not say which half of the byte each takes. Its mask
+for the destination ("XXXx") says high bits, and the fixture agrees: the
+effect byte at that offset is `0x25` in every preset, which read high-first
+is destination 2 (FX1-MIX) and source 5 (MODPEDAL), and read the other way is
+an out-of-range destination 5. The destination takes the high four bits and
+the source the low four; the first row of any shared byte takes the high
+bits.
+
+**Write path and Edit-Preset semantics (T2).** A preset is received as the
+specification's two-message handshake: the alert (command 06, size = the
+sequence-data length only, flag 0 = sequence), then the ACK, then the
+type-04 dump of `[sequence data][168-byte preset]`. The unit answers the
+alert with an ACK in about **eleven milliseconds** every time (nine
+handshakes over three runs), well inside the specification's one-second
+window, and never with a NAK or silence. After the send, command 03 returns
+the **Edit Preset**, not the stored slot: a one-byte change (track 1 volume
+127→126) was visible in the read-back, and the restore returned the original
+bytes byte for byte. So apply-then-verify is meaningful, but **the
+verification does not mean the preset is stored** — the unit is holding it in
+a buffer and the display says "Press ENTER to save new preset". Storing is a
+front-panel act; there is no message that does it, and the app says so. A
+read before any write is the stored preset; a read after one is the Edit
+Preset.
+
+**MULTI mode is a System-bank setting on the unit.** The SQ-R has no SysEx
+write for system parameters, so MIDI Mode=MULTI cannot be set from here;
+the screens say so. The manual's Part 3 gives the receive rule: each track
+that is on receives on its own MIDI channel; never put a track on the base
+channel while Preset Prog is ON; one track per channel, and the lowest track
+number wins a channel.
+
+**Open questions.**
+
+- The 21-byte trailing global block is decoded only as bytes; its field
+  layout is undocumented, and the single fixture's values are not enough to
+  map it. It is preserved verbatim.
+- MIDI status *EXT* (3) is spec-defined but unverified by any dump.
+- The ten 54-byte sequence blobs carry ten trailing bytes (`00 00 00 30 00
+  00 00 06 80 e9`) identical in all ten; their meaning is unknown.
+- No dump exercises BOTH/MIDI status, NONE/CHANNEL pressure, a layered pile
+  beyond one primary track, or any pan other than SOUND.
+- Storing a preset to a memory slot still needs the unit's ENTER; driving the
+  front panel via virtual buttons is deliberately out of scope.
