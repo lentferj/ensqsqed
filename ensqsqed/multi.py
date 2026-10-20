@@ -1335,3 +1335,21 @@ class MultiScreen(ModalScreen[None]):
             "edits are refused — the app has not opened the write path",
             refused=True,
         )
+
+    # --- the app's seam ----------------------------------------------------
+
+    def redraw(self) -> None:
+        """Draw the table again from the model.
+
+        **Cross-task fix (T8).**  The app's undo puts the *previous*
+        preset back into the live model -- the model's bytes are what
+        the next edit is built on -- and the table has to say so.  The
+        screen's own :meth:`result` knows about one cell; the track
+        pile and the sound a track plays are not fields, so they are not
+        cells it can put back on its own, and the app asks for the whole
+        table to be drawn again.
+
+        The table is rebuilt rather than repainted, because the columns
+        are the same columns but the cells are not the same cells.
+        """
+        self._build_table()

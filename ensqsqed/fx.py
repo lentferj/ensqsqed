@@ -747,3 +747,17 @@ class FxScreen(ModalScreen[None]):
         """``Z``: every change back."""
         if self._on_undo is not None:
             self._on_undo(None)
+
+    # --- the app's seam ----------------------------------------------------
+
+    def redraw(self) -> None:
+        """Draw the rows again from the model.
+
+        **Cross-task fix (T8).**  The app's undo puts the *previous*
+        effect back into the live model -- the model's bytes are what
+        the next edit is built on -- and the rows have to say so.  The
+        screen's own :meth:`result` redraws the one row it knows about;
+        the whole table is a different set of rows when the effect type
+        has changed, so it is rebuilt.
+        """
+        self._rebuild()

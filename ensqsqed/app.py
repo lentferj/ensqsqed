@@ -51,6 +51,7 @@ import argparse
 import sys
 import threading
 import time
+from dataclasses import fields
 from typing import Any, Dict, List, Optional, Tuple
 
 from textual import work
@@ -60,11 +61,15 @@ from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Input, Static
 
+from ensqsqed.fx import FxScreen
+from ensqsqed.multi import COLUMN_VIEWS, ON_COLUMN, MultiScreen, PresetListScreen
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
 from sq import messages as msg
+from sq.bridge import AllPresetsDump, DeviceError, PresetMismatch
 from sq.favorites import Favorites, Favorite
+from sq.presets import Preset, sound_word
 from vinsynlib.favorites import rating_cell
 from vinsynlib import keys
 from vinsynlib.cli import add_common_arguments, make_parser, validate_common
@@ -82,7 +87,14 @@ from vinsynlib.ui.report import ReportScreen
 from vinsynlib.ui.work import BusyGate
 from vinsynlib.undo import Record, UndoLog
 
-__all__ = ["EnsqsqedApp", "main", "build_parser", "KEY_HINTS", "wrap_blocks"]
+__all__ = [
+    "EnsqsqedApp",
+    "EditGate",
+    "main",
+    "build_parser",
+    "KEY_HINTS",
+    "wrap_blocks",
+]
 
 _SEP = " · "
 
@@ -184,13 +196,21 @@ class PromptScreen(ModalScreen[Optional[str]]):
 #: Built from the family's shared legend rather than hand-written: it used
 #: to be a tuple of its own, in its own order. ``keys.legend`` puts this
 #: tool's own hints in the one place the family leaves for them -- after
-#: `n note`, before `i device` -- and this tool's are the scan key, the two
-#: rating keys, and the ones the write path adds (edit program, mix, global,
-#: mode select, gate, undo, undo all). ``w``/``z``/``Z`` are the family's
-#: canonical editor keys, spelled the family's way; this browser legend has
-#: no editor tier, so they are carried here as this tool's hints. `v` apart,
-#: every other key it binds is a shared one, which `_view_key` renames.
+#: `n note`, before `i device` -- and this tool's are the preset editors
+#: (``m``, ``x``, ``p``), the scan key, the two rating keys, and the ones
+#: the write path adds (edit program, mix, global, mode select, gate,
+#: undo, undo all). ``w``/``z``/``Z`` are the family's canonical editor
+#: keys, spelled the family's way; this browser legend has no editor
+#: tier, so they are carried here as this tool's hints. `v` apart, every
+#: other key it binds is a shared one, which `_view_key` renames.
+#:
+#: The three editor keys come first, the way the sibling nanosyned puts
+#: its own edit keys first: they are this tool's headline, and the
+#: family leaves the one place for a tool's own hints for exactly that.
 WRITE_HINTS: tuple[str, ...] = (
+    "m multi",
+    "x fx",
+    "p preset list",
     "S scan device",
     "R rebuild catalog",
     "* rating",
@@ -225,6 +245,78 @@ _BRIDGE_ERRORS: tuple[type[BaseException], ...] = (
     RuntimeError,
     SystemError,
 )
+
+
+class EditGate:
+    """Whether writes to the unit are allowed, and what to say about it.
+
+    Locked by default.  The family's ``--allow-write`` starts it armed and
+    ``w`` toggles it in the browser; either way the status line says which
+    state it is in, so the answer to "why did my edit not send?" is on
+    screen rather than in a keybinding manual.
+
+    **The gate is asked twice.**  A screen is told the state when it is
+    opened, and the app asks again for every change: the gate can be
+    closed between two changes, and a change that cannot be sent is not a
+    change.  This is the shape the sibling p2ked uses for its bursts.
+    """
+
+    def __init__(self, *, armed: bool = False) -> None:
+        self.armed = armed
+
+    def toggle(self) -> bool:
+        """Flip the gate and say what it is now."""
+        self.armed = not self.armed
+        return self.armed
+
+    def describe(self) -> str:
+        """The gate's state, in the family's words."""
+        return "write gate ARMED" if self.armed else "write gate locked"
+
+    def refuse(self, what: str) -> str:
+        """The message for a change refused because the gate is locked."""
+        return (
+            f"{what} not sent: the write gate is locked. Press w to arm it, "
+            "or start with --allow-write."
+        )
+
+
+def _plain(text: str) -> str:
+    """``text`` as markup that renders as exactly itself.
+
+    A preset's name is sixteen bytes the unit wrote, and a name holding
+    a square bracket would otherwise be read as markup.  The backslash is
+    Textual's own escape; the sibling screens have the same helper.
+    """
+    return text.replace("[", "\\[")
+
+
+#: The two editor screens, which share one write path.
+EditorScreen = MultiScreen | FxScreen
+
+
+def _copy_preset(preset: Preset) -> Preset:
+    """A copy of a preset, deep enough to be a snapshot.
+
+    The bytes are the copy: a preset that goes back to the unit is the
+    bytes it was read as, and a snapshot that is a different object with
+    the same fields is worth exactly as much.
+    """
+    return Preset.from_bytes(preset.to_bytes())
+
+
+def _column_key(field: str) -> Optional[str]:
+    """The table column that writes ``field``, or ``None``.
+
+    The columns are the screen's; the app asks the model's field names
+    for the key that shows them, because the field is what the model's
+    own API calls it and the key is what the table's cell is called.
+    """
+    for _name, columns in COLUMN_VIEWS:
+        for column in columns:
+            if column.field == field:
+                return column.key
+    return None
 
 
 class EnsqsqedApp(App):
@@ -277,6 +369,13 @@ class EnsqsqedApp(App):
         Binding("z", "undo", "Undo"),
         Binding("Z", "undo_all", "Undo all"),
         Binding("w", "toggle_write_gate", "Write gate"),
+        # The preset editors.  `m` is the eight-track editor, `x` the
+        # effect editor over the same preset, and `p` the list of the
+        # eighty presets the unit holds.  None of the three is a family
+        # key, so none of them can be mistaken for one.
+        Binding("m", "multi", "Multi"),
+        Binding("x", "fx", "FX"),
+        Binding("p", "preset_list", "Preset list"),
         Binding("slash", "search", "Search"),
         Binding("i", "device_info", "Device"),
         Binding("question_mark", "help", "Help"),
@@ -292,6 +391,7 @@ class EnsqsqedApp(App):
         favorites=None,
         config_path: Optional[str] = None,
         read_names_at_startup: bool = False,
+        allow_write: bool = False,
     ) -> None:
         super().__init__()
         self.device = device
@@ -318,6 +418,45 @@ class EnsqsqedApp(App):
         self._current_bank = self._bank_ids[0]
         self._current: List[banks.Slot] = []
         self._filling = False
+        #: The write gate. Locked unless ``--allow-write`` was given;
+        #: ``w`` toggles it. See :class:`EditGate`.
+        self._write_gate = EditGate(armed=allow_write)
+        #: The preset the editors are working on, and where it came from.
+        #:
+        #: **One live preset per session.**  ``m`` and ``x`` are two
+        #: views of the same object, so an edit made in one is an edit in
+        #: the other -- and the bytes that go to the unit are the ones
+        #: the model holds.
+        self._edit_preset: Optional[Preset] = None
+        #: The sequence data the preset plays, verbatim. It does not
+        #: change when a track is edited: the edits are in the preset's
+        #: own 168 bytes, and the sequence blob goes with them.
+        self._edit_seq_blob: Optional[bytes] = None
+        #: The preset's 168 bytes as they were read -- the original, for
+        #: the undo record and for what the session started from.
+        self._edit_preset_raw: Optional[bytes] = None
+        #: The model as it was before the change now being applied. It
+        #: is what a refused change is put back to, and what the undo
+        #: record carries.
+        self._edit_snapshot: Optional[Preset] = None
+        #: The slot the loaded preset came from, when it came from the
+        #: preset list. ``None`` when the unit's own current preset was
+        #: read, because the unit does not say which slot it is on.
+        self._edit_slot: Optional[int] = None
+        #: Whether a preset is loaded at all.
+        self._preset_loaded = False
+        #: The all-presets dump the last read produced, kept so that a
+        #: slot picked out of the list can be loaded without reading
+        #: again.
+        self._all_dump: Optional[AllPresetsDump] = None
+        #: The editor screens that are open, so that a worker that
+        #: finishes after its screen closed still has somewhere to
+        #: report -- and so that the app knows which screen an undo
+        #: belongs to.
+        self._multi_screen: Optional[MultiScreen] = None
+        self._fx_screen: Optional[FxScreen] = None
+        #: Why the last undo failed, when the failure had a sentence.
+        self._undo_reason: Optional[str] = None
         #: Raised by a second `S` to stop a device scan between slots.
         self._scan_cancel = threading.Event()
         #: True from the moment a scan is accepted until its worker says it
@@ -396,6 +535,26 @@ class EnsqsqedApp(App):
             or self._busy_gate.is_busy()
             or self._exchange.locked()
         )
+
+    @property
+    def _gate(self) -> EditGate:
+        """The write gate, and the only one there is.
+
+        The flag is a starting state rather than a second gate: two
+        gates would mean a caller could hold one the app does not
+        check, and the screen's ``w`` and the app's ``w`` toggle the
+        same object either way.
+        """
+        return self._write_gate
+
+    def action_toggle_write_gate(self) -> None:
+        """``w``: arm the write gate, or lock it again.
+
+        The state is said out loud, because a locked gate that says
+        nothing is a gate the user has to guess about.
+        """
+        self._gate.toggle()
+        self.notify_status(self._gate.describe())
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -659,7 +818,13 @@ class EnsqsqedApp(App):
             filters = f"{stars} {sign}   "
         if self.categories:
             filters += "/".join(sorted(self.categories)) + "   "
-        self.sub_title = f"{filters}{what}   ·   ch {self._channel() + 1}"
+        editing = ""
+        if self._preset_loaded and self._edit_preset is not None:
+            # The preset the editors are working on is named here, so
+            # that the browser says which preset an edit would change.
+            name = self._edit_preset.name.strip() or "(no name)"
+            editing = f"   ·   editing “{_plain(name)}”"
+        self.sub_title = f"{filters}{what}   ·   ch {self._channel() + 1}{editing}"
 
     # --- navigation ---------------------------------------------------------
 
@@ -1321,6 +1486,13 @@ class EnsqsqedApp(App):
     def _undo_apply(self, record: Record) -> bool:
         """Apply one undo record. Return True on success, False on refusal."""
         payload = record.payload
+        if isinstance(payload, tuple):
+            # The preset editors' own record: the whole preset as it was
+            # before the change, sent back.  This runs on the undo's
+            # worker, inside the busy gate, so the send is one exchange
+            # with the rest of the batch and nothing can land between
+            # the write and its read-back.
+            return self._restore_preset(payload[0], payload[1])
         kind = payload.get("kind", "unknown")
         if kind == "favourite":
             # toggle is its own inverse: it flips the active flag and restores
@@ -1345,6 +1517,30 @@ class EnsqsqedApp(App):
             )
             return True
         return False
+
+    def _restore_preset(self, seq_blob: bytes, preset_raw: bytes) -> bool:
+        """Put the unit's Edit Preset back to the bytes it held before.
+
+        **The whole preset goes back**, which is the only thing this
+        protocol can do and the reason the undo record carries the whole
+        of it: the unit takes a complete preset or nothing.
+
+        **The gate is asked here too**, because an undo is a write.  The
+        change it undoes went out through the gate, but the gate can
+        have been locked since -- the undo can be pressed in the browser
+        as well as in the editor, and ``w`` is a browser key.  A locked
+        gate refuses, and the record stays on the log, because the
+        preset it holds is still the one the unit has.
+        """
+        if not self._gate.armed:
+            self._undo_reason = self._gate.refuse("the undo")
+            return False
+        try:
+            self.device.send_preset(seq_blob, preset_raw, verify=True)
+        except _BRIDGE_ERRORS as exc:
+            self._undo_reason = str(exc)
+            return False
+        return True
 
     def action_undo(self) -> None:
         self._undo(1)
@@ -1377,6 +1573,7 @@ class EnsqsqedApp(App):
     def _undo_worker(self, records: List[Record]) -> None:
         """**MIDI only.** The caller claimed the exchange; this frees it."""
         results: List[bool] = []
+        self._undo_reason = None
         try:
             with self._busy_gate, self._lock:
                 for record in records:
@@ -1397,10 +1594,591 @@ class EnsqsqedApp(App):
         for record in reversed(failed):
             self._undo_log.push(record)
         if failed:
-            self.notify_status(f"{summary}; {len(failed)} failed", refused=True)
+            reason = self._undo_reason
+            if reason:
+                self.notify_status(f"{summary} ({reason})", refused=True)
+            else:
+                self.notify_status(f"{summary}; {len(failed)} failed", refused=True)
+            return
+        if any(isinstance(record.payload, tuple) for record in records):
+            # A preset went back.  The model is the truth the next edit
+            # is built on, so it has to say what the unit holds again.
+            self._adopt_restored_preset(records, results)
+            self._say_to_editor("restored the preset as it was")
             return
         self._refresh_current_bank()
         self._update_detail(self.query_one("#slot-table", DataTable).cursor_row)
+
+    # --- the preset editors -------------------------------------------------
+    #
+    # Three keys open three things over one live preset: `m` the eight
+    # tracks, `x` the effect, `p` the list of the eighty presets the
+    # unit holds.  The two editors are views of the same object, so an
+    # edit made in one is an edit in the other.
+    #
+    # **Reading is silent, writing is not.**  A read of the current
+    # preset is one message; the all-presets dump is 17977 bytes and
+    # takes about twelve seconds, which is why `p` says so before it
+    # starts rather than after.
+    #
+    # **A write reaches the Edit Preset buffer and nothing else.**  The
+    # unit displays "Press ENTER to save new preset", and no message in
+    # this protocol stores a preset: storing it is the user's front
+    # panel act.  Every sentence the app writes after a send says so.
+
+    def action_multi(self) -> None:
+        """``m``: the eight tracks of the preset in hand.
+
+        The editor is over one live :class:`sq.presets.Preset`, and the
+        session keeps it: ``x`` opens the effect editor over the same
+        object, so the two screens are two views of one preset rather
+        than two copies of it -- a copy would be a screen that could
+        show a value the unit never accepted.
+        """
+        if self._preset_loaded and self._edit_preset is not None:
+            self._push_multi_screen()
+            return
+        self._read_preset(open_fx=False)
+
+    def action_fx(self) -> None:
+        """``x``: the effect of the preset in hand."""
+        if self._preset_loaded and self._edit_preset is not None:
+            self._push_fx_screen()
+            return
+        self._read_preset(open_fx=True)
+
+    def action_preset_list(self) -> None:
+        """``p``: the eighty presets the unit holds.
+
+        Reading them all is one message and about twelve seconds, so the
+        status line says what is happening before it starts rather than
+        after: a screen that appears twelve seconds later with no
+        explanation is a screen that looks like a hang.
+        """
+        if self._busy:
+            self.notify_status("busy", refused=True)
+            return
+        # Main thread; see action_select for why it is claimed here.
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("busy", refused=True)
+            return
+        self.notify_status("reading 80 presets (about 12 s, silent)...")
+        self._preset_list_worker()
+
+    def _read_preset(self, *, open_fx: bool) -> None:
+        """Claim the exchange and read the unit's current preset."""
+        if self._busy:
+            self.notify_status("busy", refused=True)
+            return
+        # Main thread; see action_select for why it is claimed here.
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("busy", refused=True)
+            return
+        self._read_preset_worker(open_fx)
+
+    @work(thread=True)
+    def _read_preset_worker(self, open_fx: bool) -> None:
+        """**MIDI only** -- the preset is decoded on the main thread."""
+        failure: Optional[BaseException] = None
+        current = None
+        try:
+            with self._busy_gate, self._lock:
+                current = self.device.read_current_preset()
+        except AttributeError:
+            failure = RuntimeError("this device does not answer preset requests")
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        if failure is not None:
+            self.call_from_thread(
+                self.notify_status, f"preset: {failure}", refused=True
+            )
+            return
+        self.call_from_thread(self._adopt_preset, current, open_fx)
+
+    def _adopt_preset(self, current, open_fx: bool) -> None:
+        """Take the unit's preset into the session.  Main thread.
+
+        **The slot is not known.**  The unit does not say which of its
+        eighty preset locations it is on, so the session's slot stays
+        empty and the sentences after a send cannot name one.
+        """
+        try:
+            preset = Preset.from_bytes(current.preset_raw)
+        except ValueError as exc:
+            self.notify_status(f"preset: {exc}", refused=True)
+            return
+        self._edit_preset = preset
+        self._edit_seq_blob = current.seq_blob
+        self._edit_preset_raw = current.preset_raw
+        self._edit_snapshot = _copy_preset(preset)
+        self._edit_slot = None
+        self._preset_loaded = True
+        self._update_subtitle()
+        if open_fx:
+            self._push_fx_screen()
+        else:
+            self._push_multi_screen()
+
+    @work(thread=True)
+    def _preset_list_worker(self) -> None:
+        """**MIDI only** -- the all-presets dump, about twelve seconds."""
+        failure: Optional[BaseException] = None
+        dump = None
+        try:
+            with self._busy_gate, self._lock:
+                dump = self.device.read_all_presets()
+        except AttributeError:
+            failure = RuntimeError("this device does not answer preset requests")
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        if failure is not None:
+            self.call_from_thread(
+                self.notify_status, f"presets: {failure}", refused=True
+            )
+            return
+        self.call_from_thread(self._show_preset_list, dump)
+
+    def _show_preset_list(self, dump) -> None:
+        """The list of the eighty presets.  Main thread.
+
+        The list is shown when the data has arrived, not before: a modal
+        with nothing to do for twelve seconds is a modal that looks
+        broken.  The rows carry the unit's own names, read with the
+        mute bit cleared and never written back.
+        """
+        try:
+            rows: List[Tuple[int, bytes]] = [
+                (slot, dump.presets_raw[index])
+                for slot, index in sorted(dump.slot_offsets().items())
+            ]
+        except (DeviceError, IndexError, ValueError) as exc:
+            self.notify_status(f"presets: {exc}", refused=True)
+            return
+        self._all_dump = dump
+        screen = PresetListScreen(rows, current=self._edit_slot, progress_note=None)
+        self.push_screen(screen, self._preset_picked)
+
+    def _preset_picked(self, slot: Optional[int]) -> None:
+        """A preset was picked out of the list: load it into the session.
+
+        **Loading is not writing.**  The unit is not touched: the
+        preset is decoded here and the editor is opened over it, and
+        nothing reaches the instrument until a change is applied.
+        """
+        if slot is None:
+            return
+        dump = self._all_dump
+        if dump is None:
+            self.notify_status("the preset list was read a long time ago", refused=True)
+            return
+        # The command line's own two helpers know how a slot in the
+        # dump pairs with the sequence it plays, and that pairing is the
+        # fiddly part of the layout (docs/PRESET-FRAMING.md section 4).
+        # The import is here rather than at the top because that module
+        # is a command-line program, and this is a browser.
+        from ensqsqed import cli
+
+        try:
+            preset, seq_blob = cli.preset_from_dump(dump, slot)
+        except SystemExit as exc:
+            self.notify_status(str(exc), refused=True)
+            return
+        self._edit_preset = preset
+        self._edit_seq_blob = seq_blob
+        self._edit_preset_raw = preset.to_bytes()
+        self._edit_snapshot = _copy_preset(preset)
+        self._edit_slot = slot
+        self._preset_loaded = True
+        self._update_subtitle()
+        self._push_multi_screen()
+        self.notify_status(
+            f"preset {slot + 1} loaded into the editor — the unit is "
+            f"untouched until a change is applied"
+        )
+
+    # --- the editors themselves ---------------------------------------------
+
+    def _push_multi_screen(self) -> None:
+        """Open the eight-track editor over the live preset."""
+        preset = self._edit_preset
+        if preset is None:
+            self.notify_status("no preset is loaded", refused=True)
+            return
+        screen = MultiScreen(
+            preset,
+            on_apply=self._apply_multi,
+            on_undo=self._undo_from_screen,
+            on_sound_picked=self._pick_sound,
+            allow_write=self._gate.armed,
+            say_=self.notify_status,
+            name_for=self.catalog.display_name,
+        )
+        self._multi_screen = screen
+        self.push_screen(screen, self._editor_closed)
+
+    def _push_fx_screen(self) -> None:
+        """Open the effect editor over the live preset."""
+        preset = self._edit_preset
+        if preset is None:
+            self.notify_status("no preset is loaded", refused=True)
+            return
+        screen = FxScreen(
+            preset,
+            on_apply=self._apply_fx,
+            on_undo=self._undo_from_screen,
+            say_=self.notify_status,
+            allow_write=self._gate.armed,
+        )
+        self._fx_screen = screen
+        self.push_screen(screen, self._editor_closed)
+
+    def _editor_closed(self, _result: Any = None) -> None:
+        """An editor screen was closed."""
+        self._multi_screen = None
+        self._fx_screen = None
+
+    # --- the write path -----------------------------------------------------
+
+    def _apply_multi(self, preset: Preset, description: str) -> None:
+        """A change made in the eight-track editor."""
+        self._apply_preset(preset, description, self._multi_screen)
+
+    def _apply_fx(self, preset: Preset, description: str) -> None:
+        """A change made in the effect editor."""
+        self._apply_preset(preset, description, self._fx_screen)
+
+    def _apply_preset(
+        self, preset: Preset, description: str, screen: Optional[EditorScreen]
+    ) -> None:
+        """One change to the live preset: the gate, the send, the record.
+
+        **This is the only place a change can be stopped before it
+        reaches the wire.**  The screen offers the change and has
+        already put it in the model -- that is how the table can show it
+        straight away -- so the check has to live here, or a second
+        caller of this method could simply not make it.
+
+        **The whole preset goes.**  This protocol has no field-level
+        write: the unit takes a complete preset, the sequence data
+        followed by the 168 bytes, and nothing else.  So one changed
+        byte means one whole dump, and the dump is read back and
+        compared afterwards.
+        """
+        if not self._preset_loaded or self._edit_seq_blob is None:
+            self._refuse_change(screen, preset, description, "no preset is loaded")
+            return
+        if not self._gate.armed:
+            self._refuse_change(
+                screen, preset, description, self._gate.refuse(description)
+            )
+            return
+        if self._busy:
+            self._refuse_change(screen, preset, description, "busy")
+            return
+        # Main thread; see action_select for why it is claimed here.
+        if not self._exchange.acquire(blocking=False):
+            self._refuse_change(screen, preset, description, "busy")
+            return
+        self._apply_preset_worker(preset, description, screen)
+
+    @work(thread=True)
+    def _apply_preset_worker(
+        self, preset: Preset, description: str, screen: Optional[EditorScreen]
+    ) -> None:
+        """**MIDI only** -- the send and its read-back are one operation.
+
+        A write and its verification are not split across threads: a
+        read landing between them would be read back as the write's
+        result, which is exactly the failure this machinery exists to
+        catch.
+        """
+        failure: Optional[BaseException] = None
+        mismatch: Optional[BaseException] = None
+        try:
+            with self._busy_gate, self._lock:
+                self.device.send_preset(
+                    self._edit_seq_blob or b"",
+                    preset.to_bytes(),
+                    verify=True,
+                )
+        except PresetMismatch as exc:
+            # Its own case, and its own sentence: the unit took the
+            # dump and holds something else.
+            mismatch = exc
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(
+            self._change_applied, preset, description, screen, failure, mismatch
+        )
+
+    def _change_applied(
+        self,
+        preset: Preset,
+        description: str,
+        screen: Optional[EditorScreen],
+        failure: Optional[BaseException],
+        mismatch: Optional[BaseException],
+    ) -> None:
+        """What the write path did with a change.  Main thread."""
+        if failure is not None:
+            self._refuse_change(
+                screen, preset, description, f"{description} not sent: {failure}"
+            )
+            return
+        if mismatch is not None:
+            self._refuse_change(
+                screen, preset, description, f"{description} not sent: {mismatch}"
+            )
+            return
+        # It landed.  The undo record carries the bytes that were there
+        # before, so that `z` can put them back: the whole preset, which
+        # is the only thing this protocol can send.
+        before = self._edit_snapshot
+        raw = before.to_bytes() if before is not None else self._edit_preset_raw
+        if raw is not None:
+            self._undo_log.push(Record(description, (self._edit_seq_blob, raw)))
+        self._edit_snapshot = _copy_preset(preset)
+        self._tell_screen(screen, True, self._store_sentence(description))
+
+    def _refuse_change(
+        self,
+        screen: Optional[EditorScreen],
+        preset: Preset,
+        description: str,
+        message: str,
+    ) -> None:
+        """Say no, and put the change back.
+
+        **The screen changes the model before it calls**, so that the
+        table can show the change at once; a refusal here therefore has
+        to undo that.  The model goes back to the snapshot -- which is
+        the state before this change and nothing else, because only one
+        change is ever in flight -- and the screen is told which cell to
+        put back, so that what is on screen is what the unit holds.
+        """
+        cell = self._changed_cell()
+        self._restore_model(preset)
+        self._tell_screen(screen, False, message, cell=cell)
+
+    def _restore_model(self, preset: Preset) -> None:
+        """Put the live model back to the snapshot.
+
+        Only the three parts an edit can touch: the tracks, the pile and
+        the effect.  The rest of the preset is not editable here and was
+        not changed.
+        """
+        snapshot = self._edit_snapshot
+        if snapshot is None:
+            return
+        preset.tracks = list(snapshot.tracks)
+        preset.pile = snapshot.pile
+        preset.effect = snapshot.effect
+
+    def _changed_cell(self) -> Optional[Tuple[int, str]]:
+        """Which cell of the track editor changed, as ``(index, column key)``.
+
+        The screen's callback says what changed in words; this works it
+        out from the model instead, because the words are for people and
+        the cell is what a rollback needs.  The snapshot is the model as
+        it was before the change, so the difference between the two *is*
+        the change.
+        """
+        snapshot = self._edit_snapshot
+        preset = self._edit_preset
+        if snapshot is None or preset is None:
+            return None
+        for index, (before, after) in enumerate(zip(snapshot.tracks, preset.tracks)):
+            if before == after:
+                continue
+            for field in fields(before):
+                if getattr(before, field.name) == getattr(after, field.name):
+                    continue
+                key = _column_key(field.name)
+                if key is not None:
+                    return index, key
+            # A field with no column of its own -- the sound a track
+            # plays is one -- is put back by the app, and the table is
+            # drawn again after it.
+            return None
+        if snapshot.pile != preset.pile:
+            # The pile says which tracks are on; the byte that changed
+            # names the track it was about.
+            for position, (old, new) in enumerate(zip(snapshot.pile, preset.pile)):
+                if old != new:
+                    return position, ON_COLUMN.key
+        return None
+
+    def _tell_screen(
+        self,
+        screen: Optional[EditorScreen],
+        ok: bool,
+        message: str,
+        *,
+        cell: Optional[Tuple[int, str]] = None,
+    ) -> None:
+        """Tell the editor what the write path did.
+
+        The screen's own ``result`` is the seam: it puts the cell back
+        when the answer is no, and says the sentence on the line the
+        user is looking at -- the app's status line is the dimmed
+        backdrop behind the modal.  The table is drawn again afterwards,
+        because the model is the truth and the table is a picture of it.
+        """
+        if screen is None:
+            self.notify_status(message, refused=not ok)
+            return
+        if isinstance(screen, MultiScreen):
+            screen.result(ok, message, cell=cell)
+        else:
+            screen.result(ok, message)
+        self._redraw_screen(screen)
+
+    def _redraw_screen(self, screen: Optional[EditorScreen]) -> None:
+        """Draw the editor again from the model.
+
+        The screens redraw the one cell their own ``result`` knows
+        about; the whole table is drawn here, because the model's pile
+        and the sound a track plays are not fields and so are not cells
+        the screen can put back on its own.
+        """
+        if screen is None:
+            return
+        try:
+            screen.redraw()
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+
+    def _say_to_editor(self, message: str) -> None:
+        """Say one sentence on the open editor's own line.
+
+        The app's status line is behind the modal, so a sentence written
+        there is written where nobody is looking.
+        """
+        screen = self._multi_screen or self._fx_screen
+        if screen is None:
+            self.notify_status(message)
+            return
+        screen.say(message)
+
+    def _store_sentence(self, description: str) -> str:
+        """What the app says after a change has landed.
+
+        **The unit is holding the change in its Edit Preset buffer**, and
+        storing it is a front-panel act: this protocol has no message
+        that stores a preset.  So the sentence says so every time, and
+        names the slot when the app knows which one the preset came
+        from -- which it does after a pick out of the preset list, and
+        does not after a read of the unit's own current preset.
+        """
+        where = ""
+        if self._edit_slot is not None:
+            where = f" into slot {self._edit_slot + 1}"
+        return (
+            f"{description} — sent. The unit holds it in the Edit Preset "
+            f"buffer; press ENTER/SAVE on the unit to store it{where}."
+        )
+
+    def _undo_from_screen(self, count: Optional[int]) -> None:
+        """``z`` and ``Z`` inside an editor: the app's undo.
+
+        A modal screen cuts the app's binding chain, so the screens
+        serve these keys themselves and call in here -- and this is
+        where ``z`` gets pressed, after an edit made in the editor.
+        """
+        if count is None:
+            self.action_undo_all()
+        else:
+            self.action_undo()
+
+    def _adopt_restored_preset(
+        self, records: List[Record], results: List[bool]
+    ) -> None:
+        """The undo put a preset back: say so in the model.
+
+        The model is what the next edit is built on, so it has to be
+        the bytes the unit holds again -- and the screen has to be
+        told, because its table is a picture of the model and a picture
+        of the old model is a lie.
+
+        **The last send wins.**  The plan is newest first, so the state
+        the unit holds now is the payload of the *oldest* record in the
+        batch that landed -- and the records are gone from the log by
+        then, which is why they are read here and not off the log.
+        """
+        restored: Optional[bytes] = None
+        for record, ok in zip(records, results, strict=True):
+            if ok and isinstance(record.payload, tuple):
+                restored = record.payload[1]
+        if restored is None:
+            return
+        try:
+            preset = Preset.from_bytes(restored)
+        except ValueError:
+            return
+        live = self._edit_preset
+        if live is not None:
+            live.tracks = list(preset.tracks)
+            live.pile = preset.pile
+            live.effect = preset.effect
+        self._edit_snapshot = _copy_preset(preset)
+        self._redraw_screen(self._multi_screen or self._fx_screen)
+
+    # --- the sound picker ---------------------------------------------------
+
+    def _pick_sound(self, index: int, number: int) -> None:
+        """The app's sound picker, for the track under the cursor.
+
+        The screens do not own a picker: the app has the catalog and the
+        groups, so the app runs it.  The list offered here is the bank
+        the browser is on -- the one on the screen -- so the two panes
+        and the editor agree about what is where.
+        """
+        preset = self._edit_preset
+        if preset is None:
+            return
+        slots = banks.slots(self._current_bank)
+        if not slots:
+            return
+        names = [
+            self.catalog.display_name(slot.bank_id, slot.number) or f"{slot.number:03d}"
+            for slot in slots
+        ]
+        track = preset.tracks[index]
+        current = track.slot - 1 if track.group == self._current_bank else 0
+
+        def picked(choice: Optional[int]) -> None:
+            if choice is None:
+                return
+            self._set_track_sound(index, slots[choice])
+
+        self.push_screen(
+            ChoiceScreen(f"track {number} — sound", names, current),
+            picked,
+        )
+
+    def _set_track_sound(self, index: int, slot: banks.Slot) -> None:
+        """Put a sound on a track, and hand the change to the write path."""
+        preset = self._edit_preset
+        if preset is None:
+            return
+        try:
+            updated = preset.tracks[index].updated(
+                sound_number=sound_word(slot.group_id, slot.number)
+            )
+        except ValueError as exc:
+            self.notify_status(str(exc), refused=True)
+            return
+        preset.tracks[index] = updated
+        name = (
+            self.catalog.display_name(slot.bank_id, slot.number) or f"{slot.number:03d}"
+        )
+        self._apply_multi(preset, f"track {index + 1} sound → {name}")
 
     # --- scan & rebuild -----------------------------------------------------
 
@@ -1783,6 +2561,9 @@ Keys
   t n       tags, note
   * V       rating, rating filter
   C         filter by category
+  m         the eight tracks of the preset (Multi editor)
+  x         the preset's effect (FX editor)
+  p         the list of the eighty presets
   z Z       undo, undo all
   w         toggle write gate (armed by --allow-write)
   S         learn ROM/Card/Drum names (selects each sound; asks first)
@@ -1790,6 +2571,22 @@ Keys
   i         what the unit is playing
   ?         this screen
   q         quit
+
+The preset editor
+
+  `m` opens the eight-track editor over the preset the unit is on, `x`
+  opens the effect editor over the same preset, and `p` reads all
+  eighty presets and lets you pick one to edit. Reading is silent; the
+  list of eighty takes about twelve seconds and says so.
+
+  A change is sent as a whole preset -- the sequence data and the 168
+  bytes of the preset -- because this protocol has no field-level
+  write. The unit takes it into its Edit Preset buffer and its display
+  says "Press ENTER to save new preset": **storing it is a front panel
+  act**, and nothing this program does stores a preset.
+
+  `z` puts the previous preset back, the whole of it. The editors are
+  behind the write gate, so arm it with `w` before editing.
 """
 
 
@@ -1804,6 +2601,7 @@ def build_parser() -> argparse.ArgumentParser:
         catalog=True,
         config=True,
         favorites=True,
+        allow_write=True,
     )
     return parser
 
@@ -1886,6 +2684,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         favorites=store,
         config_path=config_path,
         read_names_at_startup=True,
+        allow_write=bool(getattr(args, "allow_write", False)),
     )
     app._live_names_path = live_names_path
     try:
