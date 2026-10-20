@@ -20,11 +20,15 @@
 
 """Talking to an SQ-R.
 
-**Nothing here has been run against an SQ-R.** The instrument was not
-patched into the MIDI bay while it was written. Every message is
-transcribed from Ensoniq's specification, and the framing was checked the
-only way it could be without hardware: by generating the specification's
-own worked example and comparing byte for byte. It matches.
+**Verified against a real SQ-R on 2026-10-20**, on base channel 11: the
+Single Sound Dump Request returned 415 bytes and the Internal Sound Banks
+Dump Request returned all eighty sounds with their names. The unit was
+cabled **crosswise** on a multi-port interface -- its MIDI IN on the
+interface's output 2, its MIDI OUT on input 1 -- which is why
+:meth:`SqBridge.autodetect` now listens on every input of an interface
+while each of its outputs sends, rather than assuming a port answers on
+itself. Before that change the sweep could not find this rig at all, even
+though every request was correct.
 
 Two things the specification gives that shape the code:
 
@@ -47,7 +51,7 @@ makes the instrument play; :meth:`read_current_sound` says so and
 from __future__ import annotations
 
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sq import banks
 from sq import config as cfg
@@ -314,6 +318,26 @@ class SqBridge:
         )
         return m.from_nibbles(packet.payload)
 
+    # --- selecting, which is the one thing that changes what plays --------
+
+    def select(self, target: "banks.Slot", *, with_effect: bool = False) -> None:
+        """Select ``target`` on the unit. **This changes what is playing.**
+
+        Always the group selector first, then the sound: the two are
+        separate program changes on this instrument, and the second means
+        whatever the last selector said. A drum kit's program change is
+        absolute, so it gets no selector.
+
+        ``with_effect`` puts program change 123 first, which asks the unit
+        to bring the next sound's effect too (MULTI mode). The manual is
+        explicit that the selector goes *between* 123 and the real program
+        change, which is the order :func:`sq.banks.select_messages` emits.
+        """
+        for message in banks.select_messages(
+            target, self.channel, with_effect=with_effect
+        ):
+            self._out.send_message(list(message))
+
     # --- discovery ----------------------------------------------------------
 
     @classmethod
@@ -323,7 +347,7 @@ class SqBridge:
         config_path: str = cfg.DEFAULT_PATH,
         remembered: Optional[Tuple[str, str]] = None,
         scan: bool = False,
-        channel: int = 0,
+        channel: Optional[int] = None,
         on_try: Optional[Callable[[str], None]] = None,
     ) -> "SqBridge":
         """Open the unit, sweeping every port only when that is necessary.
@@ -358,16 +382,26 @@ class SqBridge:
         ``remembered`` defaults to what ``config_path`` holds. It is a
         parameter so a caller can pass a pair it has already read, and so a
         test can say what the file says without writing one.
+
+        ``channel`` defaults to the base channel remembered in
+        ``config_path``. That is the unit's SysEx device byte as well as the
+        channel a program change goes out on, so a launch that remembers the
+        unit on channel 11 must probe on 11 rather than sweep from 1.
         """
         remembered = (
             remembered if remembered is not None else cfg.load_port_pair(config_path)
         )
+        if channel is None:
+            channel = cfg.load_channel(config_path)
+        if channel is None:
+            channel = 0
+        base_channel: int = channel
 
         def probe(send: str, recv: str) -> "SqBridge":
             """One round trip to the named port. Raises if nothing answers."""
             try:
                 bridge = cls.open(
-                    send, recv_port=recv, channel=channel, timeout=PROBE_TIMEOUT
+                    send, recv_port=recv, channel=base_channel, timeout=PROBE_TIMEOUT
                 )
             except Exception as exc:
                 raise DeviceError(str(exc)) from exc
@@ -392,7 +426,7 @@ class SqBridge:
         return midi.open_remembered_or_swept(
             probe=probe,
             sweep=lambda try_hook: cls.autodetect(
-                timeout=PROBE_TIMEOUT, on_try=try_hook
+                timeout=PROBE_TIMEOUT, on_try=try_hook, start_channel=base_channel
             ),
             remembered=remembered,
             scan=scan,
@@ -406,49 +440,229 @@ class SqBridge:
         *,
         timeout: float = PROBE_TIMEOUT,
         on_try: Optional[Callable[[str], None]] = None,
+        start_channel: int = 0,
     ) -> "SqBridge":
-        """Find an SQ-R by asking each port, on each base channel, for the
+        """Find an SQ-R by asking each output port while listening on every
+        input **of the same interface**, on each base channel, for the
         sound it is on.
 
         The single-sound request is the probe rather than the bank
         request: 415 bytes against 32647, and equally silent.
 
+        **The input and output port names need not match.** A unit cabled
+        crosswise on a multi-port interface -- MIDI IN on the interface's
+        output 2, MIDI OUT on its input 1 -- answers on a different port
+        from the one the request went out on. The old sweep paired each
+        port with *itself*, so that rig could never be found. This one
+        opens the inputs of one interface at a time and polls all of them
+        while each of that interface's outputs sends, so the pair is
+        discovered rather than assumed.
+
+        Opening *every* input on the machine at once is not an option: each
+        ``MidiIn`` is an ALSA sequencer client, and a 55-port bench
+        exhausts the slots ("Cannot allocate memory"). Grouping by client
+        name keeps the count to one interface's ports, usually four or
+        eight.
+
         **This is slow, and the arithmetic is worth knowing before you
-        wait for it.** Sixteen base channels times every bidirectional
-        port times the probe timeout: on a rig with thirty ports that is
-        about five minutes before it gives up. Channel 1 is tried on every
-        port first, so a unit left on the default is found in the first
-        pass -- but a unit that is switched off is found never, slowly.
-        Passing ``--port`` and ``--channel`` skips all of it, and the CLI
+        wait for it.** Sixteen base channels times every output port times
+        the probe timeout: on a rig with thirty ports that is several
+        minutes before it gives up. The channel given by ``--device-channel``
+        (``start_channel``) is tried first, so a unit set to a non-default
+        channel is found in the first pass; the others follow. Passing
+        ``--port`` and ``--recv-port`` skips all of it, and the CLI
         remembers both once something answers.
         """
-        hinted = likely_ports()
-        _, outs = list_ports()
-        candidates = [
-            p
-            for p in hinted + [p for p in outs if p not in hinted]
-            if "Midi Through" not in p
-        ]
+        ins, outs = list_ports()
+        hinted = set(likely_ports())
+        groups = cls._interface_groups(ins, outs)
+        # A group whose output is named like the instrument first.
+        ordered = sorted(
+            groups.items(),
+            key=lambda item: 0 if any(p in hinted for p in item[1]["outs"]) else 1,
+        )
 
-        for channel in (0, *range(1, 16)):
-            for port in candidates:
-                if on_try is not None:
-                    on_try(f"{port} (channel {channel + 1})")
-                try:
-                    bridge = cls.open(port, channel=channel, timeout=timeout)
-                except Exception:
+        for channel in ((start_channel + i) % 16 for i in range(16)):
+            for _name, group in ordered:
+                pair = cls._probe_interface(group, ins, outs, channel, timeout, on_try)
+                if pair is None:
                     continue
-                try:
-                    bridge.read_current_sound(timeout=timeout)
-                except Exception:
-                    bridge.close()
-                    continue
+                send, recv = pair
+                # The pair is known now: reopen it through the ordinary
+                # constructor so the returned bridge owns its ports and the
+                # caller can close them normally.
+                bridge = cls.open(
+                    send, recv_port=recv, channel=channel, timeout=timeout
+                )
                 bridge.timeout = DEFAULT_TIMEOUT
                 return bridge
+
         raise DeviceError(
-            "no SQ-R answered a Single Sound Dump Request on any port at "
-            "any of the sixteen base channels. Check the cable, that the "
-            "unit is on, that "
-            "System Excl is ON in its System bank, and that the chain "
-            "carries its replies back to this computer."
+            "no SQ-R answered a Single Sound Dump Request on any output "
+            "port, on any of the sixteen base channels, with the inputs of "
+            "its own interface listening. Check the cable, that the unit is "
+            "on, that System Excl is ON in its System bank, and that a MIDI "
+            "cable runs from the unit's MIDI OUT back to this computer -- a "
+            "unit that plays but never answers has only one direction "
+            "cabled. If the unit's input and output are on two different "
+            "interfaces, pass --port and --recv-port explicitly."
         )
+
+    @staticmethod
+    def _interface_groups(
+        ins: List[str], outs: List[str]
+    ) -> Dict[str, Dict[str, List[str]]]:
+        """Group port names by ALSA client (interface).
+
+        A crosswise cable can only plausibly land on another port of the
+        same interface, so that is the unit of search. ``Midi Through`` is
+        skipped: it is the kernel's loopback, not an instrument.
+        """
+        groups: Dict[str, Dict[str, List[str]]] = {}
+        for kind, names in (("ins", ins), ("outs", outs)):
+            for name in names:
+                if "Midi Through" in name:
+                    continue
+                client = name.split(":", 1)[0]
+                groups.setdefault(client, {"ins": [], "outs": []})[kind].append(name)
+        return groups
+
+    @classmethod
+    def _probe_interface(
+        cls,
+        group: Dict[str, List[str]],
+        ins: List[str],
+        outs: List[str],
+        channel: int,
+        timeout: float,
+        on_try: Optional[Callable[[str], None]],
+    ) -> Optional[Tuple[str, str]]:
+        """Probe one interface's outputs, listening on all its inputs.
+
+        Returns ``(send_port, recv_port)`` for the first pair that answered
+        a Single Sound Dump on ``channel``, or ``None``. The inputs are
+        opened once for the whole interface, so a reply is caught whichever
+        of its inputs the unit is cabled to.
+        """
+        rtmidi = _rtmidi()
+        request = m.single_sound_request(channel=channel)
+        listeners = cls._open_listeners(rtmidi, group["ins"], ins)
+        try:
+            for send in group["outs"]:
+                if on_try is not None:
+                    on_try(f"{send} (channel {channel + 1})")
+                cls._drain_listeners(listeners)
+                if not cls._send_probe(rtmidi, outs, send, request):
+                    continue
+                found = cls._await_dump(listeners, channel, timeout)
+                if found is not None:
+                    return send, found
+            return None
+        finally:
+            cls._close_listeners(listeners)
+
+    @classmethod
+    def _open_listeners(
+        cls, rtmidi: Any, recvs: List[str], ins: List[str]
+    ) -> Dict[str, Any]:
+        """Open every input of one interface, best-effort."""
+        listeners: Dict[str, Any] = {}
+        for recv in recvs:
+            listener = cls._open_listener(rtmidi, ins, recv)
+            if listener is not None:
+                listeners[recv] = listener
+        return listeners
+
+    @staticmethod
+    def _drain_listeners(listeners: Dict[str, Any]) -> None:
+        """Throw away anything buffered from an earlier send."""
+        for listener in listeners.values():
+            while listener.get_message() is not None:
+                pass
+
+    @staticmethod
+    def _close_listeners(listeners: Dict[str, Any]) -> None:
+        for listener in listeners.values():
+            try:
+                listener.close_port()
+            except Exception:
+                pass
+            try:
+                listener.delete()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _open_listener(rtmidi: Any, ins: List[str], name: str) -> Any:
+        """Open one input for the sweep, or ``None`` if it cannot be had."""
+        listener = None
+        try:
+            listener = rtmidi.MidiIn(queue_size_limit=65536)
+            listener.open_port(ins.index(name))
+            # SysEx must not be filtered; timing and active sensing are
+            # noise for a dump request.
+            listener.ignore_types(sysex=False, timing=True, active_sense=True)
+            return listener
+        except Exception:
+            if listener is not None:
+                try:
+                    listener.delete()
+                except Exception:
+                    pass
+            return None
+
+    @staticmethod
+    def _send_probe(rtmidi: Any, outs: List[str], send: str, request: bytes) -> bool:
+        """Open ``send`` and put ``request`` on the wire.
+
+        Returns whether it went out. The output is closed again either way,
+        so only one output at a time is held open during the sweep.
+        """
+        port_out = None
+        try:
+            port_out = rtmidi.MidiOut()
+            port_out.open_port(outs.index(send))
+            port_out.send_message(list(request))
+            return True
+        except Exception:
+            return False
+        finally:
+            if port_out is not None:
+                try:
+                    port_out.close_port()
+                except Exception:
+                    pass
+                try:
+                    port_out.delete()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _await_dump(
+        listeners: Dict[str, Any], channel: int, timeout: float
+    ) -> Optional[str]:
+        """Poll the open inputs for the dump that answers ``channel``.
+
+        Returns the input port name it arrived on, or ``None``. Foreign
+        SysEx and the request itself echoed back by a soft-thru are
+        ignored: only a Single Sound Dump with the right device byte and
+        the right payload size counts.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for name, listener in listeners.items():
+                message = listener.get_message()
+                if message is None:
+                    continue
+                packet = m.parse(message[0])
+                if packet is None:
+                    continue
+                if packet.function != m.Function.SINGLE_SOUND_DUMP:
+                    continue
+                if packet.device != channel:
+                    continue
+                if not packet.size_is_right:
+                    continue
+                return name
+            time.sleep(0.002)
+        return None

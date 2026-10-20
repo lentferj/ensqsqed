@@ -113,8 +113,8 @@ Select. **The group is chosen with a program change:**
 
 So a program change means nothing on its own. It means whatever the last
 selector said — which may have been sent by somebody else, or by nobody.
-`sqcli reach` shows exactly what has to go out to land on one sound, and
-the browser always sends the selector first.
+`sqcli select INT 42 --dry-run` prints exactly what has to go out to land
+on one sound, and the browser always sends the selector first.
 
 The unit shows sounds as 001–080 and MIDI sends 000–079. Those are
 separate attributes and nothing converts between them silently.
@@ -123,6 +123,7 @@ separate attributes and nothing converts between them silently.
 
 ```sh
 python3 -m venv .venv
+source .venv/bin/activate
 .venv/bin/pip install -e .
 ```
 
@@ -138,18 +139,105 @@ this environment only: `.venv/bin/pip install --no-deps -e ../vinsynlib`.
 ```
 python -m ensqsqed.cli groups            # the groups and their selectors
 python -m ensqsqed.cli list ROM          # every sound in a group
-python -m ensqsqed.cli reach CARDB 42    # what it takes to select one
+python -m ensqsqed.cli select INT 42 --dry-run   # what a DAW must send
+python -m ensqsqed.cli select INT 42 --yes      # send it to the unit
 python -m ensqsqed.cli read dump.syx     # read a .syx or .mid dump
 python -m ensqsqed.cli status            # ask the unit what it is on
 python -m ensqsqed.cli names             # all 80 internal names (silent)
 ```
 
-`status` and `names` need the instrument. Pass `--port` and `--channel`
-the first time; both are remembered. Without them the sweep tries sixteen
-base channels on every port, which takes minutes.
+`status` and `names` need the instrument. Pass `--port` and `--device-channel`
+the first time; both are remembered. If the unit's MIDI IN and MIDI OUT are
+on different ports of a multi-port interface — a crosswise cable — also pass
+`--recv-port`, or let the sweep find the pair (it listens on every input of
+an interface while each output sends). Without a remembered pair the sweep
+tries sixteen base channels on every port, which takes minutes; the channel
+given by `--device-channel` is tried first.
 
 `read` takes both, and deliberately: a `.mid` in this collection held a
 message its matching `.syx` did not.
+
+## What it does
+
+ensqsqed is a terminal browser for the Ensoniq SQ-R Plus that displays
+the two numbers that actually select a sound — the group selector (124-127)
+and the program change (0-79) — on every row, plus a local favourites
+database with ratings, tags and notes.
+
+- **Two panes: groups on the left, that group's sounds on the right.**
+  The SQ-R has no Bank Select. The group is chosen with a program change
+  (124=Internal, 125=ROM, 126=Card A, 127=Card B), and every later program
+  change means whatever that one said until the next. The browser always
+  sends the selector first, and the slot pane shows both numbers the unit
+  displays (001-080) and MIDI sends (000-079). A `sel` column carries the
+  group selector — this instrument's replacement for the siblings' LSB/MSB
+  columns — and shows `—` for a drum kit, whose program change is absolute.
+
+- **Only Internal can be read.** `r` reads all eighty internal sounds in one
+  silent message and takes their names out of it. The same read runs quietly
+  at startup, so a fresh install shows names rather than blanks; what it
+  reads is kept in a sidecar beside the catalog, so the next launch opens on
+  them immediately. The other three groups have no dump request of any kind,
+  so their names come from a catalog or not at all.
+
+- **Favourites with ratings, tags and notes**, in a SQLite database in the
+  platform's own application-data directory — so a `git clean` in a
+  checkout cannot take it. Rate with `*` (0-5), filter with `V`, tag with
+  `t`, note with `n`, cycle views with `v` (all slots / bank favourites /
+  all favourites).
+
+- **Category filter** (`C`): narrow the list by the instrument's patch
+  categories. Ratings and categories stack: "soft pads I rated 4+" is one
+  filter over another.
+
+- **Read names off the synth** and they persist. `r` reads the Internal
+  bank in one silent message; what it says is kept in a sidecar file beside
+  the catalog so the browser opens showing your patches rather than the
+  factory list. `S` learns the names of the groups the unit will not dump —
+  ROM, Card A, Card B and the drum kits — by selecting each sound and
+  reading back the current-sound record. That changes what the unit is
+  playing while it runs, so it asks first, and a second `S` stops it. `R`
+  empties the catalog (favourites, ratings, tags and notes are untouched).
+
+- **Search** (`/`): case-insensitive substring search over printed names,
+  live names, tags and notes, with checkboxes to choose which fields.
+
+- **Undo/Redo** (`z`/`Z`): reverse the last change (favourite, rating, tag,
+  note, edit) or all changes. Single timeline, so `z` reverses whichever
+  came last.
+
+- **Write gate** (`w` / `--allow-write`): locked by default. Arm it to
+  enable destructive operations (future write path).
+
+- **Persistent UI state**: bank position, slot cursor, view mode, rating
+  filter and category filter are remembered between runs.
+
+- **Keys** (the legend wraps, never truncates):
+
+  ```
+  ↑↓ move
+  tab pane
+  ⏎ select on the unit
+  r read names
+  / search
+  [ ] channel
+  c set channel
+  f favourite
+  v favourites view
+  * rating
+  V rating filter
+  C category
+  t tags
+  n note
+  z undo
+  Z undo all
+  w write gate
+  S scan device
+  R rebuild catalog
+  i device
+  ? help
+  q quit
+  ```
 
 ## What it knows
 

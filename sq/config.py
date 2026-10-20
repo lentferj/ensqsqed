@@ -37,9 +37,9 @@ to be able to tell which one is unhappy.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from vinsynlib.config import DEFAULT_PATH, Settings
+from vinsynlib.config import DEFAULT_PATH, UNSET, Settings
 
 __all__ = [
     "DEFAULT_PATH",
@@ -53,6 +53,8 @@ __all__ = [
     "save_ports",
     "load_device_id",
     "save_device_id",
+    "load_ui_state",
+    "save_ui_state",
 ]
 
 _settings = Settings("ensqsqed", DEFAULT_PATH)
@@ -88,3 +90,70 @@ def load_port_pair(path: Optional[str] = None) -> Optional[Tuple[str, str]]:
     if not send:
         return None
     return (send, _settings.load_recv_port(path) or send)
+
+
+def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:
+    """Load UI state: bank index, slot cursor, view mode, categories, rating filter."""
+    data = _settings.read(path)[0]
+    result: Dict[str, Any] = {}
+    if "bank_index" in data and isinstance(data["bank_index"], int):
+        result["bank_index"] = data["bank_index"]
+    if "slot_cursor" in data and isinstance(data["slot_cursor"], int):
+        result["slot_cursor"] = data["slot_cursor"]
+    if "view_mode" in data and isinstance(data["view_mode"], str):
+        result["view_mode"] = data["view_mode"]
+    if "categories" in data and isinstance(data["categories"], list):
+        result["categories"] = data["categories"]
+    # `isinstance(True, int)` is True, so the bool check comes first or
+    # `rating_stars = true` loads as a one-star filter -- the same trap the
+    # channel setting has, on the one key where it would look like a filter
+    # rather than like a wrong MIDI channel.
+    stars = data.get("rating_stars")
+    if type(stars) is int and 0 <= stars <= 5:
+        result["rating_stars"] = stars
+        at_least = data.get("rating_at_least")
+        result["rating_at_least"] = at_least is True
+    # A TOML boolean is not an integer, and `isinstance(True, int)` is True:
+    # check the bool before anything that could widen it, or a `1` in the
+    # file would come back as a preference the user never set. `type(...) is
+    # bool` is the narrowest check and the one the comment above the stars
+    # key warns about.
+    dismissed = data.get("scan_offer_dismissed")
+    if type(dismissed) is bool:
+        result["scan_offer_dismissed"] = dismissed
+    return result
+
+
+def save_ui_state(
+    path: Optional[str] = None,
+    *,
+    bank_index: Any = UNSET,
+    slot_cursor: Any = UNSET,
+    view_mode: Any = UNSET,
+    categories: Any = UNSET,
+    rating_stars: Any = UNSET,
+    rating_at_least: Any = UNSET,
+    scan_offer_dismissed: Any = UNSET,
+) -> None:
+    """Save UI state (bank position, slot cursor, view mode, categories).
+
+    Anything left at :data:`UNSET` is not passed on, so a caller that saves
+    the view does not also rewrite the bank position. Passing ``None`` for a
+    rating key is *not* the same thing: it removes it, which is what clearing
+    a filter has to do -- the file otherwise keeps the old value and the
+    filter comes back on the next launch.
+    """
+    changes: Dict[str, Any] = {}
+    for key, value in (
+        ("bank_index", bank_index),
+        ("slot_cursor", slot_cursor),
+        ("view_mode", view_mode),
+        ("categories", categories),
+        ("rating_stars", rating_stars),
+        ("rating_at_least", rating_at_least),
+        ("scan_offer_dismissed", scan_offer_dismissed),
+    ):
+        if value is not UNSET:
+            changes[key] = value
+    if changes:
+        _settings.update(path, **changes)

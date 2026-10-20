@@ -16,22 +16,39 @@ synthetic.
 **Nothing has been tried against hardware** -- the SQ-R was not patched
 into the MIDI bay. Items 1 and 2 are both that.
 
-## 1. The bridge has never talked to the instrument
+## 1. The bridge has never talked to the instrument — RESOLVED 2026-10-20
 
-**Status:** open. `sq/bridge.py` exists and is unexercised.
+**Status:** closed. The bridge has now talked to a real SQ-R.
 
-It was written once the specification turned up, because the dump
-requests are documented (section 3.1.2-3.1.6) and transcribing a
-documented message is not the same as inventing one. What it needs, in
-order, when the SQ-R is patched in:
+On 2026-10-20, on base channel 11, the following were confirmed against
+hardware:
 
-* `sqcli` against `read_current_sound` -- 415 bytes, the smallest probe
-* `read_internal_bank` -- one request, eighty sounds, and if that works
-  the browser is essentially done
-* `autodetect`, whose sweep over sixteen base channels times every port
-  has never been run and may be too slow to be pleasant
+* `read_current_sound` — a Single Sound Dump Request returned the
+  documented 415 bytes (204-byte payload once de-nibbled), and the name
+  decoded (` Dynamic Grand`).
+* `read_internal_bank` — an Internal Sound Banks Dump Request returned all
+  eighty sounds with their names in one reply.
+* `autodetect` — found the unit, after the fix below.
 
-**Blocked on:** the SQ-R being patched in.
+**The finding that mattered was the cabling, not the protocol.** The unit
+was connected *crosswise* on an ESI M4U eX: its MIDI IN on the interface's
+output 2, its MIDI OUT on input 1. The old sweep paired each port with
+itself (`recv_port=port`), so it could never hear the reply. `autodetect`
+now groups ports by ALSA client and listens on every input of an interface
+while each of its outputs sends, so a crosswise pair is discovered instead
+of assumed. Opening *all* inputs at once exhausts ALSA sequencer clients on
+a large rig ("Cannot allocate memory"), which is why the sweep is per
+interface rather than global.
+
+`--device-channel` is also honoured now: it was parsed but ignored, so
+`ensqsqed --device-channel 11` swept from channel 1. It is the channel the
+unit's SysEx device byte uses, and on this single-timbral instrument that
+is the same number as the send channel.
+
+What remains open: a write path. Ensoniq's specification v1.43 documents
+only dump *requests* (commands 01-05) — nothing that stores a sound — so
+`tests/test_hardware.py` still skips its write test with that reason.
+
 
 ## 2. The four captured command messages — RESOLVED
 

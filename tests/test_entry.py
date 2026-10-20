@@ -18,7 +18,7 @@ REQUIRED_BITS = (
     "error:",
     "vinsynlib",
     "pip install",
-    "vinsynlib>=0.2.0",
+    "vinsynlib>=0.4.2",
 )
 
 
@@ -57,7 +57,10 @@ def test_the_cli_entry_point_says_the_same_thing(monkeypatch: Any, capsys: Any) 
     assert "error: sqcli cannot start" in capsys.readouterr().err
 
 
-def test_an_installed_library_is_reported_healthy() -> None:
+def test_an_installed_library_is_reported_healthy(monkeypatch: Any) -> None:
+    import vinsynlib
+
+    monkeypatch.setattr(vinsynlib, "__version__", "0.4.2")
     assert entry._diagnose("ensqsqed") is None
 
 
@@ -69,7 +72,7 @@ def test_an_older_library_is_named_rather_than_ignored(
     monkeypatch.setattr(vinsynlib, "__version__", "0.0.9")
     problem = entry._diagnose("ensqsqed")
     assert problem is not None
-    assert "0.2.0" in problem
+    assert "0.4.2" in problem
     assert "0.0.9" in problem
 
 
@@ -90,7 +93,8 @@ def test_a_library_that_cannot_report_a_version_reads_as_missing(
 
 
 def test_a_pre_release_at_the_floor_is_not_called_too_old() -> None:
-    """A pre-release marker is not a version: ``0.2rc1`` is ``0.2``."""
-    assert entry._release_parts("0.2rc1", 3) == (0, 2, 0)
-    assert entry._release_parts("0.2", 3) == (0, 2, 0)
-    assert entry._release_parts("0.1.x", 3) is None
+    """A pre-release marker is not a version: ``0.4.2rc1`` is ``0.4.2``."""
+    assert entry._release_parts("0.4.2rc1", 3) == (0, 4, 2)
+    assert entry._release_parts("0.4.2", 3) == (0, 4, 2)
+    # A component without leading digits makes the whole string unusable.
+    assert entry._release_parts("0.4.x", 3) is None

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import pytest
 
+from sq import banks
 from sq import bridge as b
 from sq import config as cfg
 
@@ -107,12 +108,15 @@ class _Rig:
             rig.made.append(bridge)
             return bridge
 
-        def fake_autodetect(cls, *, timeout=b.PROBE_TIMEOUT, on_try=None):
-            # Mirrors the real one's shape -- base channel 1 on every port
-            # first, then widening -- so the widening is exercised rather
+        def fake_autodetect(
+            cls, *, timeout=b.PROBE_TIMEOUT, on_try=None, start_channel=0
+        ):
+            # Mirrors the real one's shape -- start at start_channel on every port
+            # first, then wrap around -- so the widening is exercised rather
             # than stubbed away.
             rig.swept += 1
-            for channel in (0, *range(1, 16)):
+            channel_order = [(start_channel + i) % 16 for i in range(16)]
+            for channel in channel_order:
                 for name in rig.ports:
                     if on_try is not None:
                         on_try(f"{name} (channel {channel + 1})")
@@ -140,6 +144,48 @@ def _remembered(tmp_path, send=SQ_PORT, recv=""):
 
 
 # --- the normal path: trust the config ---------------------------------------
+
+
+class TestSelectSendsTheSelectorFirst:
+    """``SqBridge.select``, not just the message builder.
+
+    The browser's Enter path calls this method, and it did not exist after
+    the parity rewrite -- only the demo device had one, so the first real
+    selection raised ``AttributeError`` in a worker. These pin the wire
+    order without opening a port.
+    """
+
+    @staticmethod
+    def _bridge(channel: int = 10):
+        sent: list = []
+        bridge = object.__new__(b.SqBridge)
+        bridge._out = type(
+            "_Out",
+            (),
+            {"send_message": lambda self, message: sent.append(list(message))},
+        )()
+        bridge.channel = channel
+        return bridge, sent
+
+    def test_internal_sends_selector_then_sound(self):
+        bridge, sent = self._bridge()
+        bridge.select(banks.slot("INT", 42))
+        assert sent == [[0xCA, 124], [0xCA, 41]]
+
+    def test_a_drum_kit_sends_one_absolute_change(self):
+        bridge, sent = self._bridge()
+        bridge.select(banks.slot("DRUM", 3))
+        assert sent == [[0xCA, 82]], "a drum kit must get no group selector"
+
+    def test_multi_puts_123_before_the_selector(self):
+        bridge, sent = self._bridge()
+        bridge.select(banks.slot("INT", 42), with_effect=True)
+        assert sent == [[0xCA, 123], [0xCA, 124], [0xCA, 41]]
+
+    def test_the_channel_is_the_one_the_bridge_holds(self):
+        bridge, sent = self._bridge(channel=0)
+        bridge.select(banks.slot("ROM", 5))
+        assert sent == [[0xC0, 125], [0xC0, 4]]
 
 
 class TestTheRememberedPort:

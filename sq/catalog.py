@@ -57,6 +57,7 @@ class Entry:
     bank_id: str
     program_change: int
     name: str
+    category: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -148,6 +149,26 @@ class Catalog:
         if live is not None:
             return live
         return self.name(bank_id, program_change) or ""
+
+    def categories_in(
+        self, slots: Iterable[Tuple[str, int]]
+    ) -> Dict[str, Tuple[str, int]]:
+        """Category codes present in the given slots, with labels and counts.
+
+        Returns a mapping ``{code: (label, count)}``.
+        """
+        counts: Dict[str, int] = {}
+        for bank_id, number in slots:
+            entry = self.entry(bank_id, number)
+            if entry is not None and entry.category:
+                code = entry.category
+                counts[code] = counts.get(code, 0) + 1
+        # Use the code as the label for now; could be enhanced with a lookup table
+        return {code: (code, count) for code, count in counts.items()}
+
+    def clear(self) -> None:
+        """Remove all printed entries (live names are kept)."""
+        self._entries.clear()
 
     # --- search -------------------------------------------------------------
 

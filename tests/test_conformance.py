@@ -42,13 +42,46 @@ def test_keys_match_the_family() -> None:
     # legend promises it; what it cannot be is a BINDINGS entry, because
     # binding it would mean the App taking Enter from the table and every
     # other table key with it.
-    assert not conformance.check_bindings(
+    problems = conformance.check_bindings(
         EnsqsqedApp, favourites=True, channel=True, select=False
     )
+    # One deliberate divergence: ensqsqed moves the favourites view off the
+    # family's `F` and onto `v`. `f` writes the favourites database and `F`
+    # does not, so the shift-pair left a write one slip away from a read;
+    # `v` has no such twin. The family asks a tool that renames a shared key
+    # to say why in its own test, and these two lines are the whole of the
+    # divergence -- anything else appearing here is a real drift.
+    assert set(problems) == {
+        "F is not bound; the family binds it to cycle_favorites",
+        "cycle_favorites is not reachable from F; it is bound to v",
+    }, "\n".join(problems)
+
+
+# These are the hints this tool adds beyond the family's shared legend.
+# They are declared here so the conformance check can verify the legend
+# contains exactly the shared blocks plus these declared extras, in the
+# correct order.
+_EXTRAS = (
+    "S scan device",
+    "R rebuild catalog",
+    "* rating",
+    "V rating filter",
+    "C category",
+    "z undo",
+    "Z undo all",
+    "w write gate",
+)
 
 
 def test_the_legend_matches_the_family() -> None:
-    assert not conformance.check_legend(KEY_HINTS)
+    problems = conformance.check_legend(KEY_HINTS, extras=_EXTRAS)
+    # `v favourites view` is our divergence from the family's `F favourites view`.
+    # The family asks a tool that renames a shared key to say why in its own test,
+    # and these two lines are the whole of the divergence.
+    assert set(problems) == {
+        "the legend is missing 'F favourites view'",
+        "the legend shows 'v favourites view', which is not in the family's",
+    }, "\n".join(problems)
 
 
 def test_the_vocabulary_is_declared() -> None:
