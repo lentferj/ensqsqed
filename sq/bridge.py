@@ -548,6 +548,40 @@ class AllPresetsDump:
             blobs.append(data[offset : offset + size])
         return tuple(blobs)
 
+    def to_bytes(self) -> bytes:
+        """The dump, byte for byte, out of the parsed fields.
+
+        **The inverse of :meth:`_from_reply`**, and the reason every
+        region of the dump is kept verbatim: a dump that cannot be put
+        back together cannot be written to a file and sent on, and the
+        whole point of parsing it is to be able to keep it.
+
+        The one wrinkle is the track data: :attr:`track_blobs` is in
+        *table* order, and the unit does not lay its sequences out in
+        that order -- the fixture has the ten song sequences first in
+        the dump and last in the table.  So each blob goes back at the
+        offset its own table entry gives.
+        """
+        header = TRACK_ALLOC_BYTES + TRACK_TABLE_BYTES
+        region = bytearray(self.preset_area_start - PRESET_TABLE_BYTES - header)
+        blobs = iter(self.track_blobs)
+        for index in range(len(self.track_table) // 4):
+            offset = int.from_bytes(self.track_table[index * 4 : index * 4 + 4], "big")
+            if not offset:
+                continue
+            blob = next(blobs)
+            region[offset - header : offset - header + len(blob)] = blob
+        return b"".join(
+            [
+                self.alloc,
+                self.track_table,
+                bytes(region),
+                self.preset_table,
+                b"".join(self.presets_raw),
+                self.globals,
+            ]
+        )
+
     def slot_offsets(self) -> Dict[int, int]:
         """Which preset in the dump belongs to which sequence slot.
 
