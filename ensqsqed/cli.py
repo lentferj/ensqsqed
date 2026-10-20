@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable, Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from sq import banks
 from sq import catalog as cat
 from sq import config
 from sq import dumps
 from sq import messages as m
+from sq import presets as p
 from sq import bridge as b
 from vinsynlib.cli import (
     add_common_arguments,
@@ -380,10 +382,486 @@ def _cmd_channels(device, _args) -> None:
     print("This instrument is single-timbral; other channels are not used.")
 
 
-def _cmd_multi(device, _args) -> None:
-    """Multi-mode setup, and why a channel is silent."""
-    # The SQ-R doesn't have a multi-mode in the same sense as other instruments.
-    print("This instrument does not have a multi-mode with multiple parts.")
+def _cmd_multi(device, args) -> None:
+    """Multi-mode setup, and why a channel is silent.
+
+    **The preset is a performance setup, not a sound**: eight tracks
+    with their own sound, mix, key range and MIDI settings, one effect
+    that all eight share, and a pile that says which tracks are on.  The
+    manual's MULTI mode is the panel's reading of that pile -- each
+    track that is on receives on its own MIDI channel, and each track
+    that is off does not receive at all.
+
+    The table is the panel's own layout: the eight tracks, their MIDI
+    channel and status, the sound each one plays, and the mix and key
+    parameters beside them.  The effect and its parameters follow,
+    because all eight tracks share it.
+
+    ``--preset N`` reads one of the eighty stored presets instead of
+    the one the unit is on, which takes the whole all-presets dump and
+    so takes about twelve seconds.  ``--out FILE`` writes the raw
+    dump -- the wire bytes of the alert and the dump, which is what
+    ``send`` takes.
+    """
+    catalog = cat.load(getattr(args, "catalog", None))
+    if args.preset is None:
+        current = device.read_current_preset()
+        preset = p.Preset.from_bytes(current.preset_raw)
+        seq_blob = current.seq_blob
+        where = "current preset (edit buffer)"
+    else:
+        print(
+            "reading all eighty presets; that takes about twelve seconds...",
+            file=sys.stderr,
+        )
+        dump = device.read_all_presets()
+        preset, seq_blob = preset_from_dump(dump, args.preset)
+        where = f"preset slot {args.preset}"
+    print(multi_report(preset, where, catalog))
+    if args.out:
+        wire = preset_wire(seq_blob, preset.to_bytes(), device.channel)
+        _write_file(args.out, wire)
+        print(f"wrote {len(wire)} bytes to {args.out}")
+
+
+def _cmd_presets(device, args) -> None:
+    """Dump the presets off the unit (silent).
+
+    **A read.**  Nothing is sent but the dump request, and nothing on
+    the unit changes.
+
+    The current preset is written as the two messages the unit sends
+    for it: the alert that says how much sequence data is coming, and
+    the dump itself.  ``--all`` writes the all-presets dump instead,
+    which is one message and about 36 KB on the wire -- and which
+    ``send`` will refuse, because a whole memory is not a preset.
+
+    The default file names are ``preset-current.syx`` and
+    ``presets-all.syx``.
+    """
+    if args.all:
+        dump = device.read_all_presets()
+        path = args.out or DEFAULT_ALL_PRESETS_FILE
+        wire = m.frame(
+            m.Function.ALL_SEQUENCES_DUMP,
+            m.to_nibbles(dump.to_bytes()),
+            device=device.channel,
+        )
+        _write_file(path, wire)
+        print(f"wrote {len(wire)} bytes to {path} ({dump.count} presets)")
+        return
+    current = device.read_current_preset()
+    path = args.out or DEFAULT_PRESET_FILE
+    wire = preset_wire(current.seq_blob, current.preset_raw, device.channel)
+    _write_file(path, wire)
+    print(f"wrote {len(wire)} bytes to {path}")
+
+
+def _cmd_send(device, args) -> None:
+    """WRITE a preset dump into the unit.  **This changes the unit.**
+
+    The file is the wire bytes of a Single Sequence Dump message -- the
+    type-04 message -- which is what ``presets --out`` writes and what
+    the unit itself sends.
+
+    **What it writes is the Edit Preset.**  The unit takes the dump
+    into its edit buffer, says "Press ENTER to save new preset" and
+    blinks its Edit Preset LED; a stored slot changes only when
+    somebody presses ENTER on the front panel.  This protocol has no
+    message that stores a preset.
+
+    The dump is read back and compared byte for byte, so a refusal and
+    a mismatch are both reported rather than assumed away.
+    """
+    loaded = read_preset_file(args.file)
+    if loaded.device != device.channel:
+        print(
+            f"note: the file was captured on channel {loaded.device + 1}; "
+            f"the unit is on channel {device.channel + 1}"
+        )
+    if not args.yes:
+        print(f"about to send {args.file} to the unit.")
+        print(
+            "The unit will hold it as its Edit Preset; storing it is "
+            "ENTER on the unit's own panel."
+        )
+        if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("nothing sent")
+            return
+    try:
+        result = device.send_preset(loaded.seq_blob, loaded.preset_raw, verify=True)
+    except b.PresetRefused as exc:
+        raise SystemExit(f"error: {exc}") from None
+    except b.PresetMismatch as exc:
+        offsets = ", ".join(str(offset) for offset in exc.diff_offsets[:8])
+        print(f"mismatch: {exc}", file=sys.stderr)
+        raise SystemExit(
+            f"error: the unit did not hold what was sent; "
+            f"{len(exc.diff_offsets)} byte(s) differ at offset {offsets}"
+        ) from None
+    if result.verified:
+        print("sent: the unit took the preset, and holds it byte for byte.")
+    else:
+        print("sent: the unit took the preset; the read-back was not compared.")
+    print("That is the Edit Preset: press ENTER on the unit to store it.")
+
+
+# --- the preset, as the panel shows it -------------------------------------
+
+#: The file ``presets`` writes when it is not told otherwise.
+DEFAULT_PRESET_FILE = "preset-current.syx"
+
+#: The file ``presets --all`` writes when it is not told otherwise.
+DEFAULT_ALL_PRESETS_FILE = "presets-all.syx"
+
+#: An empty sequence: its own length word and nothing else.  This is what
+#: the unit's own single-preset dump held, and it is the fallback for a
+#: preset whose sequence cannot be paired out of the all-presets dump.
+EMPTY_SEQUENCE = b"\x00\x00\x00\x30" + b"\x00" * 44
+
+#: The one line about MULTI, under the table.
+MULTI_NOTE = (
+    "MULTI: each of the eight tracks receives on its own MIDI channel, so "
+    "the unit answers eight channels at once, and a track that is off does "
+    "not receive at all. MIDI Mode=MULTI is a setting in the unit's System "
+    "bank -- there is no message for it -- and an edited preset is stored "
+    "by pressing ENTER on the unit."
+)
+
+
+class PresetFile(NamedTuple):
+    """What a preset dump file holds.
+
+    The two halves of a Single Sequence Dump, and the channel the file
+    was captured on: the sequence data and the 168-byte preset, and the
+    unit's base MIDI channel, which is the device byte of the message.
+    """
+
+    #: The sequence data, exactly as the unit sent it.
+    seq_blob: bytes
+    #: The 168-byte preset, exactly as the unit sent it.
+    preset_raw: bytes
+    #: The base MIDI channel the message was captured on, 0-15.
+    device: int
+
+
+def _panel_name(names: Sequence[str], value: int) -> str:
+    """The panel's word for an enumerated value, or a question mark.
+
+    A dump is a fact about the instrument's memory, so a value outside
+    the documented range is shown as unknown rather than refused: the
+    rest of the table is still worth reading.
+    """
+    return names[value] if 0 <= value < len(names) else "?"
+
+
+def pile_mask(preset: p.Preset) -> str:
+    """The panel's track status mask: ``123-56-8``.
+
+    One character per track -- its number when the pile says the track
+    is on, a dash when it is off.  The manual prints exactly this above
+    the preset name (part 3, "MULTI Mode"), and the pile is where the
+    on/off state lives: the specification's track status byte has no
+    off state in it at all (``docs/PRESET-FRAMING.md`` section 6).
+    """
+    return "".join(
+        str(number) if preset.is_active(number) else "-"
+        for number in range(1, len(preset.tracks) + 1)
+    )
+
+
+def sound_cell(track: p.Track, catalog: Optional[cat.Catalog] = None) -> str:
+    """The sound a track plays, as the panel shows it.
+
+    The group's label, the sound's number as the panel counts it (from
+    1), and the name the catalog has for it when the catalog knows it.
+    The name is the catalog's, not the unit's: this is a read-only
+    command and the unit's own names are read by ``names``.
+    """
+    group_id = track.group
+    try:
+        label = banks.group(group_id).label
+    except LookupError:
+        label = group_id
+    number = track.slot
+    cell = f"{label} {number:03d}"
+    if catalog is None:
+        return cell
+    program_change = (
+        banks.DRUM_FIRST_PC + number - 1 if group_id == "DRUM" else number - 1
+    )
+    name = catalog.display_name(group_id, program_change)
+    return f"{cell} {name}" if name else cell
+
+
+def track_rows(
+    preset: p.Preset, catalog: Optional[cat.Catalog] = None
+) -> List[List[str]]:
+    """The preset's eight tracks, one row each.
+
+    The columns are the panel's: the track, whether the pile says it is
+    on, its MIDI channel, its MIDI status, its MIDI program, the sound
+    it plays, and the mix and key parameters the panel shows beside
+    them.
+
+    **Two of those columns are about the same track and are not the
+    same thing.**  ``Status`` is the panel's on/off, which the pile
+    holds -- the specification's status byte has no off state in it,
+    which is why an off track shows ``OFF`` here
+    (``docs/PRESET-FRAMING.md`` section 6).  ``Status-midi`` is the
+    MIDI status the status byte does hold: BOTH, LOCAL or MIDI.
+    """
+    rows = []
+    for number, track in enumerate(preset.tracks, start=1):
+        rows.append(
+            [
+                str(number),
+                "ON" if preset.is_active(number) else "OFF",
+                str(track.midi_channel_display),
+                _panel_name(p.STATUS_NAMES, track.status),
+                str(track.midi_program_display),
+                sound_cell(track, catalog),
+                str(track.volume_display),
+                track.pan_label,
+                f"{track.key_low_name}-{track.key_high_name}",
+                f"{track.transpose_octave:+d}/{track.transpose_semitone:+d}",
+                _panel_name(p.OUTPUT_NAMES, track.output),
+            ]
+        )
+    return rows
+
+
+def _effect_value(effect: p.Effect, row: p.EffectParam) -> str:
+    """One effect parameter as the panel prints it, or a question mark."""
+    try:
+        return str(effect.display(row))
+    except ValueError:
+        return "?"
+
+
+def effect_mix(preset: p.Preset) -> Tuple[str, str]:
+    """The effect's two mix values, as the panel shows them.
+
+    Every effect has them, and they are printed with the effect's name
+    rather than with the parameters: they are the one part of the
+    effect block that does not change with the effect's number.
+    """
+    mixes: Dict[str, str] = {}
+    for row in preset.effect.rows:
+        if row.key in ("fx1_mix", "fx2_mix"):
+            mixes[row.key] = _effect_value(preset.effect, row)
+    return mixes.get("fx1_mix", "-"), mixes.get("fx2_mix", "-")
+
+
+def effect_rows(preset: p.Preset) -> List[List[str]]:
+    """The effect's parameter rows, as the panel lists them.
+
+    The rows come from the parameter set the effect's number selects
+    (specification section 5.2).  The two mix values are not in this
+    list: they are printed with the effect's name.
+    """
+    return [
+        [row.label, _effect_value(preset.effect, row)]
+        for row in preset.effect.rows
+        if row.key not in ("fx1_mix", "fx2_mix")
+    ]
+
+
+def multi_report(
+    preset: p.Preset, where: str, catalog: Optional[cat.Catalog] = None
+) -> str:
+    """The whole ``multi`` report, as text.
+
+    Four parts: the header line (which preset this is, its name, and
+    the panel's track mask), the eight tracks as a table, the effect
+    with its parameters, and the one line about MULTI.
+    """
+    lines = [
+        f"{where}  {preset.name.strip()!r}  tracks {pile_mask(preset)}",
+        "",
+        _table(
+            track_rows(preset, catalog),
+            [
+                "Track",
+                "Status",
+                "Channel",
+                "Status-midi",
+                "Program",
+                "Sound",
+                "Vol",
+                "Pan",
+                "Key",
+                "Transpose",
+                "Output",
+            ],
+        ),
+        "",
+        f"effect  {preset.effect.name or '(an effect this project has no name for)'}",
+    ]
+    fx1, fx2 = effect_mix(preset)
+    lines.append(f"FX1 MIX {fx1}   FX2 MIX {fx2}")
+    lines.append(_table(effect_rows(preset), ["parameter", "value"]))
+    lines.append("")
+    lines.append(MULTI_NOTE)
+    return "\n".join(lines)
+
+
+# --- the wire ---------------------------------------------------------------
+
+
+def preset_wire(seq_blob: bytes, preset_raw: bytes, channel: int = 0) -> bytes:
+    """The wire bytes of one preset: the alert, then the dump.
+
+    This is what the unit sends when it answers a Single Sequence Dump
+    Request, and it is what ``send`` takes.  The alert says how much
+    sequence data is coming -- the sequence data only, not the preset --
+    and the dump is that data followed by the 168-byte preset.
+    """
+    alert = b.PresetAlert(
+        command=m.CommandType.SINGLE_SEQUENCE_ALERT,
+        size=len(seq_blob),
+        flag=b.SEQUENCE_FLAG,
+    )
+    return m.frame(m.Function.COMMAND, alert.wire_payload(), device=channel) + m.frame(
+        m.Function.SINGLE_SEQUENCE_DUMP,
+        m.to_nibbles(seq_blob + preset_raw),
+        device=channel,
+    )
+
+
+def parse_preset_message(message: bytes) -> PresetFile:
+    """The sequence data and the preset in one type-04 message.
+
+    The checks are the message's own: the head is ``F0 0F 06``, the
+    message type is 04 -- a Single Sequence Dump -- and the payload
+    de-nibbles to the sequence data followed by 168 bytes of preset.
+    The sequence data says how long it is in its own first four bytes,
+    so nothing here has to assume it.
+    """
+    if len(message) < 7:
+        raise SystemExit(
+            f"error: a preset dump message is at least 7 bytes, not {len(message)}"
+        )
+    if message[0] != m.SYSEX_START or message[1] != m.ENSONIQ_ID:
+        raise SystemExit(
+            "error: this is not an Ensoniq message: it does not start with F0 0F"
+        )
+    if message[2] != m.SQ_FAMILY:
+        raise SystemExit(
+            "error: this is not an SQ message: it does not start with F0 0F 06"
+        )
+    if message[5] != m.Function.SINGLE_SEQUENCE_DUMP:
+        raise SystemExit(
+            f"error: this is a {m.Function.name(message[5])}, not a Single "
+            f"Sequence Dump (message type 04)"
+        )
+    data = m.from_nibbles(message[6:-1])
+    if len(data) < 4:
+        raise SystemExit(
+            f"error: the dump holds {len(data)} bytes; it cannot even hold "
+            f"the size word of its sequence data"
+        )
+    size = int.from_bytes(data[:4], "big")
+    if size < 4 or len(data) != size + p.PRESET_BYTES:
+        raise SystemExit(
+            f"error: the dump holds {len(data)} bytes; its own size word "
+            f"says {size} bytes of sequence data, and a preset is "
+            f"{p.PRESET_BYTES}, so {size + p.PRESET_BYTES} were expected"
+        )
+    return PresetFile(seq_blob=data[:size], preset_raw=data[size:], device=message[4])
+
+
+def read_preset_file(path: str) -> PresetFile:
+    """The sequence data and the preset in a dump file.
+
+    The file holds the wire bytes of a Single Sequence Dump message --
+    the type-04 message -- optionally preceded by the alert that
+    announced it, which is what ``presets --out`` writes and what the
+    unit itself sends.  A file holding something else is refused by
+    name rather than guessed at.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"error: cannot read {path}: {exc}") from None
+    messages = dumps.split_sysex(raw)
+    if not messages:
+        raise SystemExit(f"error: {path} holds no SysEx message")
+    found = [
+        message
+        for message in messages
+        if len(message) > 5 and message[5] == m.Function.SINGLE_SEQUENCE_DUMP
+    ]
+    if len(found) != 1:
+        raise SystemExit(
+            f"error: {path} holds {len(found)} Single Sequence Dump "
+            f"messages; exactly one is needed"
+        )
+    return parse_preset_message(found[0])
+
+
+def preset_from_dump(dump: b.AllPresetsDump, slot: int) -> Tuple[p.Preset, bytes]:
+    """One preset slot out of an all-presets dump, and its sequence data.
+
+    The preset table maps a slot to the preset's place in the dump
+    (``docs/PRESET-FRAMING.md`` section 4), and the preset's own first
+    byte says which sequence it plays; the track-data table then points
+    at that sequence's bytes.  A slot the unit has not defined has no
+    preset, and says so.
+    """
+    offsets = dump.slot_offsets()
+    if slot not in offsets:
+        raise SystemExit(f"error: the unit has no preset in slot {slot}")
+    preset = p.Preset.from_bytes(dump.presets_raw[offsets[slot]])
+    return preset, sequence_blob(dump, preset.seqno)
+
+
+def sequence_blob(dump: b.AllPresetsDump, seqno: int) -> bytes:
+    """The sequence data a sequence number names, out of an all-presets dump.
+
+    The track-data table is a list of offsets into the dump, one per
+    sequence, and the blob there says how long it is in its own first
+    four bytes.  A sequence the unit does not have falls back to the
+    empty sequence, which is what the unit's own single-preset dump
+    held.
+    """
+    table = dump.track_table
+    if not 0 <= seqno < len(table) // 4:
+        return EMPTY_SEQUENCE
+    offset = int.from_bytes(table[seqno * 4 : seqno * 4 + 4], "big")
+    if offset == 0:
+        return EMPTY_SEQUENCE
+    used = [
+        index
+        for index in range(len(table) // 4)
+        if int.from_bytes(table[index * 4 : index * 4 + 4], "big")
+    ]
+    position = used.index(seqno)
+    if position >= len(dump.track_blobs):
+        return EMPTY_SEQUENCE
+    return dump.track_blobs[position]
+
+
+def _write_file(path: str, data: bytes) -> None:
+    """Write a file, and say so by name if it cannot be written."""
+    try:
+        with open(path, "wb") as handle:
+            handle.write(data)
+    except OSError as exc:
+        raise SystemExit(f"error: cannot write {path}: {exc}") from None
+
+
+def _preset_slot(text: str) -> int:
+    """A preset slot number, 0-79, as argparse wants it."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"preset slot {text!r} is not a number"
+        ) from None
+    if not 0 <= value < banks.PRESETS:
+        raise argparse.ArgumentTypeError(f"preset slot is 0-{banks.PRESETS - 1}")
+    return value
 
 
 def _rating_stars(value: object, flag: str) -> int:
@@ -463,9 +941,44 @@ COMMANDS: Dict[str, Callable] = {
     "inquire": _cmd_hardware,
     "channels": _cmd_channels,
     "multi": _cmd_multi,
+    "presets": _cmd_presets,
     "dump": _cmd_dump,
-    # "send": _cmd_send,  # Not implemented yet
+    "send": _cmd_send,
 }
+
+
+def _inherit(
+    parent: argparse.ArgumentParser, sp: argparse.ArgumentParser, dest: str
+) -> None:
+    """Let a family option follow the subcommand as well as precede it.
+
+    argparse only accepts a parent parser's option *before* the
+    subcommand, and ``sqcli send preset.syx --yes`` is the shape people
+    actually type.  Re-declaring the option keeps the family's own help
+    text, taken from the action just added.  ``SUPPRESS`` is the
+    load-bearing part: without it the subparser's default would
+    overwrite a value given before the subcommand.
+
+    This is the sibling project's idiom (``nanosyned`` writes it the
+    same way), not an invention here.
+    """
+    for action in parent._actions:
+        if action.dest != dest:
+            continue
+        extra: dict = {
+            "dest": action.dest,
+            "default": argparse.SUPPRESS,
+            "help": action.help,
+        }
+        # A switch must stay a switch: re-declaring --yes as a value
+        # option is how `send x.syx --yes` came to want an argument.
+        if action.nargs == 0:
+            extra["action"] = "store_true" if action.const else "store_false"
+        else:
+            extra["type"] = action.type
+            extra["metavar"] = action.metavar
+        sp.add_argument(*action.option_strings, **extra)
+        return
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -607,7 +1120,40 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("channels", help="every MIDI channel, and what it selects")
 
     # multi
-    sub.add_parser("multi", help="multi-mode setup, and why a channel is silent")
+    sp = sub.add_parser("multi", help="multi-mode setup, and why a channel is silent")
+    sp.add_argument(
+        "--preset",
+        type=_preset_slot,
+        metavar="N",
+        help=(
+            "read preset slot N (0-79) out of all eighty, not the one the "
+            "unit is on; this takes the whole all-presets dump, so it "
+            "takes about twelve seconds"
+        ),
+    )
+    sp.add_argument(
+        "--out",
+        "-o",
+        metavar="FILE",
+        help="write the raw dump to FILE (the wire bytes `send` takes)",
+    )
+
+    # presets
+    sp = sub.add_parser("presets", help="dump the presets off the unit (silent)")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="dump all eighty presets, not the one the unit is on",
+    )
+    sp.add_argument(
+        "--out",
+        "-o",
+        metavar="FILE",
+        help=(
+            "write the raw dump to FILE (default: preset-current.syx, or "
+            "presets-all.syx)"
+        ),
+    )
 
     # dump
     sp = sub.add_parser("dump", help="dump a bank or preset off the unit (silent)")
@@ -617,11 +1163,40 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("group", choices=banks.group_ids())
     dp.add_argument("number", type=int)
 
-    # send (write) - not implemented yet, but declared per spec
+    # send (write)
     sp = sub.add_parser("send", help="WRITE a dump into the unit")
-    sp.add_argument("file")
+    sp.add_argument(
+        "file",
+        help=(
+            "a Single Sequence Dump (.syx), as `presets --out` writes it: "
+            "the wire bytes of a type-04 message"
+        ),
+    )
+    # The gate may follow the command as well as precede it.
+    _inherit(parser, sp, "yes")
 
     return parser
+
+
+def _connect(args, config_path: str, channel: int) -> b.SqBridge:
+    """Open the unit.  The one place this program opens a MIDI port.
+
+    A seam, and deliberately so: the tests replace this one function
+    with a fake device, and the rest of the command line never learns
+    that a port was not opened.
+    """
+    if args.port:
+        return b.SqBridge.open(
+            args.port,
+            recv_port=(args.recv_port or config.load_last_recv_port(config_path)),
+            channel=channel,
+        )
+    return b.SqBridge.connect(
+        config_path=config_path,
+        channel=channel,
+        scan=args.scan,
+        on_try=lambda n: print(f"  probing {n}...", file=sys.stderr),
+    )
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -652,21 +1227,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     if args.command not in OFFLINE and not dry_run:
         try:
-            if args.port:
-                device = b.SqBridge.open(
-                    args.port,
-                    recv_port=(
-                        args.recv_port or config.load_last_recv_port(config_path)
-                    ),
-                    channel=channel,
-                )
-            else:
-                device = b.SqBridge.connect(
-                    config_path=config_path,
-                    channel=channel,
-                    scan=args.scan,
-                    on_try=lambda n: print(f"  probing {n}...", file=sys.stderr),
-                )
+            device = _connect(args, config_path, channel)
             try:
                 port = getattr(device, "port", None)
                 if port:
