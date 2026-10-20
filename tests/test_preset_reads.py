@@ -38,6 +38,7 @@ part of the contract.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import List
 
@@ -193,6 +194,110 @@ def test_all_presets_dump_rebuilds_byte_for_byte():
     dump = b.AllPresetsDump._from_reply(data, ALL_ALERT)
 
     assert _rebuild(dump) == data
+
+
+def test_the_dump_puts_itself_back_together_byte_for_byte():
+    """``to_bytes`` is the inverse of the parse.
+
+    The same thing the local rebuild helper above does, through the
+    method the program itself uses: a dump that cannot be written out
+    again cannot be sent on, and the whole point of keeping every
+    region verbatim is that it can.
+    """
+    data = _fixture("all_seq.bin")
+    dump = b.AllPresetsDump._from_reply(data, ALL_ALERT)
+
+    assert dump.to_bytes() == data
+    assert dump.to_bytes() == _rebuild(dump)
+
+
+def test_the_blobs_are_in_table_order_and_not_in_the_order_they_sit_in():
+    """The wrinkle the parser has to keep: table order is not physical
+    order.
+
+    The ten song sequences are the *last* ten entries of the track
+    table and the *first* ten blobs in the dump, so the blob list and
+    the physical layout are two different orders.  The parser keeps the
+    table's order and says where each blob belongs.
+    """
+    data = _fixture("all_seq.bin")
+    dump = b.AllPresetsDump._from_reply(data, ALL_ALERT)
+    offsets = [
+        int.from_bytes(dump.track_table[index * 4 : index * 4 + 4], "big")
+        for index in range(len(dump.track_table) // 4)
+    ]
+
+    # The table's own order: the empty sequences first, the songs last.
+    assert [len(blob) for blob in dump.track_blobs[:70]] == [48] * 70
+    assert [len(blob) for blob in dump.track_blobs[70:]] == [54] * 10
+
+    # The physical order: the songs sit in front of the empty ones.
+    songs = [offset for offset in offsets[70:] if offset]
+    empties = [offset for offset in offsets[:70] if offset]
+    assert max(songs) < min(empties)
+
+    # And every blob is where its own table entry says it is.
+    position = 0
+    for offset in offsets:
+        if not offset:
+            continue
+        blob = dump.track_blobs[position]
+        position += 1
+        assert data[offset : offset + len(blob)] == blob
+
+
+def test_every_preset_in_the_dump_parses():
+    """Eighty out of eighty, and every one of them comes back whole."""
+    from sq import presets
+
+    data = _fixture("all_seq.bin")
+    dump = b.AllPresetsDump._from_reply(data, ALL_ALERT)
+
+    assert len(dump.presets_raw) == 80
+    for raw in dump.presets_raw:
+        preset = presets.Preset.from_bytes(raw)
+        assert preset.to_bytes() == raw
+
+
+def test_a_track_table_entry_past_the_end_of_the_dump_is_refused():
+    """A table entry that points nowhere is said so, not followed."""
+    data = _fixture("all_seq.bin")
+    table = bytearray(data[8:408])
+    table[0:4] = (len(data) + 16).to_bytes(4, "big")
+    doctored = data[:8] + bytes(table) + data[408:]
+
+    with pytest.raises(b.DeviceError) as caught:
+        b.AllPresetsDump._from_reply(doctored, ALL_ALERT)
+    assert "past the end" in str(caught.value)
+
+
+def test_a_blob_that_claims_to_be_too_long_is_refused():
+    """The blob says how long it is, and it has to fit."""
+    data = bytearray(_fixture("all_seq.bin"))
+    # The first used entry points at the first blob; make its size
+    # word claim more than the whole dump.
+    offset = int.from_bytes(data[8:12], "big")
+    data[offset : offset + 4] = (len(data) + 1000).to_bytes(4, "big")
+
+    with pytest.raises(b.DeviceError) as caught:
+        b.AllPresetsDump._from_reply(bytes(data), ALL_ALERT)
+    assert "does not fit" in str(caught.value)
+
+
+def test_a_preset_table_entry_that_does_not_point_at_a_preset_is_refused():
+    """The word table's entries are offsets of whole presets."""
+    data = _fixture("all_seq.bin")
+    dump = b.AllPresetsDump._from_reply(data, ALL_ALERT)
+    # The first word entry is the one for slot zero.  It is an offset
+    # counted from the table's own start, and a preset is 168 bytes:
+    # one byte more is not a preset.
+    table = bytearray(dump.preset_table)
+    table[8:10] = (208 + 1).to_bytes(2, "big")
+    broken = dataclasses.replace(dump, preset_table=bytes(table))
+
+    with pytest.raises(b.DeviceError) as caught:
+        broken.slot_offsets()
+    assert "168 bytes into the preset area" in str(caught.value)
 
 
 def test_all_presets_slot_offsets_come_from_the_word_table():

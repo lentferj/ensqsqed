@@ -442,6 +442,175 @@ class TestTheSharedByte:
         assert updated.params[4] & 0xF0 == effect.params[4] & 0xF0
 
 
+class TestAValueThePanelCannotPrint:
+    """A dump may hold a byte the specification's list does not have.
+
+    The unit writes what it writes, and a preset read back from it can
+    hold a value this program has no name for.  The screen has to say
+    so on that one row: a refusal there would take the whole table
+    with it, and the rows below the bad one would never be drawn.
+    """
+
+    async def test_the_table_is_whole_and_the_bad_cell_says_so(self):
+        params = bytearray(PARAMS)
+        # Byte four holds the modulation destination in its high four
+        # bits: 5 is not one of the common reverb's five destinations.
+        params[4] = 0x55
+        preset = _preset(bytes(params))
+        screen = _screen(preset, lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#fx-table", DataTable)
+            # Every row is drawn: the bad value takes one cell, not the
+            # whole table.
+            assert table.row_count == 1 + len(preset.effect.rows)
+            row = _index_of(preset, "mod_destination")
+            assert table.get_row_at(row)[1] == "?"
+
+    async def test_a_number_the_panel_cannot_print_says_so(self):
+        params = bytearray(PARAMS)
+        # Byte two holds the detune rate, which the panel prints 0..99.
+        params[2] = 120
+        preset = _preset(bytes(params))
+        applied = []
+        said = []
+        screen = _screen(
+            preset,
+            lambda p, d: applied.append(d),
+            say_=lambda message, refused=False: said.append((message, refused)),
+        )
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#fx-table", DataTable)
+            assert table.get_row_at(_index_of(preset, "detune_rate"))[1] == "?"
+            table.move_cursor(row=_index_of(preset, "detune_rate"))
+            await pilot.pause()
+            await pilot.press("+")
+            await pilot.pause()
+            assert applied == []
+            assert said and said[-1][1] is True
+            assert "cannot print" in said[-1][0]
+
+
+class TestTheRedrawSeam:
+    """``redraw``: the table is a picture of the model."""
+
+    async def test_the_rows_are_drawn_again_from_the_model(self):
+        preset = _preset()
+        screen = _screen(preset, lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#fx-table", DataTable)
+            row = _index_of(preset, "decay_time")
+            assert table.get_row_at(row)[1] == "44"
+            # The model changes behind the screen's back, the way the
+            # app's undo changes it.
+            preset.effect = preset.effect.with_value(_row_of(preset, "decay_time"), 50)
+            screen.redraw()
+            await pilot.pause()
+            assert table.get_row_at(row)[1] == "50"
+
+    async def test_a_landed_change_redraws_the_row_it_touched(self):
+        preset = _preset()
+        screen = _screen(preset, lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.pause()
+            assert preset.effect.display(_row_of(preset, "decay_time")) == 45
+            screen.result(True, "sent", row="decay_time")
+            await pilot.pause()
+            table = app.screen.query_one("#fx-table", DataTable)
+            assert table.get_row_at(_index_of(preset, "decay_time"))[1] == "45"
+
+    async def test_a_result_about_a_row_that_is_not_shown_is_harmless(self):
+        preset = _preset()
+        screen = _screen(preset, lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen.result(True, "sent", row="no-such-row")
+            await pilot.pause()
+            assert preset.effect.display(_row_of(preset, "decay_time")) == 44
+
+
+class TestTheCancelledChoices:
+    """A choice that is not made changes nothing."""
+
+    async def test_a_cancelled_type_choice_changes_nothing(self):
+        preset = _preset()
+        applied = []
+        screen = _screen(preset, lambda p, d: applied.append(d))
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert applied == []
+            assert preset.effect.number == 0
+
+    async def test_a_cancelled_list_of_names_changes_nothing(self):
+        preset = _preset()
+        applied = []
+        screen = _screen(preset, lambda p, d: applied.append(d))
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(*(["down"] * _index_of(preset, "mod_source")))
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert applied == []
+            source = _row_of(preset, "mod_source")
+            assert preset.effect.raw(source) == 5
+
+    async def test_a_cancelled_prompt_changes_nothing(self):
+        preset = _preset()
+        applied = []
+        screen = _screen(preset, lambda p, d: applied.append(d))
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert applied == []
+            decay = _row_of(preset, "decay_time")
+            assert preset.effect.display(decay) == 44
+
+    async def test_an_empty_prompt_changes_nothing(self):
+        preset = _preset()
+        applied = []
+        screen = _screen(preset, lambda p, d: applied.append(d))
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, PromptScreen)
+            prompt.query_one("Input").value = ""
+            await pilot.press("enter")
+            await pilot.pause()
+            assert applied == []
+            decay = _row_of(preset, "decay_time")
+            assert preset.effect.display(decay) == 44
+
+
 class TestTheSeams:
     """What the application looks for, and what happens after the screen
     has gone."""

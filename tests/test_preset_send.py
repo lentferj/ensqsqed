@@ -66,6 +66,14 @@ PRESET = DUMP[48:]
 #: and the sequence/song flag (0x00 = sequence).
 PROBE_ALERT = bytes([0x06, 0x00, 0x00, 0x00, 0x30, 0x00])
 
+#: The two timing constants, as the code ships them.
+#:
+#: They are captured here, at import, because the fixture below
+#: shortens the settle for the tests' sake: the number under test is
+#: the one the program ships with, not the one the tests run with.
+SHIPPED_SETTLE = b.PRESET_SETTLE
+SHIPPED_ACK_WINDOW = b.ACK_WINDOW
+
 
 class _FakeIn:
     """A MIDI input that hands out the messages it was given."""
@@ -98,6 +106,7 @@ class _FakeUnit:
         ack: Optional[bool] = True,
         read_back: Optional[bytes] = None,
         echo: bool = False,
+        alert_size: int = 48,
     ) -> None:
         #: Whether the alert is acknowledged. ``None`` means the unit
         #: says nothing inside the window, which is the silence path.
@@ -107,6 +116,9 @@ class _FakeUnit:
         #: Whether the unit's messages come back, as they do on a
         #: chain with a soft thru.
         self.echo = echo
+        #: The size the unit's own alert carries: the length of the
+        #: sequence data it is about to send.
+        self.alert_size = alert_size
         #: The dumps the unit was sent, de-nibbled.
         self.received: List[bytes] = []
         #: For each dump received, whether the acknowledgement had
@@ -144,7 +156,7 @@ class _FakeUnit:
                     m.Function.COMMAND,
                     b.PresetAlert(
                         command=m.CommandType.SINGLE_SEQUENCE_ALERT,
-                        size=48,
+                        size=self.alert_size,
                         flag=0,
                     ).wire_payload(),
                     device=0,
@@ -321,7 +333,18 @@ def test_silence_after_the_alert_is_a_timeout(monkeypatch: pytest.MonkeyPatch):
 
 def test_the_acknowledgement_window_is_the_specifications_second():
     """The window is a second, and it is not this program's to choose."""
-    assert b.ACK_WINDOW == 1.0
+    assert SHIPPED_ACK_WINDOW == 1.0
+
+
+def test_the_settle_is_the_probe_s_half_second():
+    """The unit redraws its screen when it takes the dump, and the probe
+    waited half a second for it.  That half second is the number here."""
+    assert SHIPPED_SETTLE == 0.5
+
+
+def test_the_settle_and_the_window_are_two_different_numbers():
+    """The settle is the probe's; the window is the specification's."""
+    assert SHIPPED_SETTLE != SHIPPED_ACK_WINDOW
 
 
 # --- the verification ---------------------------------------------------------
@@ -434,6 +457,37 @@ def test_sequence_data_that_disagrees_with_its_own_size_word_is_refused():
     assert "48" in str(caught.value)
     assert "49" in str(caught.value)
     assert exchange.sent() == []
+
+
+def test_sequence_data_shorter_than_its_own_size_word_is_refused():
+    """Four bytes are the size word; fewer than that cannot be one."""
+    exchange = FakeExchangeBridge(_FakeUnit())
+
+    with pytest.raises(ValueError) as caught:
+        exchange.bridge.send_preset(b"\x00\x00", PRESET, verify=False)
+
+    assert "four bytes" in str(caught.value)
+    assert exchange.sent() == []
+
+
+def test_a_read_back_whose_sequence_data_is_a_different_length_is_an_error():
+    """Not a byte that differs: a sequence that changed size.
+
+    The comparison is byte for byte, and a sequence of another length
+    cannot be compared byte for byte at all -- so it is refused with
+    both lengths in the sentence.
+    """
+    shorter = DUMP[:44] + DUMP[48:]
+    exchange = FakeExchangeBridge(_FakeUnit(read_back=shorter, alert_size=44))
+
+    with pytest.raises(b.DeviceError) as caught:
+        exchange.bridge.send_preset(BLOB, PRESET, verify=True)
+
+    message = str(caught.value)
+    assert "44 bytes" in message
+    assert "48 bytes" in message
+    # It is not a mismatch: nothing that differs was compared.
+    assert not isinstance(caught.value, b.PresetMismatch)
 
 
 # --- the name the plan gave it -----------------------------------------------

@@ -29,6 +29,7 @@ changes an instrument: ``send`` must not write without an answer.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -75,6 +76,8 @@ class FakeDevice:
         self.sent: List[Tuple[bytes, bytes]] = []
         #: Whether the next send is refused.
         self.refuse = False
+        #: Whether a send says it verified the read-back.
+        self.verified = True
         #: The offsets a next send comes back differing at.
         self.mismatch: Optional[Tuple[int, ...]] = None
         self.closed = False
@@ -105,7 +108,9 @@ class FakeDevice:
                     read_back=None,
                 ),
             )
-        return b.PresetSent(acked=True, verified=True, diff_offsets=(), read_back=None)
+        return b.PresetSent(
+            acked=True, verified=self.verified, diff_offsets=(), read_back=None
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -242,6 +247,191 @@ def test_a_file_that_is_not_a_preset_dump_is_refused(tmp_path: Path) -> None:
         with pytest.raises(SystemExit) as caught:
             cli.read_preset_file(str(path))
         assert "error:" in str(caught.value), name
+
+
+def test_a_file_that_is_not_an_ensoniq_message_is_refused(tmp_path: Path) -> None:
+    """The head is checked: ``F0 0F`` is Ensoniq's.
+
+    The message is otherwise a preset dump -- the right type byte and
+    the right payload -- so only the head can catch it.
+    """
+    path = tmp_path / "foreign.syx"
+    path.write_bytes(
+        bytes([0xF0, 0x7D, 0x06, 0x00, 0x00, 0x04]) + b"\x00" * 8 + b"\xf7"
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.read_preset_file(str(path))
+
+    message = str(caught.value)
+    assert "error:" in message
+    assert "not an Ensoniq message" in message
+    assert "F0 0F" in message
+
+
+def test_a_file_that_is_not_a_single_sequence_dump_is_refused(tmp_path: Path) -> None:
+    """The type byte is checked: ``04`` is the preset dump.
+
+    Another dump of the unit's -- the sound bank, say -- is a
+    perfectly good Ensoniq message and not a preset.
+    """
+    path = tmp_path / "other.syx"
+    path.write_bytes(m.frame(m.Function.ALL_SOUNDS_DUMP, b"\x00" * 8))
+
+    with pytest.raises(SystemExit) as caught:
+        cli.read_preset_file(str(path))
+
+    message = str(caught.value)
+    assert "error:" in message
+    assert "Single Sequence Dump" in message
+
+    # And the parser says the same of the message itself.
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_preset_message(m.frame(m.Function.ALL_SOUNDS_DUMP, b"\x00" * 8))
+    assert "not a Single Sequence Dump" in str(caught.value)
+
+
+def test_a_file_whose_length_disagrees_with_its_own_size_word_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The payload has to de-nibble to the sequence data and 168 bytes.
+
+    The message is complete and the right type; it simply does not
+    hold what it says it holds.
+    """
+    blob, raw = p.split_single_dump(SINGLE)
+    good = cli.preset_wire(blob, raw, channel=10)
+    path = tmp_path / "short.syx"
+    path.write_bytes(good[:-41] + b"\xf7")
+
+    with pytest.raises(SystemExit) as caught:
+        cli.read_preset_file(str(path))
+
+    message = str(caught.value)
+    assert "error:" in message
+    assert "size word" in message
+    assert str(p.PRESET_BYTES) in message
+
+
+def test_a_message_too_short_to_be_a_dump_is_refused() -> None:
+    """A message shorter than a header is not a dump."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_preset_message(b"\xf0\x0f\x06\x00")
+    assert "at least 7 bytes" in str(caught.value)
+
+
+def test_a_message_that_is_not_an_sq_message_is_refused() -> None:
+    """``F0 0F 06`` is the SQ family's head."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_preset_message(
+            m.frame(m.Function.SINGLE_SEQUENCE_DUMP, b"\x00" * 8, device=0)[:2]
+            + b"\x05"
+            + m.frame(m.Function.SINGLE_SEQUENCE_DUMP, b"\x00" * 8, device=0)[3:]
+        )
+    assert "not an SQ message" in str(caught.value)
+
+
+def test_a_dump_that_cannot_even_hold_its_size_word_is_refused() -> None:
+    """Four bytes are the size word; fewer than that cannot be one."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_preset_message(
+            m.frame(m.Function.SINGLE_SEQUENCE_DUMP, b"\x00\x00", device=0)
+        )
+    assert "size word" in str(caught.value)
+
+
+def test_a_file_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
+    """A file that is not there is said so, by name."""
+    with pytest.raises(SystemExit) as caught:
+        cli.read_preset_file(str(tmp_path / "not-there.syx"))
+    message = str(caught.value)
+    assert "error:" in message
+    assert "cannot read" in message
+
+
+def test_a_file_that_cannot_be_written_is_refused(tmp_path: Path) -> None:
+    """A file that cannot be written is said so, by name."""
+    target = tmp_path / "a-directory"
+    target.mkdir()
+    with pytest.raises(SystemExit) as caught:
+        cli._write_file(str(target), b"\x00")
+    message = str(caught.value)
+    assert "error:" in message
+    assert "cannot write" in message
+
+
+def test_a_preset_slot_that_is_not_a_number_is_refused() -> None:
+    """The slot is checked before anything is opened."""
+    with pytest.raises(SystemExit):
+        cli.main(["multi", "--preset", "the first one"])
+
+
+def test_a_slot_the_unit_has_not_defined_is_refused() -> None:
+    """A slot with no preset in it is said so, by number."""
+    dump = b.AllPresetsDump._from_reply(ALL, ALL_ALERT)
+    # The word table's entry for slot 5 says "no preset here".
+    table = bytearray(dump.preset_table)
+    table[8 + 5 * 2 : 8 + 5 * 2 + 2] = b"\x00\x00"
+    doctored = dataclasses.replace(dump, preset_table=bytes(table))
+
+    with pytest.raises(SystemExit) as caught:
+        cli.preset_from_dump(doctored, 5)
+    assert "no preset in slot 5" in str(caught.value)
+
+
+def test_a_sequence_the_unit_does_not_have_falls_back_to_the_empty_one() -> None:
+    """A sequence number the track table does not name has no blob."""
+    dump = b.AllPresetsDump._from_reply(ALL, ALL_ALERT)
+
+    # A sequence number past the table.
+    assert cli.sequence_blob(dump, 500) == cli.EMPTY_SEQUENCE
+    # A sequence number the table leaves empty.
+    table = bytearray(dump.track_table)
+    table[0:4] = b"\x00\x00\x00\x00"
+    doctored = dataclasses.replace(dump, track_table=bytes(table))
+    assert cli.sequence_blob(doctored, 0) == cli.EMPTY_SEQUENCE
+
+
+def test_an_effect_value_the_panel_cannot_print_shows_a_mark() -> None:
+    """A dump may hold a byte the specification's list does not have."""
+    preset = _single_preset()
+    params = bytearray(preset.effect.params)
+    # Byte four holds the modulation destination in its high four
+    # bits: 5 is not one of the common reverb's five destinations.
+    params[4] = 0x55
+    preset.effect = p.Effect(number=preset.effect.number, params=bytes(params))
+
+    rows = cli.effect_rows(preset)
+    destination = next(row for row in rows if row[0] == "MOD DESTINATION")
+    assert destination[1] == "?"
+
+
+def test_send_says_when_the_file_was_captured_on_another_channel(
+    tmp_path: Path, device: FakeDevice, capsys: pytest.CaptureFixture
+) -> None:
+    """The device byte is the base channel, and it is in the file."""
+    blob, raw = p.split_single_dump(SINGLE)
+    path = tmp_path / "other-channel.syx"
+    path.write_bytes(cli.preset_wire(blob, raw, channel=0))
+
+    assert cli.main(["send", "--yes", str(path)]) == 0
+    out = capsys.readouterr().out
+
+    assert "captured on channel 1" in out
+    assert "the unit is on channel 11" in out
+
+
+def test_send_says_when_the_read_back_was_not_compared(
+    tmp_path: Path, device: FakeDevice, capsys: pytest.CaptureFixture
+) -> None:
+    """What was sent is said to have been sent, and nothing more."""
+    path = _dump_file(tmp_path)
+    device.verified = False
+
+    assert cli.main(["send", "--yes", str(path)]) == 0
+    out = capsys.readouterr().out
+
+    assert "not compared" in out
 
 
 def test_multi_writes_the_raw_dump(tmp_path: Path, device: FakeDevice) -> None:

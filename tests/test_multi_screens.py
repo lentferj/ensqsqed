@@ -27,6 +27,11 @@ the day the unit is refilled.  What is asserted is structure -- which
 number a row carries, which columns exist, what a gesture changes.
 """
 
+from __future__ import annotations
+
+import dataclasses
+from types import SimpleNamespace
+
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Input, Label, Static
@@ -38,8 +43,9 @@ from ensqsqed.multi import (
     MultiScreen,
     NumberPrompt,
     PresetListScreen,
+    _Column,
 )
-from sq.presets import Preset, Track
+from sq.presets import Preset, Track, sound_word
 
 
 def _track(index: int) -> Track:
@@ -634,6 +640,782 @@ class TestTheSeams:
                 on_apply=lambda preset, description: None,
                 on_undo=lambda count: None,
                 on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            assert "no name" in table.get_cell("t1", "name")
+
+
+class TestTheRefusalsOfTheScreen:
+    """The gestures that change nothing, and say why."""
+
+    async def test_a_digit_on_a_list_of_names_is_refused(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "status")
+            await pilot.press("5")
+            await pilot.pause()
+            assert "picks one" in _status(screen)
+
+    async def test_a_digit_on_a_column_with_no_number_is_refused(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "trk")
+            await pilot.press("5")
+            await pilot.pause()
+            assert "no number to type" in _status(screen)
+
+    async def test_a_bump_on_a_list_of_names_is_refused(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "status")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert "list of names" in _status(screen)
+
+    async def test_a_bump_on_a_column_with_no_number_is_refused(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "trk")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert "step a number" in _status(screen)
+
+    async def test_a_bump_on_a_pan_at_sound_is_refused(self):
+        """SOUND is a word, not a number, so there is no step to take."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "pan")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert "SOUND" in _status(screen)
+
+    async def test_a_bump_past_the_end_of_the_range_is_refused(self):
+        """The volume is printed 0..99 and stored 0..127; 99 is the end."""
+        preset = _preset()
+        preset.tracks[0] = preset.tracks[0].updated(volume=127)
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert applied == []
+            assert "0-99" in _status(screen)
+
+    async def test_editing_the_track_number_is_refused(self):
+        """The track's own number is not a value; space is the gesture."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "trk")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "space switches" in _status(screen)
+
+    async def test_a_switch_is_refused_when_the_write_path_is_closed(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=False,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            assert applied == []
+            assert preset.pile[1] == 0
+            assert "refused" in _status(screen)
+
+
+class TestTheTypedValue:
+    """A number that is typed, and the ones that are not."""
+
+    async def test_the_prompt_is_seeded_with_the_value_as_it_is_typed(self):
+        """The volume is stored 64, which the panel prints as 50."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, NumberPrompt)
+            assert prompt.query_one("#value", Input).value == "50"
+
+    async def test_a_typed_volume_is_stored_through_the_table(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, NumberPrompt)
+            prompt.query_one("#value", Input).value = "60"
+            await pilot.press("enter")
+            await pilot.pause()
+            # The stored value is the one that prints as 60.
+            assert Track(volume=preset.tracks[0].volume).volume_display == 60
+
+    async def test_something_that_is_not_a_number_is_refused(self):
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, NumberPrompt)
+            prompt.query_one("#value", Input).value = "loud"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert applied == []
+            assert "not a number" in _status(screen)
+
+    async def test_the_prompt_can_be_cancelled_with_nothing(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, NumberPrompt)
+            await pilot.press("escape")
+            await pilot.pause()
+            # The prompt is gone and nothing was changed.
+            assert isinstance(app.screen, MultiScreen)
+
+    async def test_a_pan_can_be_typed_as_the_word_sound(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "pan")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, NumberPrompt)
+            # The pan is SOUND, and the prompt says so.
+            assert prompt.query_one("#value", Input).value == "SOUND"
+            prompt.query_one("#value", Input).value = "SOUND"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert preset.tracks[0].pan == -128
+            assert applied == ["track 1 pan SOUND→SOUND"]
+
+    async def test_a_pan_can_be_typed_as_a_number(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "pan")
+            await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, NumberPrompt)
+            prompt.query_one("#value", Input).value = "-50"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert preset.tracks[0].pan_display == -50
+            assert applied == ["track 1 pan SOUND→-50"]
+
+
+class TestTheRollback:
+    """What a refusal puts back, and what it leaves alone."""
+
+    async def test_a_landed_change_is_not_put_back_by_a_later_refusal(self):
+        """A change that landed has nothing to put back."""
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert preset.tracks[0].volume == 65
+            screen.result(True, "sent", cell=(0, "volume"))
+            await pilot.pause()
+            screen.result(False, "the unit refused it", cell=(0, "volume"))
+            await pilot.pause()
+            # The change landed; a later refusal has nothing to undo.
+            assert preset.tracks[0].volume == 65
+
+    async def test_a_refusal_about_another_cell_leaves_this_one_alone(self):
+        """The rollback is about the cell it names, and no other."""
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert preset.tracks[0].volume == 65
+            screen.result(False, "the unit refused it", cell=(1, "volume"))
+            await pilot.pause()
+            # The other track had nothing to put back, and this one
+            # still holds the change nobody refused.
+            assert preset.tracks[1].volume == 64
+            assert preset.tracks[0].volume == 65
+
+    async def test_a_refusal_about_a_cell_that_writes_nothing_is_harmless(self):
+        """The sound and the track's own number are not cells."""
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.result(False, "the unit refused it", cell=(0, "spot"))
+            await pilot.pause()
+            assert preset.tracks[0].sound_number == 0
+
+    async def test_the_sustain_switch_goes_back_to_what_it_was(self):
+        """The switch is a bit, and the bit goes back as a bit."""
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "sustain")
+            await pilot.press("enter")
+            await pilot.pause()
+            picker = app.screen
+            assert isinstance(picker, ChoicePicker)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert preset.tracks[0].sustain is False
+            screen.result(False, "the unit refused it", cell=(0, "sustain"))
+            await pilot.pause()
+            assert preset.tracks[0].sustain is True
+
+
+class TestTheRedrawSeam:
+    """``redraw``: the table is a picture of the model."""
+
+    async def test_the_table_is_drawn_again_from_the_model(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            assert table.get_cell("t1", "volume") == "50"
+            # The model changes behind the screen's back, the way the
+            # app's undo changes it.
+            preset.tracks[0] = preset.tracks[0].updated(volume=10)
+            screen.redraw()
+            await pilot.pause()
+            assert table.get_cell("t1", "volume") == "8"
+
+    async def test_the_screen_tells_the_app_when_it_closes(self):
+        closed = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_close=lambda: closed.append(True),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert closed == [True]
+
+    async def test_capital_z_asks_for_all_of_them(self):
+        undone = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=undone.append,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("Z")
+            await pilot.pause()
+            assert undone == [None]
+
+    async def test_z_asks_for_one_change_back(self):
+        undone = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=undone.append,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("z")
+            await pilot.pause()
+            assert undone == [1]
+
+    async def test_a_cell_selection_from_another_table_is_ignored(self):
+        """A rule that names one screen's table must not reach another's."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            event = SimpleNamespace(
+                data_table=SimpleNamespace(id="some-other-table", cursor_row=0)
+            )
+            screen.on_data_table_cell_selected(event)
+            await pilot.pause()
+            # Nothing was edited and nothing was said.
+            assert _status(screen) == ""
+
+    async def test_a_picker_that_is_cancelled_changes_nothing(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "status")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ChoicePicker)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert applied == []
+            assert preset.tracks[0].status == 1
+
+
+class TestWhatTheTableShows:
+    """The cells, and the ones the panel cannot show."""
+
+    async def test_the_drum_kits_are_shown_as_themselves(self):
+        preset = _preset()
+        preset.tracks[0] = preset.tracks[0].updated(sound_number=sound_word("DRUM", 3))
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            assert table.get_cell("t1", "spot") == "~DRUM~ 03"
+
+    async def test_a_value_outside_the_panel_s_range_is_shown_as_a_mark(self):
+        """A corrupt dump is still a row somebody has to be able to read."""
+        preset = _preset()
+        preset.tracks[0] = Track(
+            sound_number=0,
+            volume=200,
+            pan=-128,
+            timbre=32,
+            release=0,
+            output=4,
+            status=1,
+            pressure=1,
+            midi_channel=0,
+            sustain=True,
+            midi_program=0,
+            key_low=21,
+            transpose=0,
+            key_high=108,
+        )
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert table.get_cell("t1", "volume") == "?"
+
+    async def test_an_enumerated_value_outside_the_list_is_shown_as_a_mark(self):
+        preset = _preset()
+        # A dump is a fact about the unit's memory: a value outside the
+        # documented range is kept, not refused, and the cell says so.
+        preset.tracks[0] = dataclasses.replace(preset.tracks[0], status=7)
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.pause()
+            assert table.get_cell("t1", "status") == "?7"
+
+
+class TestTheColumnHelper:
+    """The column helper: what a cell shows, and what it writes.
+
+    Three of the conversions are not the identity -- the Note 7
+    table, the one-based numbering and the panel's own words -- and
+    the fourth is: a column with no conversion shows the number and
+    stores the number.
+    """
+
+    def test_a_column_with_no_conversion_shows_the_number(self):
+        column = _Column("x", "x", field="volume", kind="number")
+        track = Track(volume=42)
+        assert column.text_of(track) == "42"
+        assert column.edit_text(track) == "42"
+        assert column.to_stored(42) == 42
+
+    def test_the_table_conversion_is_note_sevens_table(self):
+        column = _Column("volume", "vol", field="volume", kind="number", fmt="table")
+        track = Track(volume=64)
+        assert column.text_of(track) == "50"
+        assert column.edit_text(track) == "50"
+        assert column.to_stored(50) == 64
+
+    def test_the_one_based_conversion_takes_one_off(self):
+        column = _Column(
+            "ch", "ch", field="midi_channel", kind="number", fmt="plus_one"
+        )
+        track = Track(midi_channel=3)
+        assert column.text_of(track) == "4"
+        assert column.edit_text(track) == "4"
+        assert column.to_stored(4) == 3
+
+    def test_the_pan_conversion_is_the_models_own(self):
+        column = _Column("pan", "pan", field="pan", kind="number", fmt="pan")
+        assert column.text_of(Track(pan=-128)) == "SOUND"
+        assert column.edit_text(Track(pan=-128)) == "SOUND"
+        assert column.text_of(Track(pan=0)) == "+0"
+        assert column.edit_text(Track(pan=0)) == "0"
+
+    def test_the_sustain_switch_reads_its_bit_the_other_way_round(self):
+        column = _Column(
+            "sustain",
+            "sustain",
+            field="sustain",
+            kind="enum",
+            names=("ON", "OFF"),
+            bool_field=True,
+        )
+        assert column.stored_of(Track(sustain=True)) == 0
+        assert column.stored_of(Track(sustain=False)) == 1
+        assert column.text_of(Track(sustain=True)) == "ON"
+        assert column.to_track(Track(sustain=True), 1).sustain is False
+
+
+class TestThePresetListEdges:
+    """The list, and the rows it cannot show."""
+
+    async def test_the_list_says_where_it_came_from(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen(
+                [(0, _preset().to_bytes())], progress_note="read the dump"
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert "read the dump" in str(screen.query_one(".note", Static).content)
+
+    async def test_a_preset_that_cannot_be_read_shows_a_mark(self):
+        """One bad row must not hide the other seventy-nine."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen([(0, b"\x00" * 10)])
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#preset-table", DataTable)
+            assert table.get_cell("0", "name") == "?"
+
+    async def test_a_row_selection_that_names_nothing_picks_nothing(self):
+        """A row the list does not have is not a row."""
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen([(0, _preset().to_bytes())])
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            event = SimpleNamespace(
+                data_table=SimpleNamespace(id=PresetListScreen.TABLE_ID, cursor_row=99)
+            )
+            screen.on_data_table_row_selected(event)
+            await pilot.pause()
+            assert picked == []
+
+    async def test_a_selection_from_another_table_is_ignored(self):
+        """A rule that names one screen's table must not reach another's."""
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen([(0, _preset().to_bytes())])
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            event = SimpleNamespace(
+                data_table=SimpleNamespace(id="some-other-table", cursor_row=0)
+            )
+            screen.on_data_table_row_selected(event)
+            await pilot.pause()
+            assert picked == []
+
+    async def test_a_catalog_that_has_no_name_says_so(self):
+        """A blank cell reads as a broken row."""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                name_for=lambda group, slot: None,
             )
             await app.push_screen(screen)
             await pilot.pause()

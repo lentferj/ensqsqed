@@ -394,11 +394,24 @@ class FxScreen(ModalScreen[None]):
         return self._rows[index]
 
     def _value_of(self, row: _Row) -> str:
-        """What the row reads now."""
+        """What the row reads now.
+
+        **A value outside the row's documented range shows a question
+        mark**, the way the command line shows it.  A dump is a fact
+        about the instrument's memory, and the unit may hold a byte the
+        specification's list does not have -- the modulation
+        destination of a set with fewer than sixteen of them, say.  A
+        refusal here would take the whole table with it: the rows
+        below the bad one would never be drawn, and the screen would
+        show a part of the effect with nothing saying why.
+        """
         if row.param is None:
             effect = self._preset.effect
             return effect.name or f"effect {effect.number}"
-        value = self._preset.effect.display(row.param)
+        try:
+            value = self._preset.effect.display(row.param)
+        except ValueError:
+            return "?"
         return value if isinstance(value, str) else str(value)
 
     def _span_of(self, row: _Row) -> str:
@@ -450,8 +463,17 @@ class FxScreen(ModalScreen[None]):
         return (values[0], values[-1])
 
     def _current_number(self, param: EffectParam) -> Optional[int]:
-        """The row's value as a number, or None if it is a name."""
-        value = self._preset.effect.display(param)
+        """The row's value as a number, or None if it is not one.
+
+        None covers the two cases the caller has to refuse anyway: a
+        row that names its values, and a row holding a value outside
+        the range the specification documents -- which the unit may
+        have written and which this program did not.
+        """
+        try:
+            value = self._preset.effect.display(param)
+        except ValueError:
+            return None
         if isinstance(value, int):
             return value
         return None
@@ -527,7 +549,15 @@ class FxScreen(ModalScreen[None]):
             return
         values = self._reachable(param)
         current = self._current_number(param)
-        if current is None or current not in values:
+        if current is None:
+            # The unit holds a value this program cannot print: the row
+            # says "?" and there is no step to take from it.
+            self.say(
+                f"{param.label} holds a value this program cannot print",
+                refused=True,
+            )
+            return
+        if current not in values:
             self.say(
                 f"{param.label} reads {current}, which is not a value it can take",
                 refused=True,

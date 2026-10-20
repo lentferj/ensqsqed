@@ -31,13 +31,16 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import pytest
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Static
 
 from ensqsqed.app import EnsqsqedApp
 from ensqsqed.multi import MultiScreen, PresetListScreen
 from sq import catalog as cat
-from sq.bridge import AllPresetsDump, CurrentPreset, PresetSent
-from sq.presets import split_single_dump
+from sq import favorites as fav
+from sq.bridge import AllPresetsDump, CurrentPreset, PresetMismatch, PresetSent
+from sq.presets import Preset, split_single_dump
+from vinsynlib.ui.modals import ChoiceScreen
+from vinsynlib.undo import Record
 
 #: The dump the unit sent on the bench: 48 bytes of sequence data and
 #: the 168-byte preset behind them.
@@ -105,15 +108,25 @@ class FakeMultiDevice:
         self.sent: List[Tuple[bytes, bytes]] = []
         #: How many times the preset was read.
         self.reads = 0
+        #: What the next send raises, if anything.  A refusal and a
+        #: mismatch are both outcomes the app has to report rather than
+        #: assume away.
+        self.fail: Optional[BaseException] = None
+        #: What the next read raises, if anything.
+        self.read_fail: Optional[BaseException] = None
         self.current = CurrentPreset(seq_blob=SEQ_BLOB, preset_raw=PRESET_RAW)
         self.dump = _all_dump()
 
     def read_current_preset(self, *, timeout: Optional[float] = None) -> CurrentPreset:
         self.reads += 1
+        if self.read_fail is not None:
+            raise self.read_fail
         return self.current
 
     def read_all_presets(self, *, timeout: Optional[float] = None) -> AllPresetsDump:
         self.reads += 1
+        if self.read_fail is not None:
+            raise self.read_fail
         return self.dump
 
     def send_preset(
@@ -124,6 +137,8 @@ class FakeMultiDevice:
         verify: bool = True,
         timeout: Optional[float] = None,
     ) -> PresetSent:
+        if self.fail is not None:
+            raise self.fail
         self.sent.append((seq_blob, preset_raw))
         self.current = CurrentPreset(seq_blob=seq_blob, preset_raw=preset_raw)
         return PresetSent(
@@ -171,6 +186,20 @@ def _volume_cell(screen: MultiScreen) -> str:
     """What the volume cell of the first track says."""
     table = screen.query_one("#track-table", DataTable)
     return str(table.get_cell("t1", "volume"))
+
+
+def _status(screen) -> str:
+    """What the editor's own status line says.
+
+    The app's ``#status`` is the dimmed backdrop behind the modal, so
+    a sentence written there is written where nobody is looking.
+    """
+    return str(screen.query_one(".status", Static).content)
+
+
+def _app_status(app: EnsqsqedApp) -> str:
+    """What the browser's own status line says."""
+    return str(app.query_one("#status", Static).content)
 
 
 async def _open_mix_view(screen: MultiScreen, pilot) -> DataTable:
@@ -365,6 +394,173 @@ class TestOnePresetPerSession:
             # session's preset, not over a second reading of the unit.
             assert device.reads == 1
 
+    async def test_the_track_editor_opens_again_over_the_same_preset(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """`m` twice is the same preset, read once."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            assert device.reads == 1
+
+
+class TestTheRefusedWrite:
+    """A write that did not land leaves the model as it was."""
+
+    async def test_a_refused_switch_puts_the_pile_back(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The pile is the track's on/off state, and it goes back too."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            device.fail = TimeoutError("no Single Sequence Dump came back")
+            await pilot.press("space")
+            assert await _wait(lambda: "not sent" in _status(screen), pilot)
+            preset = app._edit_preset
+            assert preset is not None
+            assert preset.pile[1] == 0
+            assert not preset.is_active(2)
+            # And the table says so: the picture is of the model.
+            assert "OFF" in str(table.get_cell("t2", "on"))
+
+    async def test_a_mismatch_puts_the_change_back(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            before = _volume_cell(screen)
+            device.fail = PresetMismatch(
+                "the unit did not read back what was sent: 1 byte(s) differ",
+                PresetSent(
+                    acked=True,
+                    verified=False,
+                    diff_offsets=(82,),
+                    read_back=None,
+                ),
+            )
+            await pilot.press("minus")
+            assert await _wait(lambda: "not sent" in _status(screen), pilot)
+            # The cell shows what the unit holds, not what was asked for.
+            assert _volume_cell(screen) == before
+
+    async def test_a_failure_puts_the_change_back(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            before = _volume_cell(screen)
+            device.fail = TimeoutError("no Single Sequence Dump came back")
+            await pilot.press("minus")
+            assert await _wait(lambda: "not sent" in _status(screen), pilot)
+            assert _volume_cell(screen) == before
+
+    async def test_a_change_with_no_preset_loaded_is_refused(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """There is nothing to send, and it is said so."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            preset = Preset.from_bytes(PRESET_RAW)
+            app._apply_preset(preset, "track 1 volume 50→49", None)
+            await pilot.pause()
+            assert device.sent == []
+            assert "no preset is loaded" in _app_status(app)
+
+    async def test_a_read_that_fails_says_so(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """A unit that does not answer is a refusal with a sentence."""
+        device.read_fail = TimeoutError("no Single Sequence Dump came back")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: "preset: " in _app_status(app), pilot)
+            # No editor was opened: there is nothing to edit.
+            assert app._multi_screen is None
+            assert app._preset_loaded is False
+
+
+class TestTheSoundPicker:
+    """The sound picker is the app's, and it writes the track's sound."""
+
+    async def test_the_app_runs_the_picker_and_the_pick_is_sent(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "spot")
+            await pilot.press("enter")
+            await pilot.pause()
+            # The screen says which track wants a sound; the app runs
+            # its own picker over the bank it is showing.
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            preset = app._edit_preset
+            assert preset is not None
+            assert preset.tracks[0].sound_number == 2
+            _seq_blob, preset_raw = device.sent[0]
+            assert preset_raw[32:34] == b"\x00\x02"
+
+    async def test_a_cancelled_picker_changes_nothing(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "spot")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert device.sent == []
+            preset = app._edit_preset
+            assert preset is not None
+            assert preset.tracks[0].sound_number == 0
+
 
 class TestTheEffectEditor:
     """`x`: the same preset, its effect."""
@@ -430,3 +626,252 @@ class TestThePresetList:
             # dump's slots from zero.
             assert table.get_cell("0", "slot") == "001"
             assert table.get_cell("79", "slot") == "080"
+
+    async def test_a_cancelled_list_loads_nothing(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """A list that was not answered loads nothing and sends nothing."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._edit_preset is None
+            assert device.sent == []
+
+    async def test_the_sentence_names_the_slot_the_preset_came_from(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The unit's own current preset has no slot, and says so."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("enter")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("minus")
+            assert await _wait(lambda: "into slot 1" in _status(screen), pilot)
+
+
+class TestTheUndoDispatch:
+    """The undo log holds two kinds of record, and both must work.
+
+    The preset editors push a **tuple** -- the whole preset as it was
+    before the change -- and the browser's own favourite, tag, note and
+    rating records are **dicts**.  The dispatcher tells them apart by
+    the payload's type, so both have to keep working: the preset
+    editors are newer, and a dispatch that only knew about the older
+    shape would have quietly stopped undoing favourites.
+    """
+
+    async def test_a_preset_record_sends_the_whole_preset_back(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            record = Record("track 1 volume 50→49", (SEQ_BLOB, PRESET_RAW))
+
+            assert app._undo_apply(record) is True
+            assert device.sent == [(SEQ_BLOB, PRESET_RAW)]
+
+    async def test_a_preset_record_is_a_write_and_the_gate_says_no(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = False
+            record = Record("track 1 volume 50→49", (SEQ_BLOB, PRESET_RAW))
+
+            assert app._undo_apply(record) is False
+            assert device.sent == []
+            assert app._undo_reason is not None
+
+    async def test_a_favourite_record_is_undone(
+        self, device: FakeMultiDevice, tmp_path
+    ):
+        store = fav.Favorites(str(tmp_path / "f.db"))
+        store.add("INT", 5, name="Invented", rating=3)
+        app = EnsqsqedApp(device, catalog=cat.empty(), favorites=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record = Record(
+                "favourite",
+                {
+                    "kind": "favourite",
+                    "bank_id": "INT",
+                    "number": 5,
+                    "was": True,
+                    "name": "Invented",
+                },
+            )
+
+            assert app._undo_apply(record) is True
+            assert store.get("INT", 5) is None
+        store.close()
+
+    async def test_a_tags_record_puts_the_old_tags_back(
+        self, device: FakeMultiDevice, tmp_path
+    ):
+        store = fav.Favorites(str(tmp_path / "f.db"))
+        store.add("INT", 5, name="Invented", tags="new")
+        app = EnsqsqedApp(device, catalog=cat.empty(), favorites=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record = Record(
+                "tags",
+                {
+                    "kind": "tags",
+                    "bank_id": "INT",
+                    "number": 5,
+                    "old": "old",
+                    "new": "new",
+                },
+            )
+
+            assert app._undo_apply(record) is True
+            restored = store.get("INT", 5)
+            assert restored is not None
+            assert restored.tags == "old"
+        store.close()
+
+    async def test_a_note_record_puts_the_old_note_back(
+        self, device: FakeMultiDevice, tmp_path
+    ):
+        store = fav.Favorites(str(tmp_path / "f.db"))
+        store.add("INT", 5, name="Invented", note="new")
+        app = EnsqsqedApp(device, catalog=cat.empty(), favorites=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record = Record(
+                "note",
+                {
+                    "kind": "note",
+                    "bank_id": "INT",
+                    "number": 5,
+                    "old": "old",
+                    "new": "new",
+                },
+            )
+
+            assert app._undo_apply(record) is True
+            restored = store.get("INT", 5)
+            assert restored is not None
+            assert restored.note == "old"
+        store.close()
+
+    async def test_a_rating_record_puts_the_old_rating_back(
+        self, device: FakeMultiDevice, tmp_path
+    ):
+        store = fav.Favorites(str(tmp_path / "f.db"))
+        store.add("INT", 5, name="Invented", rating=3)
+        app = EnsqsqedApp(device, catalog=cat.empty(), favorites=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record = Record(
+                "rating",
+                {
+                    "kind": "rating",
+                    "bank_id": "INT",
+                    "number": 5,
+                    "old": 3,
+                    "new": 0,
+                },
+            )
+
+            assert app._undo_apply(record) is True
+            restored = store.get("INT", 5)
+            assert restored is not None
+            assert restored.rating == 3
+        store.close()
+
+    async def test_a_record_of_an_unknown_kind_is_refused(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """A record nobody knows about is not applied."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record = Record("something else", {"kind": "nonsense"})
+
+            assert app._undo_apply(record) is False
+            assert device.sent == []
+
+
+class TestTheUndoFromTheEditor:
+    """`z` inside the editor is the app's undo, and it is a write."""
+
+    async def test_capital_z_undoes_everything(self, app: EnsqsqedApp, device):
+        """``Z`` is the app's undo-all, served by the editor's own key."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            await pilot.press("Z")
+            assert await _wait(lambda: len(device.sent) == 2, pilot)
+            # The whole original 216 bytes go back.
+            assert device.sent[1] == (SEQ_BLOB, PRESET_RAW)
+
+    async def test_the_gate_is_asked_again_when_the_undo_is_pressed(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The change went out through the gate; the undo asks again.
+
+        The gate can have been locked since the change went out, and
+        the undo is a write like any other: it sends a preset, and a
+        preset the unit refuses to take must not be sent at all.
+        """
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            # The gate is locked between the change and the undo.
+            app._gate.armed = False
+            await pilot.press("z")
+            assert await _wait(lambda: len(app._undo_log) == 1, pilot)
+            # Nothing was sent, and the record is still there: the
+            # preset it holds is still the one the unit has.
+            assert len(device.sent) == 1
+            assert len(app._undo_log) == 1
+
+    async def test_an_undo_the_unit_refuses_keeps_its_record(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """A refused undo stays on the log: the preset it holds is the
+        unit's, and a retry has to be possible."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            device.fail = TimeoutError("no Single Sequence Dump came back")
+            await pilot.press("z")
+            assert await _wait(lambda: len(app._undo_log) == 1, pilot)
+            # Nothing more went out, and the record is still there.
+            assert len(device.sent) == 1
+            assert len(app._undo_log) == 1
