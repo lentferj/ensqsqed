@@ -62,6 +62,20 @@ Request answered with 216 bytes -- a 48-byte sequence blob and a
 carrying all eighty of its presets. The layout those two dumps have is
 written down in ``docs/PRESET-FRAMING.md``; this module parses it and
 keeps the bytes verbatim.
+
+**A preset goes back the same way it came.** The dump protocol is a
+handshake in both directions, and when a program sends a preset the
+unit is the *receiver*: the alert first, then the unit's ACK, then the
+dump. :meth:`SqBridge.send_preset` speaks that side of it, and the
+bytes it sends are the whole preset -- this protocol has no
+field-level write, so one changed byte means one whole dump.
+
+**What that writes is the Edit Preset, and nothing else.** The unit
+takes the dump into the buffer the manual describes, says "Press ENTER
+to save new preset" and blinks its Edit Preset LED. No message in
+this protocol stores a preset: a stored slot changes only when the
+user presses ENTER on the unit's front panel. Driving that panel
+through virtual buttons is out of scope here on purpose.
 """
 
 from __future__ import annotations
@@ -80,9 +94,11 @@ __all__ = [
     "DeviceError",
     "DeviceRefused",
     "PresetRefused",
+    "PresetMismatch",
     "PresetAlert",
     "CurrentPreset",
     "AllPresetsDump",
+    "PresetSent",
     "list_ports",
     "likely_ports",
     "DEFAULT_TIMEOUT",
@@ -90,6 +106,8 @@ __all__ = [
     "BANK_TIMEOUT",
     "SEQ_TIMEOUT",
     "ALL_PRESETS_TIMEOUT",
+    "ACK_WINDOW",
+    "PRESET_SETTLE",
     "BUTTON_GAP",
 ]
 
@@ -127,6 +145,32 @@ class PresetRefused(DeviceRefused, DeviceError):
     """
 
 
+class PresetMismatch(DeviceError):
+    """The unit did not hold what was sent to it.
+
+    A :class:`DeviceError`, so it is caught with the rest, and it
+    carries the comparison rather than only a sentence about it:
+    :attr:`diff_offsets` is **every** offset at which the read-back
+    differed from what was sent -- the sentence names the first few,
+    this is all of them -- and :attr:`result` is the
+    :class:`PresetSent` that says what the unit holds now.
+
+    The offsets are counted from the first byte of the sequence data,
+    which is how the framing document counts them: offset 82 is track
+    one's volume.
+    """
+
+    def __init__(self, sentence: str, result: "PresetSent") -> None:
+        super().__init__(sentence)
+        #: What the send did, with the full tuple of differing offsets.
+        self.result = result
+
+    @property
+    def diff_offsets(self) -> Tuple[int, ...]:
+        """Every offset at which the read-back differed."""
+        return self.result.diff_offsets
+
+
 DEFAULT_TIMEOUT = 2.0
 PROBE_TIMEOUT = 0.6
 #: An internal bank dump is 32647 bytes; at MIDI's 3125 bytes a second
@@ -148,6 +192,28 @@ SEQ_TIMEOUT = 15.0
 #: of the alert before it sends the dump at all, which is part of what
 #: this has to cover.
 ALL_PRESETS_TIMEOUT = 60.0
+
+#: How long the sender of a dump waits for the receiver's acknowledgement
+#: of the alert. This is the specification's own window -- "If the
+#: receiver does not respond within one second, the transmitter will
+#: send the dump message anyway" (section 3, Sequence Dump Protocol) --
+#: and it exists for receivers that cannot answer at all.
+#:
+#: This unit answers in about eleven milliseconds, which is one percent
+#: of the window, so waiting the full second costs nothing in practice
+#: and the refusal it does catch is worth the wait.
+ACK_WINDOW = 1.0
+
+#: How long to let the unit settle after a dump before asking it what it
+#: holds. The manual says the unit changes mode on receipt of a preset,
+#: and a mode change is a screen redraw. The bench probe
+#: (``tools/probe_preset_write.py``) waited half a second for it, and
+#: this is that half second: no more, and no less.
+PRESET_SETTLE = 0.5
+
+#: The alert's sequence/song flag: 0 is a sequence and 255 is a song
+#: (specification section 3.1.7). A preset edit is a sequence.
+SEQUENCE_FLAG = 0x00
 
 #: One preset is 168 bytes: eight tracks, a pile, an effect, and the
 #: sequence it belongs to (specification section 4.8.2).
@@ -317,6 +383,39 @@ class CurrentPreset:
                 f"expected."
             )
         return cls(seq_blob=data[:blob_size], preset_raw=data[blob_size:])
+
+
+@dataclass(frozen=True)
+class PresetSent:
+    """What one preset send did.
+
+    The unit answered the alert, the dump went out, and -- when the
+    caller asked for it -- the preset was read back and compared. That
+    comparison is worth something: command 03 returns the **Edit
+    Preset** while one is live, so the bytes that came back are the
+    bytes that were sent (measured on the bench; see
+    ``docs/PRESET-FRAMING.md`` section 9.3).
+
+    **A verified send is not a stored preset.** The unit is holding
+    the change in its Edit Preset buffer and its display says "Press
+    ENTER to save new preset". Storing is the user's front-panel act.
+    """
+
+    #: Whether the unit acknowledged the alert. Always true: a
+    #: refusal and a timeout raise instead of coming back here.
+    acked: bool
+    #: Whether the read-back matched what was sent. False when the
+    #: caller did not ask for a verification, and false on a mismatch
+    #: -- which is raised as a :class:`PresetMismatch` rather than
+    #: returned.
+    verified: bool
+    #: The offsets at which the read-back differed from what was sent.
+    #: **Always empty in a result that was returned**: a mismatch is
+    #: raised, not returned, and the exception carries the same tuple
+    #: in :attr:`PresetMismatch.diff_offsets`.
+    diff_offsets: Tuple[int, ...]
+    #: What the unit held after the send, when it was read back.
+    read_back: Optional[CurrentPreset] = None
 
 
 @dataclass(frozen=True)
@@ -634,15 +733,25 @@ class SqBridge:
             return packet
         raise TimeoutError(self._silence_means(wanted))
 
+    def _silence_causes(self) -> str:
+        """The causes of silence, in one place.
+
+        Every wait in this class ends in the same handful of causes;
+        the sentences differ only in what was being waited for.
+        """
+        return (
+            "powered off, the wrong port, the wrong base MIDI channel "
+            f"(ensqsqed is using {self.channel + 1}), System Exclusive "
+            "reception switched off in the System bank, or a chain that "
+            "carries requests out but not replies back"
+        )
+
     def _silence_means(self, wanted: int) -> str:
         """Why nothing came back. Never picks one reason."""
         return (
             f"no {m.Function.name(wanted)} came back. The unit did not "
-            f"refuse it either, so this means one of: powered off, the "
-            f"wrong port, the wrong base MIDI channel (ensqsqed is using "
-            f"{self.channel + 1}), System Exclusive reception switched off "
-            f"in the System bank, or a chain that carries requests out but "
-            f"not replies back."
+            f"refuse it either, so this means one of: "
+            f"{self._silence_causes()}."
         )
 
     def _preset_silence(self, wanted: int) -> str:
@@ -656,13 +765,25 @@ class SqBridge:
         """
         return (
             f"no {m.Function.name(wanted)} came back after the alert. The "
-            f"unit did not refuse it either, so this means one of: powered "
-            f"off, the wrong port, the wrong base MIDI channel (ensqsqed is "
-            f"using {self.channel + 1}), System Exclusive reception switched "
-            f"off in the System bank, a chain that carries requests out but "
-            f"not replies back, or a dump that stopped halfway -- the "
-            f"protocol has no way of saying that, so it is named rather "
-            f"than ruled out."
+            f"unit did not refuse it either, so this means one of: "
+            f"{self._silence_causes()}, or a dump that stopped halfway -- "
+            "the protocol has no way of saying that, so it is named rather "
+            "than ruled out."
+        )
+
+    def _write_silence(self) -> str:
+        """Why no acknowledgement came. Never picks one reason.
+
+        The same causes as :meth:`_silence_means`, and one that only
+        the *sending* side can have: the alert went out and nothing
+        came back for it. The unit is not refusing -- a refusal would
+        have said so -- it is not answering.
+        """
+        alert = m.CommandType.name(m.CommandType.SINGLE_SEQUENCE_ALERT)
+        return (
+            f"no ACK came back for the {alert} within {ACK_WINDOW:.1f} s. "
+            "The unit did not refuse the dump either, so this means one "
+            f"of: {self._silence_causes()}."
         )
 
     def _request_preset(
@@ -745,6 +866,79 @@ class SqBridge:
         except (DeviceError, ValueError):
             return None
         return candidate if candidate.command == command else None
+
+    # --- the writing side of the handshake ------------------------------------
+
+    def _await_ack(self) -> None:
+        """Wait for the unit's answer to the alert.
+
+        The unit answers with an error message: ACK (1) means the dump
+        may go, and anything else -- NAK (0) is the one to expect --
+        means it will not be sent at all. The window is the
+        specification's one second, and the unit uses about eleven
+        milliseconds of it.
+
+        Only error messages are looked at. The alert this program just
+        sent comes back on any chain with a soft thru, and it is a
+        command message, so it is ignored here rather than mistaken
+        for an answer.
+        """
+        deadline = time.monotonic() + ACK_WINDOW
+        while time.monotonic() < deadline:
+            message = self._in.get_message()
+            if message is None:
+                time.sleep(0.001)
+                continue
+            packet = m.parse(message[0])
+            if packet is None or packet.device != self.channel:
+                continue
+            if packet.function != m.Function.ERROR or not packet.payload:
+                continue
+            refusal = self._refusal(packet)
+            if refusal is not None:
+                raise PresetRefused(refusal)
+            return
+        raise TimeoutError(self._write_silence())
+
+    @staticmethod
+    def _check_preset_sizes(seq_blob: bytes, preset_raw: bytes) -> None:
+        """The two halves have to be the sizes the protocol says.
+
+        A preset is 168 bytes, and the sequence data says how long it
+        is in its own first four bytes. Both are checked here rather
+        than by the unit, which answers a wrong size with silence or
+        with a refusal that says nothing about the size.
+        """
+        if len(preset_raw) != PRESET_BYTES:
+            raise ValueError(
+                f"a preset is {PRESET_BYTES} bytes; this one is {len(preset_raw)} bytes"
+            )
+        if len(seq_blob) < 4:
+            raise ValueError(
+                "the sequence data is shorter than the four bytes of its own size word"
+            )
+        size = int.from_bytes(seq_blob[:4], "big")
+        if size != len(seq_blob):
+            raise ValueError(
+                f"the sequence data is {len(seq_blob)} bytes, but its own "
+                f"size word says {size}"
+            )
+
+    @staticmethod
+    def _mismatch_sentence(offsets: Tuple[int, ...]) -> str:
+        """What differed, in words rather than as a list of numbers.
+
+        Only the first few offsets are named -- a preset can be wrong
+        in every byte, and a sentence with 216 numbers in it is no
+        sentence. The whole tuple is on the exception.
+        """
+        shown = ", ".join(str(offset) for offset in offsets[:8])
+        if len(offsets) > 8:
+            shown += f", ... and {len(offsets) - 8} more"
+        return (
+            f"the unit did not read back what was sent: {len(offsets)} "
+            f"byte(s) differ at offset {shown}"
+        )
 
     # --- reading, all of it silent -----------------------------------------
 
@@ -855,6 +1049,137 @@ class SqBridge:
             timeout=ALL_PRESETS_TIMEOUT if timeout is None else timeout,
         )
         return AllPresetsDump._from_reply(data, alert)
+
+    # --- writing, which is the Edit Preset and nothing else ------------------
+
+    def send_preset(
+        self,
+        seq_blob: bytes,
+        preset_raw: bytes,
+        *,
+        verify: bool = True,
+        timeout: float = SEQ_TIMEOUT,
+    ) -> "PresetSent":
+        """Send a preset to the unit, and check that it took.
+
+        **The whole preset goes, every time.** This protocol has no
+        field-level write: the only thing that can be sent is a
+        complete preset -- the sequence data followed by the 168 bytes
+        of the preset, in the order the unit itself sends them
+        (specification section 3, "Sequence Dump Protocol"). An editor
+        that changes one track therefore reads the whole preset, changes
+        one byte of it and sends the whole thing back, which is what
+        :meth:`read_current_preset` and this method are for. The
+        siblings' rule is the same one: a field is not written, the
+        dump is.
+
+        **The exchange is the specification's three steps** (sections
+        3.1.7 and 3.2.1, and what the bench measured -- see
+        ``docs/PRESET-FRAMING.md`` section 9):
+
+        1. the alert -- command 06, carrying the size of the sequence
+           data that will follow and the sequence/song flag. **The
+           size counts the sequence data only**, not the preset: 48
+           bytes for the sequence data of an empty sequence, with the
+           216-byte dump behind it;
+        2. the unit's answer -- an error message whose code is ACK
+           (1) or NAK (0). The unit answers in about eleven
+           milliseconds, and the specification's window is one second;
+        3. the dump -- a type-04 message, the sequence data followed by
+           the preset, nibble-ized: the same message the unit sends as
+           the answer to a dump request.
+
+        A NAK means the unit will not take the dump, so **nothing is
+        sent** and :class:`PresetRefused` says so. Silence inside the
+        window is a :class:`TimeoutError` that names the alert.
+
+        **This does not store anything.** The dump lands in the unit's
+        *Edit Preset* buffer: the display says "Press ENTER to save
+        new preset" and the Edit Preset LED blinks in Preset Select
+        Mode. A stored slot is changed only when the user presses
+        ENTER on the unit's front panel -- this protocol has no
+        message that stores a preset, and driving the front panel
+        through virtual buttons is out of scope here on purpose.
+
+        **``verify`` reads the preset back and compares it byte for
+        byte**, and that comparison means something: command 03
+        returns the Edit Preset while one is live, so the bytes that
+        go out are the bytes that come back. A mismatch raises
+        :class:`PresetMismatch` -- a :class:`DeviceError` -- naming the
+        offsets that differ. A read-back whose sequence data is a
+        different length is a :class:`DeviceError` of its own, with
+        both lengths in the sentence: that is not a byte that differs
+        but a sequence that changed size.
+
+        ``timeout`` is the budget for that read-back. It is not the
+        acknowledgement window, which is the specification's one
+        second and is not adjustable: the unit is ready in about
+        eleven milliseconds.
+        """
+        self._check_preset_sizes(seq_blob, preset_raw)
+        alert = PresetAlert(
+            command=m.CommandType.SINGLE_SEQUENCE_ALERT,
+            size=len(seq_blob),
+            flag=SEQUENCE_FLAG,
+        )
+        self._drain()
+        self._out.send_message(
+            list(m.frame(m.Function.COMMAND, alert.wire_payload(), device=self.channel))
+        )
+        self._await_ack()
+        self._out.send_message(
+            list(
+                m.frame(
+                    m.Function.SINGLE_SEQUENCE_DUMP,
+                    m.to_nibbles(seq_blob + preset_raw),
+                    device=self.channel,
+                )
+            )
+        )
+        # The unit changes mode on receipt of a preset, and a mode
+        # change is a screen redraw. The bench probe waited half a
+        # second for it, and the read-back below is that read-back.
+        time.sleep(PRESET_SETTLE)
+        if not verify:
+            return PresetSent(
+                acked=True, verified=False, diff_offsets=(), read_back=None
+            )
+        read_back = self.read_current_preset(timeout=timeout)
+        if len(read_back.seq_blob) != len(seq_blob):
+            raise DeviceError(
+                f"the unit's sequence data is {len(read_back.seq_blob)} "
+                f"bytes after {len(seq_blob)} bytes were sent"
+            )
+        expected = seq_blob + preset_raw
+        actual = read_back.seq_blob + read_back.preset_raw
+        diff_offsets = tuple(
+            index for index in range(len(expected)) if expected[index] != actual[index]
+        )
+        result = PresetSent(
+            acked=True,
+            verified=not diff_offsets,
+            diff_offsets=diff_offsets,
+            read_back=read_back,
+        )
+        if diff_offsets:
+            raise PresetMismatch(self._mismatch_sentence(diff_offsets), result)
+        return result
+
+    def send_current_preset(
+        self,
+        seq_blob: bytes,
+        preset_raw: bytes,
+        *,
+        verify: bool = True,
+        timeout: float = SEQ_TIMEOUT,
+    ) -> "PresetSent":
+        """The name the plan gave this method; :meth:`send_preset` is it.
+
+        Kept so that the name in the implementation plan works, and so
+        that the two cannot drift apart: this does nothing but call the
+        other.
+        """
+        return self.send_preset(seq_blob, preset_raw, verify=verify, timeout=timeout)
 
     # --- selecting, which is the one thing that changes what plays --------
 

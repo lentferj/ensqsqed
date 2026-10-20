@@ -454,7 +454,11 @@ slot. Command 03 reads the Edit Preset whenever one is live.
 
 * **Apply-then-verify is meaningful.** `send_current_preset()` followed by
   `read_current_preset()` compares the bytes that were sent, and a
-  mismatch is a real failure rather than a formality.
+  mismatch is a real failure rather than a formality. The bridge method
+  that does it is `SqBridge.send_preset()` (also spelled
+  `send_current_preset()`): it speaks the alert → ACK → dump handshake,
+  waits the specification's one second for the ACK, and then re-reads and
+  compares byte for byte.
 * **The verification does not mean the preset is stored.** The unit is
   holding the change in a buffer and the display says
   "Press ENTER to save new preset". Storing is a front-panel act; the UI
