@@ -34,9 +34,9 @@ negative:**
 
 The 21-byte global block and the 54-byte blobs' trailing bytes are still
 undecoded (RESOLUTION_NOTES §11). Sequences themselves are still a different
-program. The app's per-send status sentence still carries the withdrawn
-"does not play incoming MIDI" wording and is to be reworded to the measured
-one (deaf for about five seconds, back by about 35).
+program. DONE (commit c7d8b1f): the app's per-send status sentence now
+carries the measured wording — the send is live, the unit is briefly deaf
+(about five seconds) and answers again by about thirty-five seconds.
 
 ## Status, 2026-09-20 (first session)
 
