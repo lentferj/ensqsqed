@@ -43,8 +43,10 @@ from ensqsqed.multi import (
     MultiScreen,
     NumberPrompt,
     PresetListScreen,
+    SoundPickerScreen,
     _Column,
 )
+from sq import catalog as cat
 from sq.presets import Preset, Track, sound_word
 
 
@@ -182,10 +184,82 @@ class TestPresetList:
             assert picked == [None]
 
 
+class TestTheSoundPicker:
+    """Every group is reachable, not just the browser's current bank."""
+
+    async def test_every_group_is_reachable(self):
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = SoundPickerScreen(cat.empty(), current=("INT", 1))
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            groups = screen.query_one("#picker-groups", DataTable)
+            slots = screen.query_one("#picker-slots", DataTable)
+            assert groups.row_count == 5, "INT, ROM, Card A, Card B, drums"
+            assert slots.row_count == 80
+            # The track's own group is where it opens; tab reaches the
+            # group pane, down moves to ROM, and the slot pane follows.
+            await pilot.press("tab")
+            await pilot.press("down")
+            await pilot.pause()
+            assert slots.row_count == 80
+            await pilot.press("tab")
+            for _ in range(4):
+                await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert picked == [("ROM", 5)]
+
+    async def test_the_drum_kits_are_a_group_too(self):
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = SoundPickerScreen(cat.empty(), current=("INT", 1))
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            await pilot.press("tab")
+            for _ in range(4):
+                await pilot.press("down")
+            await pilot.pause()
+            slots = screen.query_one("#picker-slots", DataTable)
+            assert slots.row_count == 20, "twenty kits, not eighty sounds"
+            await pilot.press("tab")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert picked == [("DRUM", 1)]
+
+    async def test_it_opens_on_the_tracks_own_sound(self):
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = SoundPickerScreen(cat.empty(), current=("CARDA", 7))
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            groups = screen.query_one("#picker-groups", DataTable)
+            slots = screen.query_one("#picker-slots", DataTable)
+            assert groups.cursor_row == 2, "Card A is the third group"
+            assert slots.cursor_row == 6, "slot 007 is the seventh row"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert picked == [("CARDA", 7)]
+
+    async def test_escape_changes_nothing(self):
+        picked = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = SoundPickerScreen(cat.empty(), current=("INT", 1))
+            await app.push_screen(screen, picked.append)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert picked == [None]
+
+
 class TestTheColumns:
     """The four column groups, and the keys in them."""
 
-    async def test_the_first_view_shows_the_sound_and_the_program(self):
+    async def test_the_first_view_shows_the_sound_the_channel_and_the_program(self):
         app = _Host()
         async with app.run_test() as pilot:
             screen = MultiScreen(
@@ -197,7 +271,14 @@ class TestTheColumns:
             await app.push_screen(screen)
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
-            assert _keys(table) == ("trk", "on", "spot", "name", "program")
+            assert _keys(table) == (
+                "trk",
+                "on",
+                "spot",
+                "name",
+                "channel",
+                "program",
+            )
             assert table.row_count == 8
 
     async def test_tab_cycles_the_four_column_groups(self):
@@ -526,8 +607,8 @@ class TestTheRange:
             await app.push_screen(screen)
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
-            await pilot.press("tab")
-            await pilot.pause()
+            # The channel is in the first view now: eight tracks on
+            # eight channels is what MULTI is for.
             _focus(table, 0, "channel")
             await pilot.press("plus")
             await pilot.pause()
@@ -552,8 +633,6 @@ class TestTheRange:
             await app.push_screen(screen)
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
-            await pilot.press("tab")
-            await pilot.pause()
             _focus(table, 0, "channel")
             await pilot.press("enter")
             await pilot.pause()

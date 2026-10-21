@@ -73,10 +73,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
+from sq import banks
 from sq.presets import (
     OUTPUT_NAMES,
     PAN_SOUND,
@@ -102,6 +103,7 @@ __all__ = [
     "MultiScreen",
     "NumberPrompt",
     "PresetListScreen",
+    "SoundPickerScreen",
 ]
 
 
@@ -283,28 +285,19 @@ ON_COLUMN = _Column("on", "on")
 #: The drum kits are the numbers 80 to 99 and ignore the bank code, so
 #: they are shown as they are -- "~DRUM~ 01" -- rather than as a group
 #: and a slot that do not exist.
-SPOT_COLUMN = _Column("spot", "spot")
+SPOT_COLUMN = _Column("spot", "sound")
 
 #: The sound's name, from the catalog the app hands in.
 NAME_COLUMN = _Column("name", "name")
 
-#: PRG: what the track plays, and what program change it answers to.
+#: SOUND: what the track plays, what MIDI program change it answers to,
+#: and **the channel it receives on**.  The channel is here rather than
+#: only under ``tab`` because it is the setting MULTI mode is opened for:
+#: eight tracks on eight channels is the whole point, and a per-track
+#: channel the user has to hunt for reads as missing.
 PRG_COLUMNS: Tuple[_Column, ...] = (
     SPOT_COLUMN,
     NAME_COLUMN,
-    _Column(
-        "program",
-        "prog",
-        field="midi_program",
-        kind="number",
-        low=1,
-        high=128,
-        fmt="plus_one",
-    ),
-)
-
-#: MIDI: what the track listens to.
-MIDI_COLUMNS: Tuple[_Column, ...] = (
     _Column(
         "channel",
         "ch",
@@ -314,6 +307,20 @@ MIDI_COLUMNS: Tuple[_Column, ...] = (
         high=16,
         fmt="plus_one",
     ),
+    _Column(
+        "program",
+        "MIDI PC",
+        field="midi_program",
+        kind="number",
+        low=1,
+        high=128,
+        fmt="plus_one",
+    ),
+)
+
+#: MIDI: the rest of what the track listens to.  The channel is in the
+#: SOUND group above; these are the switches around it.
+MIDI_COLUMNS: Tuple[_Column, ...] = (
     _Column("status", "status", field="status", kind="enum", names=STATUS_NAMES),
     _Column("pressure", "press", field="pressure", kind="enum", names=PRESSURE_NAMES),
     _Column(
@@ -369,10 +376,10 @@ KEY_COLUMNS: Tuple[_Column, ...] = (
 #: Four groups of eight rows fit a terminal; the whole track -- sound,
 #: MIDI, mix and key -- does not.
 COLUMN_VIEWS: Tuple[Tuple[str, Tuple[_Column, ...]], ...] = (
-    ("PRG", PRG_COLUMNS),
+    ("sound", PRG_COLUMNS),
     ("MIDI", MIDI_COLUMNS),
-    ("MIX", MIX_COLUMNS),
-    ("KEY", KEY_COLUMNS),
+    ("mix", MIX_COLUMNS),
+    ("key", KEY_COLUMNS),
 )
 
 
@@ -462,6 +469,174 @@ class ChoicePicker(ChoiceScreen):
         """The shared screen's own children, in a frame."""
         with Vertical():
             yield from super().compose()
+
+
+class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
+    """Pick a sound for a track, from **any** of the five groups.
+
+    Two panes, the same shape the browser itself uses: the groups on the
+    left, the selected group's sounds on the right.  The app's old picker
+    offered only the bank the browser happened to be showing, which made
+    ROM and the cards unreachable from a track that was on Internal --
+    the one thing a MULTI setup is for.
+
+    The screen answers ``(group_id, slot)`` with the picture the rest of
+    the family uses: group ids are ``INT``/``ROM``/``CARDA``/``CARDB``/
+    ``DRUM`` and slots count from one, exactly as the panel prints them.
+    Names come from the catalog the app hands in; a missing one shows as
+    ``(no name)`` rather than a blank cell, which reads as corruption.
+
+    ``tab`` swaps panes, the arrows move, ``⏎`` picks, ``esc`` cancels.
+    ``⏎`` is handled as the table's own row selection, not as a binding:
+    a binding at screen level would be eaten by the focused DataTable.
+    """
+
+    DEFAULT_CSS = """
+    SoundPickerScreen { align: center middle; }
+    SoundPickerScreen > Vertical {
+        width: 84; height: 80%; border: thick $accent;
+        background: $surface; padding: 1 2;
+    }
+    SoundPickerScreen Horizontal { height: 1fr; }
+    SoundPickerScreen #picker-groups {
+        width: auto; min-width: 18; max-width: 30;
+        border-right: solid $panel;
+    }
+    SoundPickerScreen #picker-slots { width: 1fr; }
+    SoundPickerScreen DataTable { height: 1fr; }
+    SoundPickerScreen .hint { color: $text-muted; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("q", "cancel", "Cancel"),
+        Binding("tab", "switch_pane", "Switch pane", show=False),
+    ]
+
+    def __init__(
+        self,
+        catalog,
+        current: Optional[Tuple[str, int]] = None,
+    ) -> None:
+        super().__init__()
+        self._catalog = catalog
+        #: ``(group_id, slot)`` the track plays now, marked in the list.
+        self._current = current
+        self._group_ids: List[str] = banks.group_ids()
+        #: The group whose slots are drawn; set by the group pane.
+        self._filled_group: Optional[str] = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("[b]Pick a sound for this track[/b]", id="picker-title")
+            with Horizontal():
+                yield DataTable(id="picker-groups", cursor_type="row")
+                yield DataTable(id="picker-slots", cursor_type="row")
+            yield Static(
+                wrap_blocks(
+                    (
+                        "tab pane",
+                        "↑↓ move",
+                        "⏎ pick",
+                        "esc cancel",
+                    ),
+                    78,
+                ),
+                classes="hint",
+            )
+
+    def on_mount(self) -> None:
+        groups = self.query_one("#picker-groups", DataTable)
+        groups.add_column("group", key="group")
+        groups.add_column("n", key="n")
+        for group_id in self._group_ids:
+            entry = banks.group(group_id)
+            groups.add_row(entry.label, str(entry.count), key=group_id)
+        self._fill_slots(self._start_group())
+        self._place_current()
+        # A picker opened from a track almost always wants another sound
+        # in the group the track is already on, so the cursor starts in
+        # the slot pane; ``tab`` reaches the groups. A fresh picker with
+        # no current sound starts on the groups, where a choice is owed.
+        if self._current is not None:
+            self.query_one("#picker-slots", DataTable).focus()
+        else:
+            groups.focus()
+
+    def _start_group(self) -> str:
+        """The group to open on: the track's own, else the first."""
+        if self._current is not None and self._current[0] in self._group_ids:
+            return self._current[0]
+        return self._group_ids[0]
+
+    def _place_current(self) -> None:
+        """Put both cursors on what the track plays now."""
+        if self._current is None:
+            return
+        group_id, slot = self._current
+        if group_id not in self._group_ids:
+            return
+        self.query_one("#picker-groups", DataTable).move_cursor(
+            row=self._group_ids.index(group_id)
+        )
+        self._fill_slots(group_id)
+        table = self.query_one("#picker-slots", DataTable)
+        for index, entry in enumerate(banks.slots(group_id)):
+            if entry.number == slot:
+                table.move_cursor(row=index)
+                break
+
+    def _fill_slots(self, group_id: str) -> None:
+        """Draw one group's sounds, keeping the slot pane's shape stable."""
+        if group_id == self._filled_group:
+            return
+        self._filled_group = group_id
+        table = self.query_one("#picker-slots", DataTable)
+        table.clear(columns=True)
+        table.add_column("#", key="num")
+        table.add_column("name", key="name")
+        for slot in banks.slots(group_id):
+            name = self._catalog.display_name(slot.bank_id, slot.number)
+            table.add_row(
+                f"{slot.number:03d}",
+                _literal(name) if name else "[dim](no name)[/dim]",
+                key=f"{group_id}:{slot.number}",
+            )
+
+    def _group_under_cursor(self) -> Optional[str]:
+        table = self.query_one("#picker-groups", DataTable)
+        if not table.row_count:
+            return None
+        key = table.coordinate_to_cell_key(table.cursor_coordinate)[0].value
+        return str(key)
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        if event.data_table.id != "picker-groups":
+            return
+        group_id = self._group_under_cursor()
+        if group_id is not None:
+            self._fill_slots(group_id)
+
+    def on_data_table_row_selected(self, event) -> None:
+        if event.data_table.id != "picker-slots":
+            return
+        table = self.query_one("#picker-slots", DataTable)
+        if not table.row_count:
+            return
+        key = table.coordinate_to_cell_key(table.cursor_coordinate)[0].value
+        group_id, _, number = str(key).rpartition(":")
+        try:
+            self.dismiss((group_id, int(number)))
+        except ValueError:  # pragma: no cover - the keys are ours
+            self.dismiss(None)
+
+    def action_switch_pane(self) -> None:
+        left = self.query_one("#picker-groups", DataTable)
+        right = self.query_one("#picker-slots", DataTable)
+        (right if left.has_focus else left).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class PresetListScreen(ModalScreen[Optional[int]]):

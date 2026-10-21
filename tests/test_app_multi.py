@@ -34,7 +34,7 @@ import pytest
 from textual.widgets import DataTable, Static
 
 from ensqsqed.app import EnsqsqedApp
-from ensqsqed.multi import MultiScreen, PresetListScreen
+from ensqsqed.multi import MultiScreen, PresetListScreen, SoundPickerScreen
 from sq import catalog as cat
 from sq import favorites as fav
 from sq.bridge import AllPresetsDump, CurrentPreset, PresetMismatch, PresetSent
@@ -525,9 +525,10 @@ class TestTheSoundPicker:
             _focus(table, 0, "spot")
             await pilot.press("enter")
             await pilot.pause()
-            # The screen says which track wants a sound; the app runs
-            # its own picker over the bank it is showing.
-            assert isinstance(app.screen, ChoiceScreen)
+            # The screen says which track wants a sound; the app runs its
+            # own picker over every group, so ROM and the cards are
+            # reachable from a track that is on Internal.
+            assert isinstance(app.screen, SoundPickerScreen)
             await pilot.press("down")
             await pilot.press("down")
             await pilot.press("enter")
@@ -553,7 +554,7 @@ class TestTheSoundPicker:
             _focus(table, 0, "spot")
             await pilot.press("enter")
             await pilot.pause()
-            assert isinstance(app.screen, ChoiceScreen)
+            assert isinstance(app.screen, SoundPickerScreen)
             await pilot.press("escape")
             await pilot.pause()
             assert device.sent == []

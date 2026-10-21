@@ -62,7 +62,13 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Input, Static
 
 from ensqsqed.fx import FxScreen
-from ensqsqed.multi import COLUMN_VIEWS, ON_COLUMN, MultiScreen, PresetListScreen
+from ensqsqed.multi import (
+    COLUMN_VIEWS,
+    ON_COLUMN,
+    MultiScreen,
+    PresetListScreen,
+    SoundPickerScreen,
+)
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
@@ -2135,30 +2141,31 @@ class EnsqsqedApp(App):
         """The app's sound picker, for the track under the cursor.
 
         The screens do not own a picker: the app has the catalog and the
-        groups, so the app runs it.  The list offered here is the bank
-        the browser is on -- the one on the screen -- so the two panes
-        and the editor agree about what is where.
+        groups, so the app runs it.  The picker offers **every** group --
+        Internal, ROM, Card A, Card B and the drum kits -- because a
+        multi setup exists to mix sounds across them; the browser's
+        current bank is only where it opens.
         """
         preset = self._edit_preset
         if preset is None:
             return
-        slots = banks.slots(self._current_bank)
-        if not slots:
-            return
-        names = [
-            self.catalog.display_name(slot.bank_id, slot.number) or f"{slot.number:03d}"
-            for slot in slots
-        ]
         track = preset.tracks[index]
-        current = track.slot - 1 if track.group == self._current_bank else 0
 
-        def picked(choice: Optional[int]) -> None:
+        def picked(choice: Optional[Tuple[str, int]]) -> None:
             if choice is None:
                 return
-            self._set_track_sound(index, slots[choice])
+            group_id, slot_number = choice
+            try:
+                slot = banks.slot(group_id, slot_number)
+            except LookupError:
+                return
+            self._set_track_sound(index, slot)
 
         self.push_screen(
-            ChoiceScreen(f"track {number} — sound", names, current),
+            SoundPickerScreen(
+                self.catalog,
+                current=(track.group, track.slot),
+            ),
             picked,
         )
 

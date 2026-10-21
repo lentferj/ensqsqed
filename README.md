@@ -254,6 +254,9 @@ channel, and a track that is off does not receive at all. Three keys reach it.
   seconds, and it says so), lists them by the unit's own number and name, and
   hands the chosen one to the editors.
 - **`m` — the eight-track editor.** The preset's eight tracks as a table.
+  `⏎` on a track's sound opens a browser with **all five groups** — Internal,
+  ROM, Card A, Card B and the drum kits — so a multi setup can mix sounds
+  from anywhere the unit holds them, not just the bank the browser is on.
 - **`x` — the effect editor.** The preset's one effect.
 
 The track editor's columns are grouped, and `tab` cycles the groups the way
@@ -262,8 +265,8 @@ and `on`, whether the track is in the pile — then:
 
 | group | columns | what the panel calls them |
 |---|---|---|
-| **PRG** | `spot`, `name`, `prog` | the sound — group and slot — its name, and the program change it answers to |
-| **MIDI** | `ch`, `status`, `press`, `sustain` | the MIDI channel (1-16), Status BOTH/LOCAL/MIDI/*EXT*, Pressure NONE/KEY/CHANNEL, and the sustain switch |
+| **sound** | `spot`, `name`, `ch`, `program` | the sound — group and slot — its name, the **MIDI channel** it receives on (1-16), and the program change it answers to (1-128); the channel is here because eight tracks on eight channels is what MULTI mode is for |
+| **MIDI** | `status`, `press`, `sustain` | Status BOTH/LOCAL/MIDI/*EXT*, Pressure NONE/KEY/CHANNEL, and the sustain switch |
 | **MIX** | `vol`, `pan`, `timbre`, `rel`, `out` | Volume 0-99, Pan SOUND or -98..+99, Timbre 0-99, Release -64..+64, Output DRY/FX1/FX2/VOICE/CONTROL |
 | **KEY** | `low`, `high`, `transp` | the key range as note names (A0..C8) and the transpose (octave and semitone) |
 
