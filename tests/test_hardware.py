@@ -49,7 +49,7 @@ import os
 
 import pytest
 
-from sq import banks
+from sq import banks, presets
 from sq import messages as m
 
 
@@ -171,6 +171,96 @@ class TestHardwareInternalBankNames:
         print(
             f"\ninternal bank names: all {len(names)} programs answered "
             "with decodable non-blank names"
+        )
+
+
+class TestHardwarePresetReads:
+    """The preset reads, against the unit: structure only.
+
+    Two requests and two answers.  The Single Sequence Dump Request
+    (command 03) returns the preset the unit is on -- 216 bytes, a
+    48-byte sequence blob and a 168-byte preset -- and the All Sequence
+    Dump Request (command 04) returns all eighty of them, which takes
+    about twelve seconds and is the reason this class has two tests and
+    not one.
+
+    **Structure only, and no name.**  A preset's name is the owner's own
+    text, so nothing here asserts on one: what is checked is the shape
+    of the dump, the length of the blob, the fact that the blob says
+    how long it is, and that the 168 bytes decode into the model
+    without raising.  The pile's first byte names the primary track
+    (Note 6), and that is checked too, because a pile without a primary
+    track is not a state the unit offers.
+
+    **Both reads are silent.**  The unit transmits and plays nothing:
+    a dump request is not a program change and does not select a
+    sound.
+    """
+
+    def test_current_preset_is_a_blob_and_a_preset(self, device) -> None:
+        """216 bytes: a 48-byte sequence blob, then a 168-byte preset.
+
+        The blob begins with its own length as a big-endian long word,
+        so the split between blob and preset is read out of the data
+        rather than assumed (specification 4.6).
+        """
+        current = device.read_current_preset()
+        seq_blob = current.seq_blob
+        preset_raw = current.preset_raw
+
+        assert len(seq_blob) == 48, (
+            f"the sequence blob is {len(seq_blob)} bytes, not 48"
+        )
+        assert len(preset_raw) == 168, f"the preset is {len(preset_raw)} bytes, not 168"
+        assert len(seq_blob) + len(preset_raw) == 216, (
+            "the single-preset dump is not 216 bytes"
+        )
+        assert int.from_bytes(seq_blob[:4], "big") == len(seq_blob), (
+            "the sequence blob's own size word does not say how long it is"
+        )
+
+        # The model decodes it, and the pile names a primary track.
+        preset = presets.Preset.from_bytes(preset_raw)
+        assert len(preset.pile) == 8, f"the pile is {len(preset.pile)} bytes, not 8"
+        assert 1 <= preset.primary_track <= 8, (
+            f"the pile names track {preset.primary_track} as the primary "
+            "one, and the primary track is one of the eight"
+        )
+
+        print(
+            f"\ncurrent preset: {len(seq_blob)} bytes of sequence data and "
+            f"{len(preset_raw)} bytes of preset, primary track "
+            f"{preset.primary_track}"
+        )
+
+    def test_all_presets_come_back_with_the_count_the_alert_gave(self, device) -> None:
+        """Eighty presets, and the area they sit in found from the end.
+
+        The one rule the framing document gives: the presets sit
+        ``21 + 168 * count`` bytes before the end of the dump, and the
+        count is the alert's last byte.  The dump is put back together
+        from the parsed fields first, so the rule is checked against
+        the whole thing rather than against a number the parser
+        already holds.
+        """
+        dump = device.read_all_presets()
+
+        assert dump.count == 80, (
+            f"the all-presets alert counted {dump.count} presets, not 80"
+        )
+        assert len(dump.presets_raw) == dump.count, (
+            f"the dump holds {len(dump.presets_raw)} presets, not the "
+            f"{dump.count} the alert counted"
+        )
+        data = dump.to_bytes()
+        assert dump.preset_area_start == len(data) - 21 - 168 * dump.count, (
+            f"the preset area starts at {dump.preset_area_start}, which is "
+            f"not {len(data) - 21 - 168 * dump.count}"
+        )
+
+        print(
+            f"\nall presets: {dump.count} presets, {len(data)} bytes, the "
+            f"area at {dump.preset_area_start}"
         )
 
 

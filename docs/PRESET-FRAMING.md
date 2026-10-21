@@ -506,6 +506,46 @@ committed fixture is what the run must reproduce.
 - Throwaway verification script: `/tmp/opencode/sqrex/verify_layout.py`.
 - `tools/probe_preset_write.py` — the edit-buffer probe (§9); run log at
   `/tmp/opencode/sqrex/probe_write.log`.
+- `tools/verify_preset_roundtrip.py` — the end-to-end round trip (below); run
+  log at `/tmp/opencode/sqrex/e2e.log`.
 - German manual: `/tmp/opencode/sqrplusd.txt` (Part 2 system bank, Part 3
   presets, Part 8 SysEx storage).
 - English spec: `SQ1-SysEx.md` §4.6–§4.8.2, §3.1.7/3.1.8.
+
+---
+
+## E2E round trip (T12, probed 2026-10-21)
+
+One live round trip through the program's **own** code path, with
+`tools/verify_preset_roundtrip.py`: read the preset the unit is on, change one
+value through the model, send it with `SqBridge.send_preset(..., verify=True)`,
+read it back independently, restore the original bytes and read once more.
+Every step is `sq.bridge` and `sq.presets` — the app's objects — and not a
+second implementation of them.
+
+| step | what | result |
+|---|---|---|
+| read | command 03 | **216 bytes**: a 48-byte sequence blob and a 168-byte preset |
+| snapshot | written to `/tmp/opencode/sqrex/e2e_before.bin` | 216 bytes |
+| edit | track 1's volume, through `Track.updated` | stored **127 → 126** (displayed 99 → 98) |
+| send | `send_preset(seq_blob, preset.to_bytes(), verify=True)` | `verified=True`, `diff_offsets=()` |
+| re-read | an independent command 03 | **216 bytes, identical** to what was sent; volume read back as stored 126 / displayed 98 |
+| restore | the original 216 bytes, `verify=True` | `verified=True`, `diff_offsets=()` |
+| final read | command 03 | **216 bytes, identical** to the snapshot — the unit is byte-for-byte as found |
+
+**216 bytes compared at every step, and the diff offsets were empty every
+time.** The edited dump differs from the snapshot in exactly one byte, at
+**dump offset 82** (preset offset 34, track 1's volume) — the byte that was
+changed, and no other.
+
+Nothing was stored. The unit held the edit in its **Edit Preset** buffer for
+the length of the run, and the run put the original bytes back; the final
+read matches `e2e_before.bin` byte for byte.
+
+The tool is loud about failure: a device error prints what happened, is
+written to the log and exits **2** — never 1, and never silently — and the
+restore is attempted on every failure path first. The preset's *name* is
+masked in the log: it is the owner's own text.
+
+Run log: `/tmp/opencode/sqrex/e2e.log`. Snapshot: `/tmp/opencode/sqrex/e2e_before.bin`.
+
