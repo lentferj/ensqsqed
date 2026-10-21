@@ -36,6 +36,7 @@ from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Input, Label, Static
 
+from ensqsqed.gate import EditGate
 from ensqsqed.multi import (
     COLUMN_VIEWS,
     KEY_HINTS_BLOCK,
@@ -578,6 +579,103 @@ class TestEditing:
             assert preset.tracks[0].volume == 64
             assert applied == []
             assert "refused" in _status(screen)
+
+
+class TestTheGateInTheScreen:
+    """`w` here toggles the app's gate, and the note follows it."""
+
+    @staticmethod
+    def _note(screen) -> str:
+        return str(screen.query_one(".note", Static).content)
+
+    async def test_w_arms_and_locks_the_gate_the_app_checks(self):
+        preset = _preset()
+        gate = EditGate()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=gate,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert "write gate locked" in self._note(screen).lower()
+            await pilot.press("w")
+            await pilot.pause()
+            assert gate.describe() == "write gate ARMED"
+            assert "write gate armed" in self._note(screen).lower()
+            await pilot.press("w")
+            await pilot.pause()
+            assert gate.describe() == "write gate locked"
+            assert "write gate locked" in self._note(screen).lower()
+
+    async def test_an_edit_after_w_goes_through(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=EditGate(),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("w")
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("plus")
+            await pilot.pause()
+            assert applied, "the gate was armed on this screen"
+            assert preset.tracks[0].volume == 65
+
+    async def test_a_refusal_names_the_key_that_opens_the_gate(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=EditGate(),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            _focus(table, 0, "volume")
+            await pilot.press("plus")
+            await pilot.pause()
+            said = _status(screen)
+            assert "the write gate is locked" in said
+            assert "Press w" in said
+
+    async def test_without_an_app_gate_w_says_there_is_none(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            assert "no write gate" in _status(screen)
 
 
 class TestTheTrackSwitch:

@@ -77,6 +77,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
+from ensqsqed.gate import EditGate
 from sq import presets
 from sq.presets import Effect, EffectParam, Preset
 from vinsynlib.keys import wrap_blocks
@@ -95,6 +96,7 @@ FX_HINTS: Tuple[str, ...] = (
     "a digit opens the prompt",
     "+/- adjust",
     "z undo",
+    "w write gate",
     "esc closes",
 )
 
@@ -211,6 +213,11 @@ class FxScreen(ModalScreen[None]):
         Binding("minus", "bump(-1)", "-1", show=False),
         Binding("z", "undo", "Undo"),
         Binding("Z", "undo_all", "Undo all"),
+        # `w` is the app's key, served here for the reason `z` is: a
+        # modal screen cuts the app's binding chain, so the gate could
+        # only be armed by closing the editor -- leaving the warning
+        # that said so on the dimmed backdrop behind it.
+        Binding("w", "toggle_write_gate", "Write gate"),
     ] + [
         Binding(str(digit), f"type_digit('{digit}')", show=False) for digit in range(10)
     ]
@@ -232,6 +239,7 @@ class FxScreen(ModalScreen[None]):
         say_: Optional[Callable[..., None]] = None,
         result_cb: Optional[Callable[[bool, str], None]] = None,
         allow_write: bool = False,
+        gate: Optional[EditGate] = None,
         title_prefix: str = "Preset effect",
     ) -> None:
         super().__init__()
@@ -244,6 +252,10 @@ class FxScreen(ModalScreen[None]):
         self._say_hook = say_
         self._result_hook = result_cb
         self._allow_write = allow_write
+        #: The app's own gate, when there is an app.  Held rather than
+        #: copied so `w` here toggles the object every edit is checked
+        #: against, and the note line can be redrawn from it.
+        self._gate = gate
         self._title_prefix = title_prefix
         #: The rows the table shows, in order.
         self._rows: Tuple[_Row, ...] = ()
@@ -281,8 +293,31 @@ class FxScreen(ModalScreen[None]):
         whether the application's write gate is armed."""
         effect = self._preset.effect
         set_name = effect.parameter_set or "unknown"
-        gate = "write gate armed" if self._allow_write else "write gate locked"
-        return f"parameter set: {set_name} · {gate}"
+        return f"parameter set: {set_name} · {self._gate_description()}"
+
+    def _gate_description(self) -> str:
+        """The gate's state, read from the gate itself when there is one.
+
+        A copy of the boolean would go stale the moment `w` was pressed
+        here: the note would go on saying "locked" while the edits went
+        through, which is worse than not saying it at all.
+        """
+        if self._gate is not None:
+            return self._gate.describe()
+        return "write gate armed" if self._allow_write else "write gate locked"
+
+    def _writes_allowed(self) -> bool:
+        """Whether an edit made now may be sent."""
+        if self._gate is not None:
+            return self._gate.armed
+        return self._allow_write
+
+    def _refresh_note(self) -> None:
+        """Redraw the gate line after the gate changes."""
+        try:
+            self.query_one(".note", Static).update(self._note_text())
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
 
     # --- the rows -----------------------------------------------------------
 
@@ -618,7 +653,7 @@ class FxScreen(ModalScreen[None]):
         self._pending_number = None
         if not confirmed or number is None:
             return
-        if not self._allow_write:
+        if not self._writes_allowed():
             self._refuse_write()
             return
         effect = self._preset.effect
@@ -683,7 +718,7 @@ class FxScreen(ModalScreen[None]):
         The write goes through the model, so the bits of the byte that
         belong to another parameter keep their values.
         """
-        if not self._allow_write:
+        if not self._writes_allowed():
             self._refuse_write()
             return
         effect = self._preset.effect
@@ -755,8 +790,13 @@ class FxScreen(ModalScreen[None]):
         """Say that this screen may not write, and change nothing.
 
         A change that cannot be sent is not a change, so the refusal
-        comes before the value is put into the preset.
+        comes before the value is put into the preset.  The sentence
+        carries the remedy as well as the state, and `w` works here, so
+        the reader can act on it without closing the editor.
         """
+        if self._gate is not None:
+            self.say(self._gate.refuse("the change"), refused=True)
+            return
         self.say(
             "edits are refused — the app has not opened the write path",
             refused=True,
@@ -767,6 +807,22 @@ class FxScreen(ModalScreen[None]):
     def action_close(self) -> None:
         """``escape`` and ``q``."""
         self.dismiss(None)
+
+    def action_toggle_write_gate(self) -> None:
+        """``w`` here: the app's own gate, toggled where it is shown.
+
+        The gate is the app's, handed in rather than copied, so this
+        toggles the one the write path checks.  The note is redrawn and
+        the state is said on this screen's own line -- the app's status
+        line is the dimmed backdrop behind the modal, which is exactly
+        where the reader was not looking.
+        """
+        if self._gate is None:
+            self.say("this screen has no write gate to toggle", refused=True)
+            return
+        self._gate.toggle()
+        self._refresh_note()
+        self.say(self._gate.describe())
 
     def action_undo(self) -> None:
         """``z``: one change back."""

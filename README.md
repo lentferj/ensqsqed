@@ -296,6 +296,12 @@ are deliberately fenced off from the front panel. The write gate (`w`) must be
 armed first, and every change is read back and compared byte for byte — a
 refused or unmatched write is reported, not assumed.
 
+`w` works **inside both editors** as well as in the browser — a modal screen
+cuts the browser's key chain, so the editors serve it themselves and toggle
+the one gate the write path checks. The editor's own note line says whether
+the gate is armed, and a refusal is said on the editor's status line, not on
+the dimmed browser behind it.
+
 Two MULTI rules are worth knowing, and both live on the unit:
 
 - **MIDI Mode=MULTI is a setting in the unit's System bank**, not a message

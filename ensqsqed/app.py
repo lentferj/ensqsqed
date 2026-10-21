@@ -62,6 +62,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Input, Static
 
 from ensqsqed.fx import FxScreen
+from ensqsqed.gate import EditGate
 from ensqsqed.multi import (
     COLUMN_VIEWS,
     ON_COLUMN,
@@ -253,40 +254,6 @@ _BRIDGE_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
-class EditGate:
-    """Whether writes to the unit are allowed, and what to say about it.
-
-    Locked by default.  The family's ``--allow-write`` starts it armed and
-    ``w`` toggles it in the browser; either way the status line says which
-    state it is in, so the answer to "why did my edit not send?" is on
-    screen rather than in a keybinding manual.
-
-    **The gate is asked twice.**  A screen is told the state when it is
-    opened, and the app asks again for every change: the gate can be
-    closed between two changes, and a change that cannot be sent is not a
-    change.  This is the shape the sibling p2ked uses for its bursts.
-    """
-
-    def __init__(self, *, armed: bool = False) -> None:
-        self.armed = armed
-
-    def toggle(self) -> bool:
-        """Flip the gate and say what it is now."""
-        self.armed = not self.armed
-        return self.armed
-
-    def describe(self) -> str:
-        """The gate's state, in the family's words."""
-        return "write gate ARMED" if self.armed else "write gate locked"
-
-    def refuse(self, what: str) -> str:
-        """The message for a change refused because the gate is locked."""
-        return (
-            f"{what} not sent: the write gate is locked. Press w to arm it, "
-            "or start with --allow-write."
-        )
-
-
 def _plain(text: str) -> str:
     """``text`` as markup that renders as exactly itself.
 
@@ -351,6 +318,12 @@ class EnsqsqedApp(App):
         color: $text;
         text-style: bold;
     }
+    /* The shared confirmation's prompt is a Label with no width, so a
+       sentence longer than the dialog lays out at its full length and
+       the dialog clips the end -- the FX type-change question and the
+       catalog warnings all lost their last clause that way. Constrain
+       it to the dialog and Textual wraps it. */
+    ConfirmScreen #confirm-prompt { width: 1fr; }
     """
 
     BINDINGS = [
@@ -1555,23 +1528,29 @@ class EnsqsqedApp(App):
         self._undo(len(self._undo_log))
 
     def _undo(self, count: int) -> None:
-        """Reverse the last ``count`` changes, newest first."""
+        """Reverse the last ``count`` changes, newest first.
+
+        Every sentence goes through :meth:`_say_to_editor`: `z` is
+        served by the editors themselves, and the app's status line is
+        behind the modal, so a "nothing to undo" written there is
+        written where nobody is looking.
+        """
         if self._busy:
-            self.notify_status("busy", refused=True)
+            self._say_to_editor("busy", refused=True)
             return
         taken = self._undo_log.plan(count)
         if not taken:
             refusal = self._undo_log.last_refusal
             if refusal is not None:
-                self.notify_status(f"refused: {refusal}", refused=True)
+                self._say_to_editor(f"refused: {refusal}", refused=True)
             else:
-                self.notify_status("nothing to undo")
+                self._say_to_editor("nothing to undo")
             return
         # Claimed on the main thread, before the worker exists.
         if not self._exchange.acquire(blocking=False):
             for record in reversed(taken):
                 self._undo_log.push(record)
-            self.notify_status("busy", refused=True)
+            self._say_to_editor("busy", refused=True)
             return
         self._undo_worker(taken)
 
@@ -1602,9 +1581,9 @@ class EnsqsqedApp(App):
         if failed:
             reason = self._undo_reason
             if reason:
-                self.notify_status(f"{summary} ({reason})", refused=True)
+                self._say_to_editor(f"{summary} ({reason})", refused=True)
             else:
-                self.notify_status(f"{summary}; {len(failed)} failed", refused=True)
+                self._say_to_editor(f"{summary}; {len(failed)} failed", refused=True)
             return
         if any(isinstance(record.payload, tuple) for record in records):
             # A preset went back.  The model is the truth the next edit
@@ -1820,6 +1799,7 @@ class EnsqsqedApp(App):
             on_undo=self._undo_from_screen,
             on_sound_picked=self._pick_sound,
             allow_write=self._gate.armed,
+            gate=self._gate,
             say_=self.notify_status,
             name_for=self.catalog.display_name,
         )
@@ -1838,6 +1818,7 @@ class EnsqsqedApp(App):
             on_undo=self._undo_from_screen,
             say_=self.notify_status,
             allow_write=self._gate.armed,
+            gate=self._gate,
         )
         self._fx_screen = screen
         self.push_screen(screen, self._editor_closed)
@@ -2060,17 +2041,19 @@ class EnsqsqedApp(App):
         except Exception:  # pragma: no cover - the screen closed under us
             return
 
-    def _say_to_editor(self, message: str) -> None:
+    def _say_to_editor(self, message: str, *, refused: bool = False) -> None:
         """Say one sentence on the open editor's own line.
 
         The app's status line is behind the modal, so a sentence written
-        there is written where nobody is looking.
+        there is written where nobody is looking.  ``refused`` carries
+        the difference between news and a "no" to the screen, which
+        marks it the way the rest of the family does.
         """
         screen = self._multi_screen or self._fx_screen
         if screen is None:
-            self.notify_status(message)
+            self.notify_status(message, refused=refused)
             return
-        screen.say(message)
+        screen.say(message, refused=refused)
 
     def _store_sentence(self, description: str) -> str:
         """What the app says after a change has landed.

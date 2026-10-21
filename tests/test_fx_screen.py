@@ -23,9 +23,10 @@ calls it makes -- and never the text of a name.
 import pathlib
 
 from textual.app import App
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Static
 
 from ensqsqed.fx import FxScreen
+from ensqsqed.gate import EditGate
 from sq import presets
 from sq.presets import Effect, Preset
 from vinsynlib.ui.confirm import ConfirmScreen
@@ -813,6 +814,80 @@ class TestTheWritePath:
             await pilot.pause()
             assert applied == []
             assert preset.effect.number == 0
+
+
+class TestTheGateInTheScreen:
+    """`w` here toggles the app's gate, and the note follows it.
+
+    The modal's bindings cut the app's chain, so without this key the
+    gate could only be armed by closing the editor -- and the warning
+    that said so was written on the dimmed browser behind it.
+    """
+
+    @staticmethod
+    def _note(screen) -> str:
+        return str(screen.query_one(".note", Static).content)
+
+    async def test_w_arms_and_locks_the_gate_the_app_checks(self):
+        preset = _preset()
+        gate = EditGate()
+        screen = FxScreen(preset, on_apply=lambda p, d: None, gate=gate)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert "write gate locked" in self._note(screen)
+            await pilot.press("w")
+            await pilot.pause()
+            assert gate.describe() == "write gate ARMED"
+            assert "write gate ARMED" in self._note(screen)
+            await pilot.press("w")
+            await pilot.pause()
+            assert gate.describe() == "write gate locked"
+            assert "write gate locked" in self._note(screen)
+
+    async def test_an_edit_after_w_goes_through(self):
+        preset = _preset()
+        gate = EditGate()
+        applied = []
+        screen = FxScreen(preset, on_apply=lambda p, d: applied.append(d), gate=gate)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.pause()
+            assert applied, "the gate was armed on this screen"
+
+    async def test_a_refusal_names_the_key_that_opens_the_gate(self):
+        preset = _preset()
+        said = []
+        screen = FxScreen(
+            preset,
+            on_apply=lambda p, d: None,
+            gate=EditGate(),
+            say_=lambda message, refused=False: said.append((message, refused)),
+        )
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.pause()
+            assert said and said[-1][1] is True
+            assert "the write gate is locked" in said[-1][0]
+            assert "Press w" in said[-1][0]
+
+    async def test_without_an_app_gate_w_says_there_is_none(self):
+        preset = _preset()
+        screen = FxScreen(preset, on_apply=lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            status = str(screen.query_one(".status", Static).content)
+            assert "no write gate" in status
 
 
 class TestTheUndoSeam:

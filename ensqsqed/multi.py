@@ -77,6 +77,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
+from ensqsqed.gate import EditGate
 from sq import banks
 from sq.presets import (
     OUTPUT_NAMES,
@@ -131,6 +132,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "0-9 type",
     "+ - nudge",
     "space track on/off",
+    "w write gate",
     "esc close",
 )
 
@@ -950,6 +952,11 @@ class MultiScreen(ModalScreen[None]):
         # pressed, after an edit made here.
         Binding("z", "undo", "Undo", show=False),
         Binding("Z", "undo_all", "Undo all", show=False),
+        # `w` is the app's key, served here for the reason `z` is: a
+        # modal screen cuts the app's binding chain, so the gate could
+        # only be armed by closing the editor -- leaving the warning
+        # that said so on the dimmed backdrop behind it.
+        Binding("w", "toggle_write_gate", "Write gate", show=False),
     ]
 
     # The ten digits, added after the list rather than into it: the
@@ -977,6 +984,7 @@ class MultiScreen(ModalScreen[None]):
         on_sound_picked: Callable[[int, int], None],
         on_close: Optional[Callable[[], None]] = None,
         allow_write: bool = False,
+        gate: Optional[EditGate] = None,
         say_: Optional[Callable[..., None]] = None,
         name_for: Optional[Callable[[str, int], Optional[str]]] = None,
     ) -> None:
@@ -1001,6 +1009,10 @@ class MultiScreen(ModalScreen[None]):
         #: allowed to write says so and changes nothing: a change that
         #: cannot be sent is not a change.
         self._allow_write = allow_write
+        #: The app's own gate, when there is an app.  Held rather than
+        #: copied so `w` here toggles the object every edit is checked
+        #: against, and the note can be redrawn from it.
+        self._gate = gate
         #: The app's own status line, called as
         #: ``say_(message, refused=refused)``.  The app's
         #: ``notify_status`` has exactly that shape.
@@ -1031,12 +1043,43 @@ class MultiScreen(ModalScreen[None]):
         program has no message that changes it, and pretending otherwise
         would be a lie the user finds out about at the keyboard.
         """
+        state = self._gate_description()
+        where = (
+            "w toggles it here"
+            if self._gate is not None
+            else "w in the browser toggles it"
+        )
         return (
             "[dim]MIDI Mode = MULTI is a System-bank setting on the unit "
             "itself — this program cannot change it. In MULTI mode each "
             "track takes one MIDI channel, and the lowest track number "
-            "wins a channel.[/dim]"
+            "wins a channel.[/dim]\n"
+            f"[dim]{state[0].upper()}{state[1:]} — {where}.[/dim]"
         )
+
+    def _gate_description(self) -> str:
+        """The gate's state, read from the gate itself when there is one.
+
+        A copy of the boolean would go stale the moment `w` was pressed
+        here: the note would go on saying "locked" while the edits went
+        through, which is worse than not saying it at all.
+        """
+        if self._gate is not None:
+            return self._gate.describe()
+        return "write gate ARMED" if self._allow_write else "write gate locked"
+
+    def _writes_allowed(self) -> bool:
+        """Whether an edit made now may be sent."""
+        if self._gate is not None:
+            return self._gate.armed
+        return self._allow_write
+
+    def _refresh_note(self) -> None:
+        """Redraw the note after the gate changes."""
+        try:
+            self.query_one(".note", Static).update(self._note())
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
 
     def _columns(self) -> Tuple[_Column, ...]:
         """The columns of the current view.
@@ -1199,6 +1242,22 @@ class MultiScreen(ModalScreen[None]):
             self._on_close()
         self.dismiss(None)
 
+    def action_toggle_write_gate(self) -> None:
+        """``w`` here: the app's own gate, toggled where it is shown.
+
+        The gate is the app's, handed in rather than copied, so this
+        toggles the one the write path checks.  The note is redrawn and
+        the state is said on this screen's own line -- the app's status
+        line is the dimmed backdrop behind the modal, which is exactly
+        where the reader was not looking.
+        """
+        if self._gate is None:
+            self.say("this screen has no write gate to toggle", refused=True)
+            return
+        self._gate.toggle()
+        self._refresh_note()
+        self.say(self._gate.describe())
+
     def action_toggle_view(self) -> None:
         """``tab``: the next column group.
 
@@ -1301,7 +1360,7 @@ class MultiScreen(ModalScreen[None]):
         index, _column = self._cursor()
         if index is None:
             return
-        if not self._allow_write:
+        if not self._writes_allowed():
             self._refuse_write()
             return
         number = index + 1
@@ -1453,7 +1512,7 @@ class MultiScreen(ModalScreen[None]):
         value the cell held is kept, because a change the app refuses
         has to be put back.
         """
-        if not self._allow_write:
+        if not self._writes_allowed():
             self._refuse_write()
             return
         track = self._preset.tracks[index]
@@ -1605,7 +1664,15 @@ class MultiScreen(ModalScreen[None]):
         return track.updated(**{column.field: int(value)})
 
     def _refuse_write(self) -> None:
-        """Say that this screen may not write, and change nothing."""
+        """Say that this screen may not write, and change nothing.
+
+        The sentence carries the remedy as well as the state, and `w`
+        works here, so the reader can act on it without closing the
+        editor.
+        """
+        if self._gate is not None:
+            self.say(self._gate.refuse("the change"), refused=True)
+            return
         self.say(
             "edits are refused — the app has not opened the write path",
             refused=True,

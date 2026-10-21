@@ -244,10 +244,10 @@ class TestTheGateClosed:
     ):
         """The gate is asked again for every change.
 
-        A modal screen cuts the app's binding chain, so `w` cannot be
-        pressed while the editor is open -- but the app's own check
-        stands between two changes anyway, and a change refused by it
-        has to leave the cell as it was.
+        The editor's own `w` toggles the app's gate, so the state can
+        change while the screen is open -- and the app's own check
+        stands between two changes anyway.  A change refused by it has
+        to leave the cell as it was.
         """
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -263,6 +263,85 @@ class TestTheGateClosed:
             await pilot.pause()
             assert _volume_cell(screen) == before
             assert device.sent == []
+
+
+class TestTheGateInTheEditor:
+    """`w` in an editor is the app's key, and its sentences are the editor's.
+
+    A modal screen cuts the app's binding chain, so before this the gate
+    could only be armed by closing the editor -- and the refusal that
+    said so was written on the dimmed browser behind the modal.
+    """
+
+    async def test_w_arms_the_gate_and_an_edit_goes_through(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("w")
+            await pilot.pause()
+            assert app._gate.armed
+            assert "write gate ARMED" in _status(screen)
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+
+    async def test_w_locks_it_again_from_the_fx_editor(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("x")
+            assert await _wait(lambda: app._fx_screen is not None, pilot)
+            screen = app._fx_screen
+            assert screen is not None
+            note = screen.query_one(".note", Static)
+            await pilot.press("w")
+            await pilot.pause()
+            assert app._gate.describe() == "write gate ARMED"
+            assert "write gate ARMED" in str(note.content)
+            await pilot.press("w")
+            await pilot.pause()
+            assert app._gate.describe() == "write gate locked"
+            assert "write gate locked" in str(note.content)
+
+    async def test_nothing_to_undo_is_said_in_the_editor(self, app: EnsqsqedApp):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("x")
+            assert await _wait(lambda: app._fx_screen is not None, pilot)
+            screen = app._fx_screen
+            assert screen is not None
+            await pilot.press("z")
+            await pilot.pause()
+            # The screen's own line is where the reader is looking; the
+            # app's line also gets it through `say_`, but that one is
+            # behind the modal.
+            assert "nothing to undo" in _status(screen)
+
+    async def test_an_undo_refused_by_the_gate_is_said_in_the_editor(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("w")
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            # The gate is locked between the change and the undo.
+            await pilot.press("w")
+            await pilot.pause()
+            assert not app._gate.armed
+            await pilot.press("z")
+            assert await _wait(lambda: "the undo not sent" in _status(screen), pilot)
 
 
 class TestTheGateArmed:

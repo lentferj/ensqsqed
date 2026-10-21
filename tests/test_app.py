@@ -20,12 +20,16 @@ import os
 
 import pytest
 
+from textual.widgets import Label
+from vinsynlib.ui.confirm import ConfirmScreen
+
 from sq import banks
 from sq import catalog as cat
 from sq import config
 from sq import favorites as fav
 from ensqsqed.app import VIEW_ALL_FAVOURITES, EnsqsqedApp
 from ensqsqed.demo import DemoDevice
+from ensqsqed.fx import TYPE_CHANGE_WARNING
 
 
 @pytest.fixture
@@ -39,6 +43,28 @@ class TestStartup:
             await pilot.pause()
             assert app.query_one("#bank-table").row_count == len(banks.GROUPS)
             assert app.query_one("#slot-table").row_count == banks.SOUNDS_PER_GROUP
+
+
+class TestTheConfirmationsFitTheirDialog:
+    """A long confirmation's whole sentence has to be readable.
+
+    The shared modal puts its prompt in a Label with no width, so a
+    sentence longer than the 60-column dialog laid out at its full
+    length and the dialog clipped the end -- the FX type-change warning
+    and the catalog warnings all lost their last clause that way.
+    Ensqsqed's stylesheet constrains the label to the dialog.
+    """
+
+    async def test_the_fx_type_change_warning_wraps(self, app):
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.push_screen(ConfirmScreen(TYPE_CHANGE_WARNING))
+            await pilot.pause()
+            dialog = app.screen.query_one("#confirm-dialog")
+            prompt = app.screen.query_one("#confirm-prompt", Label)
+            assert prompt.region.width <= dialog.content_region.width
+            assert prompt.region.right <= dialog.content_region.right
+            assert prompt.region.height > 1, "the sentence is on more than one line"
 
 
 class TestCursorIsSilent:
