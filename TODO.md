@@ -10,11 +10,33 @@ What is open. *How* anything was resolved goes in
 
 The MULTI-mode feature landed on `feature/multi-and-fx`: the unit's 80
 presets are read, browsed and edited (eight tracks and the one shared
-effect), and written back to the unit's **Edit Preset** buffer behind the
-write gate. Item 3 is closed by it. What remains is in that item's tail:
-storing a preset to a memory slot still needs the unit's ENTER, because no
-SysEx message stores one. `docs/RESOLUTION_NOTES.md` §11 records how the
-framing was measured.
+effect), and written back to the unit's **working preset** (its Edit Preset
+buffer) behind the write gate. Item 3 is closed by it.
+
+**Two questions are closed by the bench, not by code, and the answers are
+negative:**
+
+- **Storing a preset to a memory slot without the front panel: there is no
+  SysEx path.** The unit holds the edit in its Edit Preset buffer until
+  somebody presses ENTER/SAVE. The two candidates were probed and refuted —
+  the addressing bytes do not address (a preset addressed to slot 1 never
+  landed in slot 1), and the bulk All-Sequences write is not even
+  transportable on this machine's ALSA port. The store is the manual's
+  six-step dialog on the instrument, or the double-click on ENTER/SAVE.
+- **Live track on/off: the front panel only.** The unit's live MIDI switch
+  for a track is a Select-Sound-and-Track-buttons gesture, and it is not
+  reachable over SysEx. The unit does have virtual buttons and answers an
+  unknown number with SysEx error 02, but it accepts only its own eighteen
+  and no gesture among them reliably toggles a track — the both-Track-buttons
+  chord hit once in roughly sixty attempts and changed the layer list, not
+  the track status. The app's `space` is a **preset edit** (the layer list),
+  not a live switch, and it says so. `docs/BUTTON-MAP.md` has the record.
+
+The 21-byte global block and the 54-byte blobs' trailing bytes are still
+undecoded (RESOLUTION_NOTES §11). Sequences themselves are still a different
+program. The app's per-send status sentence still carries the withdrawn
+"does not play incoming MIDI" wording and is to be reworded to the measured
+one (deaf for about five seconds, back by about 35).
 
 ## Status, 2026-09-20 (first session)
 
@@ -100,11 +122,15 @@ layout is measured now.
 `sqcli send` writes an edited preset back. Two fixtures, captured on the
 unit, pin the layout.
 
-**What remains open: storing to a memory slot without the front panel.**
-No SysEx message stores a preset; the unit holds the edit in its Edit Preset
-buffer until somebody presses ENTER, and driving the front panel via virtual
-buttons is deliberately out of scope. The 21-byte global block, the *EXT*
-MIDI status and the 54-byte blobs' trailing bytes are also undecoded
+**What remains open: storing to a memory slot without the front panel — and
+the answer is that there is none.** No SysEx message stores a preset; the
+unit holds the edit in its Edit Preset buffer until somebody presses
+ENTER/SAVE. Both candidates were probed and refuted on the bench (the
+addressing bytes do not address; the bulk All-Sequences write is not
+transportable), and driving the front panel via virtual buttons was tried
+and abandoned: the unit accepts only its own eighteen buttons and no
+reliable gesture among them was found (`docs/BUTTON-MAP.md`). The 21-byte
+global block and the 54-byte blobs' trailing bytes are also undecoded
 (RESOLUTION_NOTES §11). Sequences themselves are still a different program.
 
 ## 4. The browser — DONE 2026-09-20

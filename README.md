@@ -275,16 +275,25 @@ and `on`, whether the track plays internal voices — then:
 
 `⏎` edits the cell under the cursor — a list to pick from when the values are
 words, a number to type when they are numbers — a digit starts that number,
-`+`/`-` nudge it, and `space` switches the whole track on or off. Switching a
-track off is **two changes**, because one is not enough in MULTI mode: the
-track leaves the **pile** (the panel's selected/layered state, its `—`) and its
-MIDI status becomes ***EXT***. The pile alone still receives on the track's
-channel — a track that is not layered but is LOCAL keeps sounding from MIDI,
-which is the difference between the panel's `-` and a track number that lights
-on incoming notes. *EXT* is the manual's own answer for turning a track off in
-a multitimbral setup: it receives and can send, but does not play internal
-voices. Switching it on restores the status it had (LOCAL if the editor never
-saw it on). The primary track cannot be switched off from here.
+`+`/`-` nudge it, and `space` moves the whole track in and out of the preset's
+**layer list** (the *pile*: the panel's selected/layered state, its `—`).
+Switching a track off is a **preset edit, not a live switch**: the track
+leaves the pile and its MIDI status byte is left exactly as it was. Writing
+*EXT* there would silence the track in the *stored* preset and nowhere else,
+and it latches — a later dump that restores LOCAL does not bring the live map
+back — so the status byte is repaired instead (a stored *EXT* becomes LOCAL
+when the track goes on) and is never used to switch a track off. The primary
+track cannot be switched off from here.
+
+**The live MIDI switch for a track belongs to the unit's front panel**:
+Select Sound, then the Track buttons. It was looked for on the wire and is
+not there. The unit does have virtual buttons — it answers an unknown button
+number with SysEx error 02, "invalid button number" — and it accepts exactly
+its own eighteen (presses 0–13 and 16–19, releases the same numbers plus
+96), but no gesture among them reliably toggles a track: the
+both-Track-buttons chord hit once in roughly sixty attempts and never
+again. `docs/BUTTON-MAP.md` has the numbers, the experiment and the
+negative.
 
 The effect editor lists the thirteen effects by the panel's own names (CONCERT
 REVERB … CMPRSS+DIST+VERB), then the parameters of the active set, the FX1/FX2
@@ -295,24 +304,30 @@ they own.
 
 **A change is sent as a whole preset** — the sequence data and the 168 bytes of
 the preset — because this protocol has no field-level write. The unit takes it
-into its **Edit Preset** buffer and its display says *"Press ENTER to save new
-preset"*. **Storing it is a front-panel act, and nothing this program does
-stores a preset**: there is no SysEx message that stores one, and the editors
-are deliberately fenced off from the front panel. The write gate (`w`) must be
-armed first, and every change is read back and compared byte for byte — a
-refused or unmatched write is reported, not assumed.
+into its **working preset** (the *Edit Preset* buffer) and its display says
+*"Press ENTER to save new preset"*. The write gate (`w`) must be armed first,
+and every change is read back and compared byte for byte — a refused or
+unmatched write is reported, not assumed.
 
-**While that Edit Preset buffer is open, the unit does not play incoming
-MIDI.** Measured on the bench: one preset dump — even one byte for byte the
-preset already there — silences every track, including the base channel, and
-no MIDI message (Start/Stop, Song Select, clock, program change, reset) brings
-it back; leaving Edit mode on the unit does. So an edit is a *preset* change
-first and an audible one after ENTER/SAVE and leaving Edit mode. The status
-line says so after every send.
+**The send is live; the unit is briefly deaf right after it.** The dump lands
+in the buffer the unit plays from, so the change is heard. What the bench
+caught is a short blackout: five seconds after a byte-identical no-op dump a
+note on the sounding track's channel measured RMS 5.7 against a reference of
+32.7 — the noise floor — and thirty-five seconds later the same note measured
+29.7, so the unit had come back by itself. An earlier claim in these docs,
+that a dump silences the unit *permanently* (44 s of silence, and no MIDI
+message brings it back), was **confounded**: that run came after the one-way
+*EXT* latch experiments, and it was the latch doing the silencing, not the
+dump. The corrected account is in `docs/PRESET-FRAMING.md` §9.6.
 
-Confirmed with a track switched off (out of the pile and `*EXT`): in Edit mode
-nothing plays; with Edit mode left, channel 12 is silent while track 1 on
-channel 11 sounds — no power cycle needed.
+**Storing it is a front-panel act, and nothing this program does stores a
+preset.** There is no SysEx message that stores one — probed and refuted, see
+`docs/RESOLUTION_NOTES.md` §11 — and the editors are deliberately fenced off
+from the front panel. On the unit, the store is the manual's six steps: check
+that the Edit Preset is displayed, press **ENTER/SAVE** ("Save Preset
+\<name\>?"), optionally edit the name with the cursors, press **ENTER/SAVE**,
+pick the slot with the cursors, press **ENTER/SAVE** again — the display says
+*SAVED*. A double-click on ENTER/SAVE stores to the same slot in one step.
 
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle
@@ -341,10 +356,49 @@ sqcli send preset-current.syx --yes   # WRITE it into the unit's Edit Preset
 
 **What this deliberately does not do.** It does not store a preset to a memory
 slot: a stored slot changes only when somebody presses ENTER on the unit, and
-the editors never press it. It does not decode the 21-byte global block, the
-*EXT* MIDI status, or the trailing bytes of the ten 54-byte sequence blobs — the
-dumps do not exercise them, and `docs/RESOLUTION_NOTES.md` says so. And it does
-not change what the unit is playing by moving the cursor: reading is silent.
+the editors never press it. It does not drive the front panel: the unit's
+virtual buttons exist, but no reliable gesture among them was found, so the
+live switch for a track stays on the instrument (`docs/BUTTON-MAP.md`). It
+does not decode the 21-byte global block or the trailing bytes of the ten
+54-byte sequence blobs — the dumps do not exercise them, and
+`docs/RESOLUTION_NOTES.md` says so. And it does not change what the unit is
+playing by moving the cursor: reading is silent.
+
+### Backing the unit up, and putting a backup back
+
+**Take a backup before this program writes anything.** Two commands, both
+silent reads:
+
+```sh
+sqcli presets --all --out presets-all.syx   # all eighty stored presets
+sqcli multi --out current.syx               # the one the unit is on
+```
+
+`presets --all` writes one message, about 36 KB — the whole memory. `send`
+will refuse that file, because a whole memory is not a preset; to put a
+single slot back, take it out on its own:
+
+```sh
+sqcli multi --preset 12 --out slot-12.syx   # one slot, in the form `send` takes
+```
+
+**Putting a preset back is a panel act too.** There is no SysEx message that
+stores a preset to a slot, so a restore is two steps and the second one is on
+the instrument:
+
+1. `sqcli send slot-12.syx --yes` — the file lands in the unit's *working*
+   preset, not in a slot. The dump is read back and compared byte for byte.
+2. On the unit: **ENTER/SAVE** → confirm the name → pick the slot with the
+   cursors → **ENTER/SAVE** → the display says *SAVED*.
+
+**This unit's memory was changed by the button experiments of 2026-10-21, and
+the owner should know it.** The blind button presses walked the unit's save
+dialog and a store completed: slots 2, 70 and 72 now hold a near-copy of
+Preset-00 (23 bytes each differ from the run's backup), slot 0 differs by two
+bytes, and the unit's selection was left on Preset-02. The owner's own
+`.sqs` / `.syx` files are the restore source; the run's backup of the memory
+as it was at 20:35 that evening is in `~/temp/sqr_backup/20261021-203542/`.
+The details are in `docs/BUTTON-MAP.md` §8.
 
 ## What it knows
 

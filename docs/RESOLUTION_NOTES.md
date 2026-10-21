@@ -271,29 +271,48 @@ field says BOTH, LOCAL, MIDI or *EXT*. The manual's panel shows a track as
 1** — LOCAL (1) — so the status byte cannot be where OFF lives. The pile is:
 track 1's pile byte is 1, tracks 2–8's are 0, and 0 is the panel's `—`. The
 parsers therefore read and write the on/off state through the pile, and the
-status value *EXT* (3) is left alone — no dump exercises it.
+status value *EXT* (3) is left alone — no dump in the fixture exercises it
+(our own writes do, and it reads back exactly; see below).
 
-**The pile is the layer state, not the MIDI off switch.** Bench test
-(2026-10-21): a track removed from the pile and written back exactly still
-received on its channel and played. The manual points to *EXT* instead — "good
-for turning off certain tracks when using the SQ as a multitimbral receiver in
-MULTI Mode" — where incoming MIDI does not play internal voices and the panel
-shows `-`. The MULTI editor's `space` therefore writes both: the track leaves
-the pile and its status becomes *EXT*; `space` again restores the previous
-status (LOCAL if the editor did not see it on).
+**The pile is the layer state, and the editor writes the pile alone.**
+Bench test (2026-10-21): a track removed from the pile and written back
+exactly still received on its channel and played. The manual points to
+*EXT* instead — "good for turning off certain tracks when using the SQ as
+a multitimbral receiver in MULTI Mode" — where incoming MIDI does not play
+internal voices and the panel shows `-`. But *EXT* is a **one-way latch in
+the live map**: it silences the track, and a later dump that restores LOCAL
+does not bring the receiver back, so it is not a switch anybody can undo.
+The MULTI editor's `space` therefore writes **the pile alone**: off leaves
+the layer list and leaves every status byte exactly as it was; on adds the
+track back and repairs a stored *EXT* to LOCAL, because *EXT* is the status
+that stops the internal voices. The status byte is repaired, never written
+to switch a track off (commit `2b390aa`).
 
-**The Edit Preset mode is deaf to incoming MIDI.** Bench audio capture
-(2026-10-21): one preset dump — even a byte-identical no-op — silenced
-every incoming note, base channel included, for at least 44 s. Start,
-Stop, Continue, Song Select, clock, program change, CC 123, All Sound Off
-and System Reset did not restore playback; a front-panel action did.
-Reading the preset back did not. The protocol has no message to leave the
-mode or to store, so a preset edit is audible only after ENTER/SAVE (or
-leaving Edit mode on the unit). Every send's status sentence now says so.
-The *EXT off is correct in the preset, but it cannot be judged by playing
-into a unit that is still in Edit Preset mode. Confirmed without a power
-cycle: the same preset (track 2 out of the pile, `*EXT`) is silent on
-channel 12 once Edit mode is left, while track 1 on channel 11 sounds.
+**The Edit Preset mode is deaf to incoming MIDI — for a few seconds, not for
+good. (Corrected 2026-10-21, second session.)** The original claim, from
+the first bench session, was that one preset dump — even a byte-identical
+no-op — silenced every incoming note, base channel included, for at least
+44 s, and that no MIDI message (Start, Stop, Continue, Song Select, clock,
+program change, CC 123, All Sound Off, System Reset) brought it back, so a
+preset edit was audible only after ENTER/SAVE. **That claim is withdrawn:**
+the run was confounded by the one-way *EXT* latch experiments that ran
+before it. The latch, not the dump, was doing the silencing, and the two
+were never separated.
+
+The clean re-test (`~/temp/tasks/h2f_result.json`, verdict
+`DEAFNESS_REFUTED`) sent exactly the bytes the unit was already working
+with and measured the audio: reference **32.65**, **5.72** five seconds
+after the dump (the noise floor), **29.72** thirty-five seconds after it.
+The unit is briefly deaf after a send and **recovers by about 35 seconds**
+by itself.
+
+What is left of the old claim: the dump does interrupt incoming MIDI for a
+while, and it lands in the unit's *working preset* — the Edit Preset buffer
+— which is what the unit plays from, so the change **is** audible. The
+protocol still has no message to leave Edit mode, and none that stores a
+preset to a slot. The *EXT off is correct in the preset, but it is a
+one-way latch in the live map, and it cannot be judged by playing into a
+unit that is still in Edit Preset mode.
 
 **The layered entries are a compact list, not fixed slots.** Confirmed on the
 bench (2026-10-21): a preset sent with pile `01 00 03` reads back as `01 03 00`,
@@ -334,14 +353,14 @@ type-04 dump of `[sequence data][168-byte preset]`. The unit answers the
 alert with an ACK in about **eleven milliseconds** every time (nine
 handshakes over three runs), well inside the specification's one-second
 window, and never with a NAK or silence. After the send, command 03 returns
-the **Edit Preset**, not the stored slot: a one-byte change (track 1 volume
+the **working preset**, not the stored slot: a one-byte change (track 1 volume
 127→126) was visible in the read-back, and the restore returned the original
 bytes byte for byte. So apply-then-verify is meaningful, but **the
 verification does not mean the preset is stored** — the unit is holding it in
 a buffer and the display says "Press ENTER to save new preset". Storing is a
 front-panel act; there is no message that does it, and the app says so. A
-read before any write is the stored preset; a read after one is the Edit
-Preset.
+read before any write is the stored preset; a read after one is the working
+preset.
 
 **MULTI mode is a System-bank setting on the unit.** The SQ-R has no SysEx
 write for system parameters, so MIDI Mode=MULTI cannot be set from here;
@@ -350,15 +369,85 @@ that is on receives on its own MIDI channel; never put a track on the base
 channel while Preset Prog is ON; one track per channel, and the lowest track
 number wins a channel.
 
+**The second bench session (2026-10-21, evening): the corrected record.**
+What was written above before 21:00 that day was measured on a unit whose
+live state the experiments themselves had changed. The evening session
+re-measured the parts that mattered, from a clean state, and corrected
+them. The corrected model, in one place:
+
+- **The only write path is the whole-preset dump** (`SqBridge.send_preset`),
+  byte-verified: the bytes that go out are read back and compared.
+- **The dump lands in the unit's working preset and is audible.** The unit
+  goes briefly deaf to incoming MIDI after a send — the noise floor five
+  seconds after the dump — and recovers by about 35 seconds without any
+  message being sent (`DEAFNESS_REFUTED`).
+- **There is no SysEx path that stores a preset to a slot.** Two candidates
+  were probed and refuted. The *addressing* candidate: a preset addressed to
+  slot 1 (its two leading bytes copied from slot 1's) and named
+  `PROBE-STORE-01` never appeared in any slot of the all-dump, so those
+  bytes do not say where a preset belongs (`E8_NEGATIVE`). The *bulk*
+  candidate: the specification's All-Sequences dump as a write — which the
+  ALSA port on this machine cannot carry at all, since a single ~65k-nibble
+  message is rejected by the port buffer, so the path was never even
+  transportable here. **Storing is a front-panel act**: ENTER/SAVE and the
+  manual's six-step dialog (check that the Edit Preset is displayed →
+  ENTER/SAVE → "Save Preset \<name\>?" → the name → ENTER/SAVE → pick the
+  slot with the cursors → ENTER/SAVE → "SAVED"), or the double-click on
+  ENTER/SAVE that stores to the same slot in one step. The app's status
+  sentences say exactly this after every send, and that is the wording this
+  project's documents use.
+- **The live MIDI switch for a track is the unit's front panel** (Select
+  Sound, then the Track buttons). It is not reachable over SysEx. The unit
+  does have virtual buttons — an unknown button number is answered with
+  error 02, "invalid button number" — and it accepts exactly its own
+  eighteen (presses 0–13 and 16–19, releases the same numbers plus 96;
+  holes at 14 and 15). The entire SQ-1 button table is refused, Enter/Save
+  included. Among the eighteen no reliable gesture was found: the
+  both-Track-buttons chord `(2,3)` hit once in roughly sixty attempts, and
+  what it changed was the *pile* — the layering gesture of manual 3-5, not
+  the status gesture of 3-6 — and the timing sweep found no join gap that
+  works (0.005 s to 0.030 s, five attempts each, zero complete round-trips;
+  the 0.30 s hold variant likewise). Single presses are inert as a toggle,
+  and CC7 is a one-way latch (`CC7_ONE_WAY`). `docs/BUTTON-MAP.md` has the
+  whole record.
+
+**And the protocol facts, restated plainly.** The all-dump dumps **stored
+memory**; command 03 returns the **working preset** — the stored bytes when
+no edit exists, the edited version once one does, whether the edit came from
+a dump or from the panel. The pile is a compact ordered list with the
+primary track first, and the unit compacts holes. Preset names are
+left-aligned and space-padded. Track byte 6 (`0x80`) is write-protected.
+The name bytes' mute bit (bit 7) is rewritten by the unit.
+
+**What the button experiments did to the unit.** The blind presses walked
+the unit's save dialog and a store completed: slots 2, 70 and 72 hold a
+near-copy of Preset-00 (23 bytes each differ from the backup), slot 0
+differs by two bytes, and the selection was left on Preset-02. The owner
+restores from their own `.sqs` / `.syx` files; the run's backup of the
+memory as it was at 20:35 that evening is in
+`~/temp/sqr_backup/20261021-203542/`.
+
 **Open questions.**
 
 - The 21-byte trailing global block is decoded only as bytes; its field
   layout is undocumented, and the single fixture's values are not enough to
-  map it. It is preserved verbatim.
-- MIDI status *EXT* (3) is spec-defined but unverified by any dump.
+  map it. It is preserved verbatim. One byte of it drifted between the
+  backup and a later read (dump index 17957, 0 → 2) in the same run in which
+  the unit's selection moved from Preset-00 to Preset-02 — a coincidence
+  worth a probe, not a meaning.
+- MIDI status *EXT* (3) is spec-defined and now exercised by our own writes
+  (it reads back exactly), but it is a one-way latch in the live map, so it
+  is repaired rather than used as a switch.
 - The ten 54-byte sequence blobs carry ten trailing bytes (`00 00 00 30 00
   00 00 06 80 e9`) identical in all ten; their meaning is unknown.
 - No dump exercises BOTH/MIDI status, NONE/CHANNEL pressure, a layered pile
   beyond one primary track, or any pan other than SOUND.
-- Storing a preset to a memory slot still needs the unit's ENTER; driving the
-  front panel via virtual buttons is deliberately out of scope.
+- Storing a preset to a memory slot still needs the unit's ENTER, and
+  **there is no SysEx path that does it** — probed and refuted above.
+  Driving the front panel via virtual buttons was tried and abandoned: the
+  unit accepts only its own eighteen buttons, no reliable gesture among them
+  was found, and Enter/Save is refused outright (`docs/BUTTON-MAP.md`).
+- The app's per-send status sentence still carries the withdrawn wording
+  ("does not play incoming MIDI while that is open"). The measurement says
+  the unit is briefly deaf and recovers by about 35 seconds; the sentence
+  is to be reworded to say so.

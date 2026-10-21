@@ -443,7 +443,7 @@ was ACKed in the same eleven milliseconds as the edit.
 | question | answer |
 |---|---|
 | Did the unit ACK the alert? | **yes**, in ~11 ms, every time |
-| Does command 03 after a write return the stored slot or the Edit Preset? | **the Edit Preset** |
+| Does command 03 after a write return the stored slot or the working preset? | **the working preset** — the edited version while an edit is live (§9.6) |
 | Is a one-byte change visible in the read-back? | **yes** |
 | Does the restore come back clean? | **yes**, byte-identical |
 
@@ -466,8 +466,9 @@ The measurement, in order:
 
 Step 3 is the decisive one. **No button was pressed on the unit, so
 nothing could have been stored** — storing needs ENTER on the front panel.
-The read-back therefore returned the *Edit Preset buffer*, not the stored
-slot. Command 03 reads the Edit Preset whenever one is live.
+The read-back therefore returned the *working preset* — the edited version,
+not the stored slot. Command 03 reads whatever the unit is working with;
+when an edit is live, that is the edit (§9.6).
 
 ### 9.4 What this means for the app
 
@@ -483,15 +484,22 @@ slot. Command 03 reads the Edit Preset whenever one is live.
   "Press ENTER to save new preset". Storing is a front-panel act; the UI
   has to say so.
 * **A read taken before any write is the stored preset; a read taken after
-  one is the Edit Preset.** An editor that reads once and writes later must
-  read again to see its own change — the two reads are not the same thing,
-  even though the request is the same.
+  one is the working preset** — the edited version (§9.6). An editor that
+  reads once and writes later must read again to see its own change — the
+  two reads are not the same thing, even though the request is the same.
 * **The undo record can hold the whole dump.** Re-sending the previous
   216 bytes restores the previous state exactly, as measured above.
 
-### 9.5 The unit stops playing MIDI while the Edit Preset is open (2026-10-21)
+### 9.5 The unit stops playing MIDI while the Edit Preset is open (2026-10-21) — **superseded in part, later the same day**
 
 Measured on the bench, with the unit in MULTI mode and its audio captured:
+
+> **Status of this subsection.** The *measurements* below are kept as the
+> record they are. The *conclusion* they were used for — that a dump leaves
+> the unit deaf to incoming MIDI for good, and that a preset edit is audible
+> only after ENTER/SAVE — **is withdrawn**: it was confounded by the one-way
+> `*EXT*` latch experiments that ran before it. §9.6 has the clean
+> measurement and the corrected account.
 
 - With a track in the pile, LOCAL and on channel 12, a note on channel 12
   sounds (RMS ≈ 50); track 1 on the base channel also sounds.
@@ -503,26 +511,96 @@ Measured on the bench, with the unit in MULTI mode and its audio captured:
 - Reading the preset back after the dump did not either. The front panel
   did (the unit was found sounding again after a panel action).
 
-So the Edit Preset / Preset Select mode the unit enters on receipt is not a
-live-audition mode for incoming MIDI. This is not something the app can
-undo: the protocol has no message to leave the mode or to store. It is why
-a preset edit's audible effect follows ENTER/SAVE (or leaving Edit mode on
-the panel), and why an on/off change made while the unit is in that mode
-cannot be judged by playing into it.
+**What survives of this.** The dump does interrupt incoming MIDI for a while
+(§9.6 measures how long: about five seconds, and the unit is back by about
+thirty-five). What does **not** survive is the permanence: the unit recovers
+by itself, and no MIDI message is needed to make it do so.
 
-**Confirmed the other way round, without a power cycle.** With a preset
-whose track 2 is out of the pile and `*EXT`, once the panel left Edit mode:
-a note on channel 12 was silent (RMS ≈ 7, the noise floor) while track 1 on
-channel 11 sounded (RMS ≈ 55). The same preset while Edit mode was open
-played nothing. The bytes are right; the mode is what hides them.
+**What does not survive either** is the reading of this run as a property of
+the *dump*. The run came after the `*EXT*` latch experiments, and the latch
+— a track whose status was set to `*EXT*` and could not be brought back by a
+later dump — silences the receiver on its own. The silence measured here was
+therefore the latch, not the dump, and the two were not separated. §9.6
+separates them.
 
-The status line after every send says this. A future write path must not
-claim a live change it cannot observe.
+**And the "*EXT* off is confirmed" paragraph below is withdrawn with it.**
+With a preset whose track 2 is out of the pile and `*EXT`, the panel-left
+state was silent on channel 12 while track 1 sounded. That is true of the
+`*EXT*` latch — it does silence the track — but it was read as the dump's
+doing, and it says nothing about whether a dump is audible. The `*EXT*`
+status is a **one-way latch in the live map**: a later dump that restores
+LOCAL does not bring the receiver back. That is why the MULTI editor writes
+the pile alone and never writes `*EXT*` to switch a track off (commit
+`2b390aa`).
+
+The status line after every send says what the send did and where the live
+switch is. A write path must not claim a live change it cannot observe.
 
 How to check: run `python3 tools/probe_preset_write.py --yes` against the
 unit. The run log is written to `/tmp/opencode/sqrex/probe_write.log` and
 the snapshot to `/tmp/opencode/sqrex/probe_snapshot_before.bin`; the
 committed fixture is what the run must reproduce.
+
+### 9.6 The corrected account: the send is live, the blackout is temporary (2026-10-21, second session)
+
+The clean test (`~/temp/tasks/h2f_deafness_test.py`, result
+`~/temp/tasks/H2f_result.json`, verdict `DEAFNESS_REFUTED`) separates the
+dump from the latch. It is self-restoring: the bytes it sends are exactly
+the bytes the unit is already working with, so it cannot change anything.
+
+| step | what was measured | RMS |
+|---|---|---|
+| reference | a note on the sounding track's own channel, before any send | **32.65** |
+| +5 s | the same note, five seconds after a byte-identical no-op dump | **5.72** (the noise floor) |
+| +35 s | the same note, thirty-five seconds after the dump | **29.72** |
+
+The unit was **deaf for a few seconds and then came back by itself**. The
+final read-back matched the working bytes exactly
+(`final_hash_matches_working: true`).
+
+**So the model is:**
+
+- **The only write path is the whole-preset dump** (`SqBridge.send_preset`),
+  and it is byte-verified: the bytes that go out are read back and compared.
+- **The dump lands in the unit's working preset** — the *Edit Preset*
+  buffer — and **it is audible**: that is the buffer the unit plays from.
+- **The unit goes briefly deaf to incoming MIDI after a send** (measured:
+  the noise floor at +5 s) and **recovers by about 35 seconds** without any
+  message being sent.
+- **Storing is a front-panel act.** No SysEx message stores a preset to a
+  slot; the store is the manual's six-step dialog on the unit (ENTER/SAVE →
+  confirm the name → pick the slot → ENTER/SAVE → *SAVED*), or the
+  double-click on ENTER/SAVE that stores to the same slot in one step.
+- **The live MIDI switch for a track is the unit's front panel** (Select
+  Sound, then the Track buttons). It is not reachable over SysEx — see
+  `docs/BUTTON-MAP.md`.
+
+**Two protocol facts this session settled, and they belong here:**
+
+- **The all-dump dumps STORED memory.** Command 04 returns the eighty
+  stored slots, not the unit's working preset. The E8 probe proves it from
+  the other side: a preset addressed to slot 1 and named `PROBE-STORE-01`
+  never appeared in any slot of the all-dump, so the all-dump does not
+  mirror the edit buffer (`~/temp/tasks/H1_result.json`, `E8_NEGATIVE`).
+- **Command 03 returns the WORKING preset** — the stored bytes when no
+  edit exists, the edited version once one does, whether the edit came from
+  a dump or from the panel. §9.3's "the Edit Preset" is this same fact
+  seen from the dump side; the general wording is the one to use.
+
+**And the bytes that do not take, restated as measurements** (§9.5's
+dead ends, all with a byte-for-byte read-back behind them):
+
+| what | what the unit did |
+|---|---|
+| the name bytes' mute bit (bit 7) | rewritten by the unit — the bit comes back set |
+| track byte 6 (the reserved byte, always `0x80`) | write-protected — `0x00` reads back changed |
+| the pile | a compact ordered list: the primary track first, and the unit compacts holes (a sent `01 00 03` reads back `01 03 00`) |
+| preset names | left-aligned and space-padded (the app strips the padding for display) |
+
+The one byte that drifted in the 21-byte global block between the backup and
+a later read — dump index 17957, value 0 → 2 — went 0 → 2 in the same run in
+which the unit's selection moved from Preset-00 to Preset-02. That is a
+coincidence worth a later probe, not an established meaning.
 
 ---
 
