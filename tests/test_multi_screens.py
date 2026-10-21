@@ -660,6 +660,8 @@ class TestTheGateInTheScreen:
             said = _status(screen)
             assert "the write gate is locked" in said
             assert "Press w" in said
+            status = screen.query_one(".status", Static)
+            assert status.has_class("refused"), "a refusal is the red alarm"
 
     async def test_without_an_app_gate_w_says_there_is_none(self):
         preset = _preset()

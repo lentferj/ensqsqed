@@ -61,6 +61,7 @@ from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Input, Static
 
+from ensqsqed.choices import ChoicePicker
 from ensqsqed.fx import FxScreen
 from ensqsqed.gate import EditGate
 from ensqsqed.multi import (
@@ -85,7 +86,6 @@ from vinsynlib.ui.confirm import ConfirmScreen
 from vinsynlib.ui.hints import KeyHints
 from vinsynlib.ui.modals import (
     CategoryScreen,
-    ChoiceScreen,
     RatingFilter,
     RatingFilterScreen,
     SearchScreen,
@@ -1285,7 +1285,7 @@ class EnsqsqedApp(App):
             return
         options = ["*" * stars or "no rating" for stars in range(6)]
         self.push_screen(
-            ChoiceScreen(f"Rating for {entry.display}", options, existing.rating),
+            ChoicePicker(f"Rating for {entry.display}", options, existing.rating),
             lambda value: self._apply_rating(entry, existing, value),
         )
 

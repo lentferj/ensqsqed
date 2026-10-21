@@ -366,6 +366,28 @@ class TestTheTypeChange:
             assert preset.effect.number == 0
             assert said and said[-1][1] is False
 
+    async def test_the_highlighted_effect_is_the_one_that_is_taken(self):
+        """Nine rows down is PHASER+REVERB, not the row above it."""
+        preset = _preset()
+        applied = []
+        screen = _screen(preset, lambda p, d: applied.append(d))
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            table = app.screen.query_one("#choice-table", DataTable)
+            for _ in range(9):
+                await pilot.press("down")
+            await pilot.pause()
+            assert table.cursor_row == 9
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert preset.effect.number == 9
+            assert applied == [f"effect type → {presets.EFFECTS[9]}"]
+
     async def test_a_refused_confirmation_sends_nothing(self):
         preset = _preset()
         applied = []
@@ -890,6 +912,10 @@ class TestTheGateInTheScreen:
             status = screen.query_one(".status", Static)
             assert "Press w" in str(status.content)
             assert status.region.height > 1, "the remedy is on a second line"
+            assert status.has_class("refused"), "a refusal is the red alarm"
+            await pilot.press("w")
+            await pilot.pause()
+            assert not status.has_class("refused"), "news is not an alarm"
 
     async def test_without_an_app_gate_w_says_there_is_none(self):
         preset = _preset()

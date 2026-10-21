@@ -77,12 +77,12 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
+from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from sq import presets
 from sq.presets import Effect, EffectParam, Preset
 from vinsynlib.keys import wrap_blocks
 from vinsynlib.ui.confirm import ConfirmScreen
-from vinsynlib.ui.modals import ChoiceScreen
 from vinsynlib.ui.prompt import PromptScreen
 
 __all__ = ["FX_HINTS", "TYPE_CHANGE_WARNING", "FxPrompt", "FxScreen"]
@@ -202,7 +202,12 @@ class FxScreen(ModalScreen[None]):
     FxScreen .note { color: $text-muted; }
     /* The refusal names the key that opens the gate, which does not fit
        on one line at this width; a fixed height clipped the remedy. */
-    FxScreen .status { height: auto; }
+    FxScreen .status { height: auto; padding: 0 1; }
+    /* The browser's alarm, on this screen's own line: a refusal is red
+       wherever it is said, so it cannot be mistaken for news. */
+    FxScreen .status.refused {
+        background: $error; color: $text; text-style: bold;
+    }
     FxScreen .hint { color: $text-muted; }
     """
 
@@ -638,7 +643,7 @@ class FxScreen(ModalScreen[None]):
         """The list of the thirteen effects."""
         effect = self._preset.effect
         self.app.push_screen(
-            ChoiceScreen("Effect type", list(presets.EFFECTS), effect.number),
+            ChoicePicker("Effect type", list(presets.EFFECTS), effect.number),
             self._type_picked,
         )
 
@@ -685,7 +690,7 @@ class FxScreen(ModalScreen[None]):
                 return
             self._apply(param, names[index])
 
-        self.app.push_screen(ChoiceScreen(param.label, list(names), current), picked)
+        self.app.push_screen(ChoicePicker(param.label, list(names), current), picked)
 
     def _prompt(
         self, param: EffectParam, seed: str, *, select_all: bool = False
@@ -762,7 +767,7 @@ class FxScreen(ModalScreen[None]):
         the words and the weight, not by the colour alone.
         """
         prefix = "[b]refused[/b] · " if refused else ""
-        self._write_status(prefix + message)
+        self._write_status(prefix + message, refused=refused)
         if self._say_hook is not None:
             self._say_hook(message, refused=refused)
 
@@ -792,12 +797,19 @@ class FxScreen(ModalScreen[None]):
         if self._result_hook is not None:
             self._result_hook(ok, message)
 
-    def _write_status(self, text: str) -> None:
-        """Put a sentence on the status line, if there still is one."""
+    def _write_status(self, text: str, *, refused: bool = False) -> None:
+        """Put a sentence on the status line, if there still is one.
+
+        ``refused`` turns the line into the browser's red alarm; a
+        success clears it again, so the colour always describes the
+        sentence that is there now.
+        """
         try:
-            self.query_one(".status", Static).update(text)
+            status = self.query_one(".status", Static)
         except Exception:  # pragma: no cover - the screen closed under us
             return
+        status.update(text)
+        status.set_class(refused, "refused")
 
     def _refuse_write(self) -> None:
         """Say that this screen may not write, and change nothing.

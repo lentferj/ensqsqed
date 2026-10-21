@@ -77,6 +77,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
+from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from sq import banks
 from sq.presets import (
@@ -95,7 +96,6 @@ from sq.presets import (
     stored_value,
 )
 from vinsynlib.keys import wrap_blocks
-from vinsynlib.ui.modals import ChoiceScreen
 
 __all__ = [
     "COLUMN_VIEWS",
@@ -444,33 +444,6 @@ class NumberPrompt(ModalScreen[Optional[str]]):
     def action_cancel(self) -> None:
         """``escape``: nothing was typed."""
         self.dismiss(None)
-
-
-class ChoicePicker(ChoiceScreen):
-    """The shared choice list, in this tool's modal shape.
-
-    The shared screen does the work: it marks the current value, moves
-    with the arrow keys, and answers with the **index** the field
-    numbers the value by -- so the range check and the undo log
-    downstream cannot tell which door the edit came through.
-
-    What is added here is the shape: the family's border, and the
-    vertical frame the shared screen leaves to its caller.
-    """
-
-    DEFAULT_CSS = """
-    ChoicePicker { align: center middle; }
-    ChoicePicker > Vertical {
-        width: 60; height: auto; max-height: 80%;
-        border: thick $accent; background: $surface; padding: 1 2;
-    }
-    ChoicePicker DataTable { height: auto; max-height: 16; }
-    """
-
-    def compose(self) -> ComposeResult:
-        """The shared screen's own children, in a frame."""
-        with Vertical():
-            yield from super().compose()
 
 
 #: What `v` steps through in the sound picker.  The same three views and
@@ -928,7 +901,11 @@ class MultiScreen(ModalScreen[None]):
     }
     MultiScreen DataTable { height: auto; max-height: 16; }
     MultiScreen .note { height: auto; color: $text-muted; padding-top: 1; }
-    MultiScreen .status { height: auto; color: $text; padding-top: 1; }
+    MultiScreen .status { height: auto; color: $text; padding: 0 1; }
+    /* The browser's alarm, on this screen's own line. */
+    MultiScreen .status.refused {
+        background: $error; color: $text; text-style: bold;
+    }
     MultiScreen .hint { height: auto; color: $text-muted; }
     """
 
@@ -1588,6 +1565,7 @@ class MultiScreen(ModalScreen[None]):
             return
         prefix = "[b]refused[/b] · " if refused else ""
         status.update(prefix + message)
+        status.set_class(refused, "refused")
         if self._say is not None:
             self._say(message, refused=refused)
 
