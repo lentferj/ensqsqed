@@ -878,6 +878,19 @@ class TestTheGateInTheScreen:
             assert "the write gate is locked" in said[-1][0]
             assert "Press w" in said[-1][0]
 
+    async def test_the_refusal_is_not_clipped_to_one_line(self):
+        preset = _preset()
+        screen = FxScreen(preset, on_apply=lambda p, d: None, gate=EditGate())
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.pause()
+            status = screen.query_one(".status", Static)
+            assert "Press w" in str(status.content)
+            assert status.region.height > 1, "the remedy is on a second line"
+
     async def test_without_an_app_gate_w_says_there_is_none(self):
         preset = _preset()
         screen = FxScreen(preset, on_apply=lambda p, d: None)

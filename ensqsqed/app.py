@@ -1800,7 +1800,6 @@ class EnsqsqedApp(App):
             on_sound_picked=self._pick_sound,
             allow_write=self._gate.armed,
             gate=self._gate,
-            say_=self.notify_status,
             name_for=self.catalog.display_name,
         )
         self._multi_screen = screen
@@ -1816,7 +1815,6 @@ class EnsqsqedApp(App):
             preset,
             on_apply=self._apply_fx,
             on_undo=self._undo_from_screen,
-            say_=self.notify_status,
             allow_write=self._gate.armed,
             gate=self._gate,
         )

@@ -1013,9 +1013,11 @@ class MultiScreen(ModalScreen[None]):
         #: copied so `w` here toggles the object every edit is checked
         #: against, and the note can be redrawn from it.
         self._gate = gate
-        #: The app's own status line, called as
-        #: ``say_(message, refused=refused)``.  The app's
-        #: ``notify_status`` has exactly that shape.
+        #: An optional second route for the sentence, called as
+        #: ``say_(message, refused=refused)``.  The app does not pass
+        #: one: its status line is the dimmed backdrop behind this
+        #: modal, and a warning written there is written where nobody
+        #: is looking.  Tests use it as a capture seam.
         self._say = say_
         #: ``name_for(group, slot)`` -- the catalog's name for a sound.
         #: ``None`` means there is no catalog, and the name column says
@@ -1049,12 +1051,15 @@ class MultiScreen(ModalScreen[None]):
             if self._gate is not None
             else "w in the browser toggles it"
         )
+        consequence = (
+            "edits may be sent" if self._writes_allowed() else "edits are refused"
+        )
         return (
             "[dim]MIDI Mode = MULTI is a System-bank setting on the unit "
             "itself — this program cannot change it. In MULTI mode each "
             "track takes one MIDI channel, and the lowest track number "
             "wins a channel.[/dim]\n"
-            f"[dim]{state[0].upper()}{state[1:]} — {where}.[/dim]"
+            f"[dim]{state[0].upper()}{state[1:]} — {consequence}; {where}.[/dim]"
         )
 
     def _gate_description(self) -> str:
@@ -1573,8 +1578,9 @@ class MultiScreen(ModalScreen[None]):
         difference between a "no" and news is carried by the words and
         the weight, not by the colour alone.
 
-        The app's own line gets the sentence too, when the app handed
-        in a ``say_`` to do it with.
+        The optional ``say_`` hook gets the sentence too, when a caller
+        wants it; the app does not pass one, because its own line is
+        behind this modal.
         """
         try:
             status = self.query_one(".status", Static)

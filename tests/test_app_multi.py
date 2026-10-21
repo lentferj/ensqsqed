@@ -309,6 +309,22 @@ class TestTheGateInTheEditor:
             assert app._gate.describe() == "write gate locked"
             assert "write gate locked" in str(note.content)
 
+    async def test_a_refusal_is_said_in_the_editor_not_behind_it(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The browser's status line is the dimmed backdrop; it stays quiet."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("x")
+            assert await _wait(lambda: app._fx_screen is not None, pilot)
+            screen = app._fx_screen
+            assert screen is not None
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.pause()
+            assert "the change not sent" in _status(screen)
+            assert "the change not sent" not in _app_status(app)
+
     async def test_nothing_to_undo_is_said_in_the_editor(self, app: EnsqsqedApp):
         async with app.run_test() as pilot:
             await pilot.pause()

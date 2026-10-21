@@ -173,11 +173,13 @@ class FxScreen(ModalScreen[None]):
     ``on_undo(count)`` is called by ``z`` (one change) and ``Z`` (all of
     them), with ``None`` meaning all -- the family's shape.
 
-    ``say_(message, refused=...)`` is the application's own status
-    route, so a refusal this screen produces is also seen behind the
-    modal; ``result_cb(ok, message)`` is told what an edit did.  Both
-    are optional: without them the screen says things on its own status
-    line only.
+    ``say_(message, refused=...)`` is an optional second route for the
+    sentence -- a test's capture, or a caller that wants to log it.  The
+    app does **not** pass one: the browser's status line is the dimmed
+    backdrop behind this modal, and a warning written there is written
+    where nobody is looking.  ``result_cb(ok, message)`` is told what an
+    edit did.  Both are optional: without them the screen says things on
+    its own status line only.
 
     ``allow_write`` says whether the application's write path is open.
     A screen that may not write says so and changes nothing: a change
@@ -198,7 +200,9 @@ class FxScreen(ModalScreen[None]):
     }
     FxScreen DataTable { height: 1fr; }
     FxScreen .note { color: $text-muted; }
-    FxScreen .status { height: 1; }
+    /* The refusal names the key that opens the gate, which does not fit
+       on one line at this width; a fixed height clipped the remedy. */
+    FxScreen .status { height: auto; }
     FxScreen .hint { color: $text-muted; }
     """
 
@@ -290,10 +294,19 @@ class FxScreen(ModalScreen[None]):
 
     def _note_text(self) -> str:
         """The line under the heading: which set the rows come from, and
-        whether the application's write gate is armed."""
+        what the application's write gate does now.
+
+        The consequence is spelled out rather than left to the word
+        "locked": a reader who has just watched an edit do nothing should
+        not have to work out that the gate was the reason or which key
+        opens it.
+        """
         effect = self._preset.effect
         set_name = effect.parameter_set or "unknown"
-        return f"parameter set: {set_name} · {self._gate_description()}"
+        state = self._gate_description()
+        if not self._writes_allowed():
+            state += " — edits are refused; w arms it"
+        return f"parameter set: {set_name} · {state}"
 
     def _gate_description(self) -> str:
         """The gate's state, read from the gate itself when there is one.
