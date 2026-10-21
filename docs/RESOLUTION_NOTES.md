@@ -282,6 +282,17 @@ shows `-`. The MULTI editor's `space` therefore writes both: the track leaves
 the pile and its status becomes *EXT*; `space` again restores the previous
 status (LOCAL if the editor did not see it on).
 
+**The Edit Preset mode is deaf to incoming MIDI.** Bench audio capture
+(2026-10-21): one preset dump — even a byte-identical no-op — silenced
+every incoming note, base channel included, for at least 44 s. Start,
+Stop, Continue, Song Select, clock, program change, CC 123, All Sound Off
+and System Reset did not restore playback; a front-panel action did.
+Reading the preset back did not. The protocol has no message to leave the
+mode or to store, so a preset edit is audible only after ENTER/SAVE (or
+leaving Edit mode on the unit). Every send's status sentence now says so.
+The *EXT off is correct in the preset, but it cannot be judged by playing
+into a unit that is still in Edit Preset mode.
+
 **The layered entries are a compact list, not fixed slots.** Confirmed on the
 bench (2026-10-21): a preset sent with pile `01 00 03` reads back as `01 03 00`,
 so the unit packs the layered track numbers to the left. Writing a hole makes

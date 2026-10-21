@@ -302,6 +302,14 @@ are deliberately fenced off from the front panel. The write gate (`w`) must be
 armed first, and every change is read back and compared byte for byte — a
 refused or unmatched write is reported, not assumed.
 
+**While that Edit Preset buffer is open, the unit does not play incoming
+MIDI.** Measured on the bench: one preset dump — even one byte for byte the
+preset already there — silences every track, including the base channel, and
+no MIDI message (Start/Stop, Song Select, clock, program change, reset) brings
+it back; the front panel does. So an edit is a *preset* change first and an
+audible one after ENTER/SAVE (or after leaving Edit mode on the unit). The
+status line says so after every send.
+
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle
 the one gate the write path checks. The editor's own note line says whether

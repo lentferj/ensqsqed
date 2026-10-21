@@ -2068,7 +2068,8 @@ class EnsqsqedApp(App):
             where = f" into slot {self._edit_slot + 1}"
         return (
             f"{description} — sent. The unit holds it in the Edit Preset "
-            f"buffer; press ENTER/SAVE on the unit to store it{where}."
+            f"buffer and does not play incoming MIDI while that is open; "
+            f"press ENTER/SAVE on the unit to store it{where}."
         )
 
     def _undo_from_screen(self, count: Optional[int]) -> None:

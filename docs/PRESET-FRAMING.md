@@ -489,6 +489,30 @@ slot. Command 03 reads the Edit Preset whenever one is live.
 * **The undo record can hold the whole dump.** Re-sending the previous
   216 bytes restores the previous state exactly, as measured above.
 
+### 9.5 The unit stops playing MIDI while the Edit Preset is open (2026-10-21)
+
+Measured on the bench, with the unit in MULTI mode and its audio captured:
+
+- With a track in the pile, LOCAL and on channel 12, a note on channel 12
+  sounds (RMS ≈ 50); track 1 on the base channel also sounds.
+- **One preset dump — even the preset that is already there, byte for
+  byte — silences every incoming note**, base channel included (RMS ≈ 7,
+  the noise floor). It was still silent 44 s later.
+- MIDI Start, Stop, Continue, Song Select, clock, a program change, CC 123,
+  All Sound Off and a System Reset did **not** bring playback back.
+- Reading the preset back after the dump did not either. The front panel
+  did (the unit was found sounding again after a panel action).
+
+So the Edit Preset / Preset Select mode the unit enters on receipt is not a
+live-audition mode for incoming MIDI. This is not something the app can
+undo: the protocol has no message to leave the mode or to store. It is why
+a preset edit's audible effect follows ENTER/SAVE (or leaving Edit mode on
+the panel), and why an on/off change made while the unit is in that mode
+cannot be judged by playing into it.
+
+The status line after every send says this. A future write path must not
+claim a live change it cannot observe.
+
 How to check: run `python3 tools/probe_preset_write.py --yes` against the
 unit. The run log is written to `/tmp/opencode/sqrex/probe_write.log` and
 the snapshot to `/tmp/opencode/sqrex/probe_snapshot_before.bin`; the
