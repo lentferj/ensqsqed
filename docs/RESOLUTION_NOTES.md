@@ -273,6 +273,15 @@ track 1's pile byte is 1, tracks 2–8's are 0, and 0 is the panel's `—`. The
 parsers therefore read and write the on/off state through the pile, and the
 status value *EXT* (3) is left alone — no dump exercises it.
 
+**The pile is the layer state, not the MIDI off switch.** Bench test
+(2026-10-21): a track removed from the pile and written back exactly still
+received on its channel and played. The manual points to *EXT* instead — "good
+for turning off certain tracks when using the SQ as a multitimbral receiver in
+MULTI Mode" — where incoming MIDI does not play internal voices and the panel
+shows `-`. The MULTI editor's `space` therefore writes both: the track leaves
+the pile and its status becomes *EXT*; `space` again restores the previous
+status (LOCAL if the editor did not see it on).
+
 **The layered entries are a compact list, not fixed slots.** Confirmed on the
 bench (2026-10-21): a preset sent with pile `01 00 03` reads back as `01 03 00`,
 so the unit packs the layered track numbers to the left. Writing a hole makes

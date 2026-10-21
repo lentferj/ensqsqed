@@ -27,7 +27,7 @@ bytes each.
 The SQ-R's preset is a **performance setup**, not a sound: eight tracks
 with their own sound, mix, key range and MIDI settings, one effect that
 all eight share, and a "pile" that says which of the eight tracks are
-switched on.  This module is the parse of that, and it is deliberately
+selected or layered.  This module is the parse of that, and it is deliberately
 the *bytes* rather than the panel: a preset read from the unit is
 written back unchanged unless somebody edits it, and every conversion
 between the unit's storage and the panel's wording happens in one
@@ -111,6 +111,7 @@ __all__ = [
     "NOTE_NAMES",
     "OUTPUT_NAMES",
     "STATUS_NAMES",
+    "EXTERNAL_STATUS",
     "PRESSURE_NAMES",
     "SUSTAIN_NAMES",
     "EFFECTS",
@@ -210,6 +211,11 @@ OUTPUT_NAMES: Tuple[str, ...] = ("DRY", "FX1", "FX2", "VOICE", "CONTROL")
 #: specification's spelling of a status this project has never seen in a
 #: dump.
 STATUS_NAMES: Tuple[str, ...] = ("BOTH", "LOCAL", "MIDI", "*EXT*")
+
+#: The status that receives and sends but does **not** play internal voices.
+#: The manual recommends it for turning a track off when the unit is a
+#: multitimbral receiver in MULTI mode; the pile alone does not do that.
+EXTERNAL_STATUS = STATUS_NAMES.index("*EXT*")
 
 #: The kind of aftertouch a track listens for (§4.8.1 offset 8).
 PRESSURE_NAMES: Tuple[str, ...] = ("NONE", "KEY", "CHANNEL")
@@ -1310,16 +1316,18 @@ class Preset:
         return self.pile[0]
 
     def is_active(self, number: int) -> bool:
-        """Whether the panel would show this track as on.
+        """Whether the pile names this track as selected or layered.
 
-        The off state lives here and not in the MIDI status, which the
-        specification fills with BOTH, LOCAL, MIDI or *EXT* and has no
-        off in it: in the dumps the tracks the panel shows as off have
-        full parameters and the same LOCAL status as the track that is
-        sounding, and the only thing that tells them apart is the pile.
+        This is the panel's layering state, not the whole on/off story:
+        a track that is out of the pile but still LOCAL keeps receiving
+        on its MIDI channel in MULTI mode.  The manual's *EXT* status is
+        what stops internal playback; the MULTI screen combines the two.
+        In the dumps the tracks the panel draws as off have full
+        parameters and the same LOCAL status as the one that sounds, and
+        the pile is the only field that tells them apart.
 
-        So a track is on when the pile names it: the primary track by
-        the first byte, the layered tracks by the other seven.
+        A track is in the pile when the pile names it: the primary track
+        by the first byte, the layered tracks by the other seven.
         """
         if not 1 <= number <= 8:
             raise ValueError(f"track {number} is outside 1-8")

@@ -49,7 +49,7 @@ from ensqsqed.multi import (
 )
 from sq import catalog as cat
 from sq import favorites as fav
-from sq.presets import Preset, Track, sound_word
+from sq.presets import EXTERNAL_STATUS, Preset, Track, sound_word
 
 
 def _track(index: int) -> Track:
@@ -704,6 +704,7 @@ class TestTheTrackSwitch:
             # The pile is what changed: the track's own byte names it.
             assert preset.pile[1] == 2
             assert preset.is_active(2)
+            assert preset.tracks[1].status == 1, "a switch-on keeps LOCAL"
             assert applied == ["track 2 off→on"]
 
     async def test_switching_off_a_middle_track_leaves_no_hole(self):
@@ -734,15 +735,24 @@ class TestTheTrackSwitch:
             assert preset.pile == bytes([1, 3, 0, 0, 0, 0, 0, 0])
             assert not preset.is_active(2)
             assert preset.is_active(3)
+            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert preset.tracks[2].status == 1
             assert applied[-1] == "track 2 on→off"
 
-    async def test_space_leaves_the_status_byte_alone(self):
+    async def test_switching_off_sets_the_external_status(self):
+        """The pile alone does not stop a MULTI channel receiving.
+
+        The manual recommends *EXT* for that; the panel shows "-", and
+        incoming MIDI no longer plays internal voices.  Off is therefore
+        both changes, and on puts the status back.
+        """
         preset = _preset()
+        applied = []
         app = _Host()
         async with app.run_test() as pilot:
             screen = MultiScreen(
                 preset,
-                on_apply=lambda live, description: None,
+                on_apply=lambda live, description: applied.append(description),
                 on_undo=lambda count: None,
                 on_sound_picked=lambda index, number: None,
                 allow_write=True,
@@ -750,14 +760,20 @@ class TestTheTrackSwitch:
             await app.push_screen(screen)
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
-            before = preset.tracks[1].to_bytes()
             _focus(table, 1, "trk")
-            await pilot.press("space")
+            await pilot.press("space")  # on
             await pilot.pause()
-            after = preset.tracks[1].to_bytes()
-            # Byte 8 is the status, the pressure and the channel: the
-            # off state is in the pile, and the pile is not in the track.
-            assert after[8] == before[8]
+            assert preset.tracks[1].status == 1
+            await pilot.press("space")  # off
+            await pilot.pause()
+            assert not preset.is_active(2)
+            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert applied[-1] == "track 2 on→off"
+            await pilot.press("space")  # on again
+            await pilot.pause()
+            assert preset.is_active(2)
+            assert preset.tracks[1].status == 1
+            assert applied[-1] == "track 2 off→on"
 
     async def test_the_primary_track_cannot_be_switched_off(self):
         preset = _preset()
@@ -781,6 +797,29 @@ class TestTheTrackSwitch:
             assert applied == []
             assert "primary" in _status(screen)
 
+    async def test_a_primary_track_marked_external_can_be_switched_on(self):
+        """The refusal is about switching it off, not about recovery."""
+        preset = _preset()
+        preset.tracks[0] = preset.tracks[0].updated(status=EXTERNAL_STATUS)
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.tracks[0].status == 1
+            assert applied == ["track 1 off→on"]
+
     async def test_a_switched_on_track_can_be_switched_off_again(self):
         preset = _preset()
         app = _Host()
@@ -802,6 +841,7 @@ class TestTheTrackSwitch:
             await pilot.pause()
             assert preset.pile[1] == 0
             assert not preset.is_active(2)
+            assert preset.tracks[1].status == EXTERNAL_STATUS
 
 
 class TestTheRange:

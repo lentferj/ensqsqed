@@ -387,10 +387,11 @@ def _cmd_multi(device, args) -> None:
 
     **The preset is a performance setup, not a sound**: eight tracks
     with their own sound, mix, key range and MIDI settings, one effect
-    that all eight share, and a pile that says which tracks are on.  The
-    manual's MULTI mode is the panel's reading of that pile -- each
-    track that is on receives on its own MIDI channel, and each track
-    that is off does not receive at all.
+    that all eight share, and a pile that says which are selected or
+    layered.  In MULTI mode **every** track with a channel receives;
+    the pile does not gate the receiver.  A track is silent internally
+    when its MIDI status is *EXT*, and that is what ``Status`` below
+    means by OFF.
 
     The table is the panel's own layout: the eight tracks, their MIDI
     channel and status, the sound each one plays, and the mix and key
@@ -555,14 +556,26 @@ def _panel_name(names: Sequence[str], value: int) -> str:
     return names[value] if 0 <= value < len(names) else "?"
 
 
-def pile_mask(preset: p.Preset) -> str:
-    """The panel's track status mask: ``123-56-8``.
+def track_plays(preset: p.Preset, number: int) -> bool:
+    """Whether a track plays internal voices.
 
-    One character per track -- its number when the pile says the track
-    is on, a dash when it is off.  The manual prints exactly this above
-    the preset name (part 3, "MULTI Mode"), and the pile is where the
-    on/off state lives: the specification's track status byte has no
-    off state in it at all (``docs/PRESET-FRAMING.md`` section 6).
+    Two fields decide it: the pile (selected or layered) and the MIDI
+    status.  A track out of the pile but still LOCAL receives and plays
+    in MULTI mode, so the pile alone is not the answer.
+    """
+    return preset.is_active(number) and (
+        preset.tracks[number - 1].status != p.EXTERNAL_STATUS
+    )
+
+
+def pile_mask(preset: p.Preset) -> str:
+    """The panel's layer mask: ``123-56-8``.
+
+    One character per track -- its number when the pile names it, a
+    dash when it does not.  This is the *layering* mask the manual
+    prints above the preset name (part 3, "MULTI mode"); a layered track
+    can still be *EXT* and therefore silent.  Whether it plays is
+    :func:`track_plays`.
     """
     return "".join(
         str(number) if preset.is_active(number) else "-"
@@ -599,24 +612,23 @@ def track_rows(
 ) -> List[List[str]]:
     """The preset's eight tracks, one row each.
 
-    The columns are the panel's: the track, whether the pile says it is
-    on, its MIDI channel, its MIDI status, its MIDI program, the sound
-    it plays, and the mix and key parameters the panel shows beside
-    them.
+    The columns are the panel's: the track, whether it plays internal
+    voices, its MIDI channel, its MIDI status, its MIDI program, the
+    sound it plays, and the mix and key parameters the panel shows
+    beside them.
 
     **Two of those columns are about the same track and are not the
-    same thing.**  ``Status`` is the panel's on/off, which the pile
-    holds -- the specification's status byte has no off state in it,
-    which is why an off track shows ``OFF`` here
-    (``docs/PRESET-FRAMING.md`` section 6).  ``Status-midi`` is the
-    MIDI status the status byte does hold: BOTH, LOCAL or MIDI.
+    same thing.**  ``Status`` is whether it plays: in the pile **and**
+    not *EXT*.  ``Status-midi`` is the status byte itself: BOTH, LOCAL,
+    MIDI or *EXT*.  A track can be layered and *EXT* -- it appears in
+    the layer mask and still shows ``OFF`` here.
     """
     rows = []
     for number, track in enumerate(preset.tracks, start=1):
         rows.append(
             [
                 str(number),
-                "ON" if preset.is_active(number) else "OFF",
+                "ON" if track_plays(preset, number) else "OFF",
                 str(track.midi_channel_display),
                 _panel_name(p.STATUS_NAMES, track.status),
                 str(track.midi_program_display),

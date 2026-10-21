@@ -38,7 +38,7 @@ from ensqsqed.multi import MultiScreen, PresetListScreen, SoundPickerScreen
 from sq import catalog as cat
 from sq import favorites as fav
 from sq.bridge import AllPresetsDump, CurrentPreset, PresetMismatch, PresetSent
-from sq.presets import Preset, split_single_dump
+from sq.presets import EXTERNAL_STATUS, Preset, split_single_dump
 from vinsynlib.ui.modals import ChoiceScreen
 from vinsynlib.undo import Record
 
@@ -390,6 +390,28 @@ class TestTheGateArmed:
             assert preset_raw[:34] == PRESET_RAW[:34]
             assert preset_raw[34] == PRESET_RAW[34] - 1
             assert preset_raw[35:] == PRESET_RAW[35:]
+
+    async def test_track_off_sends_the_external_status(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """Off is the pile *and* *EXT*; the pile alone still receives."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")  # on
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            await pilot.press("space")  # off
+            assert await _wait(lambda: len(device.sent) == 2, pilot)
+            preset = Preset.from_bytes(device.sent[1][1])
+            assert not preset.is_active(2)
+            assert preset.pile[1] == 0
+            assert preset.tracks[1].status == EXTERNAL_STATUS
 
     async def test_undo_sends_the_original_bytes_back(
         self, app: EnsqsqedApp, device: FakeMultiDevice

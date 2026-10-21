@@ -184,6 +184,17 @@ def test_the_mask_follows_the_pile() -> None:
     assert after.count("-") == before.count("-") - 1
 
 
+def test_a_layered_external_track_layers_but_does_not_play() -> None:
+    """The mask is layering; OFF is the absence of internal voices."""
+    preset = _single_preset()
+    preset.set_active(3, True)
+    preset.tracks[2] = preset.tracks[2].updated(status=p.EXTERNAL_STATUS)
+
+    assert cli.pile_mask(preset)[2] == "3", "still layered in the pile"
+    assert not cli.track_plays(preset, 3)
+    assert cli.track_rows(preset)[2][1] == "OFF"
+
+
 def test_the_effect_block_has_a_name_a_mix_and_its_parameters() -> None:
     """The effect, its two mixes, and the rows of its parameter set."""
     preset = _single_preset()

@@ -270,12 +270,20 @@ status value 3 (*EXT*). However, the fixture does settle where the OFF state liv
 - The pile byte for tracks 2..8 is 0 in all 80 presets, while track 1's pile byte
   is 1. Tracks with pile byte 0 are the panel's "—" (off) tracks.
 
-**Conclusion (supported by the fixture): the track on/off toggle lives in the pile
-byte — 0 = off (not active/layered), n = on (track n active/layered in the pile).
-The primary track (pile byte 0) is always on. Status value *EXT* (3) remains
-spec-defined but unverified by this fixture; do not map OFF to it.** Marked
-empirical/unverified for the *EXT* interpretation; the pile-based OFF is verified
-against the fixture's observed data.
+**Conclusion (supported by the fixture): the panel's selected/layered state
+lives in the pile byte — 0 = not selected or layered, n = track n selected or
+layered. The primary track (pile byte 0) is always selected.** The fixture
+cannot settle *EXT* (3) because it never exercises it.
+
+**But the pile is not the MIDI off switch.** On the bench (2026-10-21) a track
+removed from the pile, with the preset read back exactly, still received on its
+MIDI channel and played: the pile is the layer/selection state, not the
+receiver's gate. The manual is explicit that *EXT* is the status to use "for
+turning off certain tracks when using the SQ as a multitimbral receiver in
+MULTI Mode": incoming MIDI does not play internal voices, and the panel shows
+the track as `-`. So the editor's on/off is **both** changes — leave the pile
+and set status *EXT* — and switching on restores the status. See
+`ensqsqed/multi.py::MultiScreen.action_toggle_track`.
 
 **The layered list is compact (bench, 2026-10-21).** Bytes 1..7 are an *ordered
 list* of the layered track numbers, packed to the left — not one slot per track

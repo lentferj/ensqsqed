@@ -38,14 +38,16 @@ focused cell, a digit starts a number, ``+`` and ``-`` nudge it, and
 Three decisions are worth stating up front, because they are the ones a
 reader of the manual would expect to be different.
 
-**A track's on/off state lives in the pile, not in the MIDI status.**
-The specification's track structure has no off state at all -- its
-status byte says BOTH, LOCAL, MIDI or *EXT* -- while the manual's panel
-shows a track as "—" when it is off.  In the dumps the tracks the panel
-would show as off have full parameters and the same LOCAL status as the
-track that is sounding, and the only thing that tells them apart is the
-pile byte, which is zero for them.  So ``space`` writes the pile and
-leaves the status byte alone; see ``docs/PRESET-FRAMING.md``.
+**A track's off state is the pile *and* the MIDI status.**  The
+specification's track structure has no off state, but the two fields do
+different jobs.  The pile byte is the panel's selected/layered state --
+the track LEDs and the "—".  It does not gate the receiver: on the bench
+a track removed from the pile, with the preset read back exactly, still
+received on its MIDI channel and played.  The manual's *EXT* status is
+what stops internal voices ("good for turning off certain tracks when
+using the SQ as a multitimbral receiver in MULTI Mode"), and the panel
+shows it as "-".  So ``space`` off does both -- out of the pile and
+*EXT* -- and on restores the status; see ``docs/PRESET-FRAMING.md``.
 
 **The primary track cannot be switched off.**  The pile's first byte
 names the primary track, and a preset without one is not a state the
@@ -81,6 +83,7 @@ from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from sq import banks
 from sq.presets import (
+    EXTERNAL_STATUS,
     OUTPUT_NAMES,
     PAN_SOUND,
     PRESSURE_NAMES,
@@ -277,9 +280,9 @@ class _Column:
 #: The row's own track number.  It writes nothing.
 TRACK_COLUMN = _Column("trk", "trk")
 
-#: The track's on/off state, read from the pile.  It writes nothing
-#: either -- ``space`` writes the pile -- but it is the answer to the
-#: question the screen is usually opened with.
+#: The track's on/off state: in the pile and not *EXT*.  It writes
+#: nothing either -- ``space`` writes both fields -- but it is the
+#: answer to the question the screen is usually opened with.
 ON_COLUMN = _Column("on", "on")
 
 #: The sound the track plays: the group and the slot inside it.
@@ -990,6 +993,10 @@ class MultiScreen(ModalScreen[None]):
         #: copied so `w` here toggles the object every edit is checked
         #: against, and the note can be redrawn from it.
         self._gate = gate
+        #: The status a track had before it was switched off, so switching
+        #: it on restores BOTH/MIDI instead of assuming LOCAL.  Keyed by
+        #: track number; only this screen session's switches are in here.
+        self._status_before_off: Dict[int, int] = {}
         #: An optional second route for the sentence, called as
         #: ``say_(message, refused=refused)``.  The app does not pass
         #: one: its status line is the dimmed backdrop behind this
@@ -1120,15 +1127,26 @@ class MultiScreen(ModalScreen[None]):
 
     # --- the rows ----------------------------------------------------------
 
+    def _is_on(self, number: int) -> bool:
+        """Whether a track will play internal voices.
+
+        **The pile is not enough.**  A track that is un-layered but still
+        has status LOCAL keeps receiving on its MIDI channel -- the
+        manual recommends *EXT* when the SQ is a multitimbral receiver
+        in MULTI mode, and that is the status the panel shows as "-".
+        So "on" is: in the pile **and** not *EXT*.
+        """
+        if not self._preset.is_active(number):
+            return False
+        return self._preset.tracks[number - 1].status != EXTERNAL_STATUS
+
     def _row(self, index: int) -> Tuple[str, ...]:
         """One track's cells, in the current view."""
         track = self._preset.tracks[index]
         cells = []
         for column in self._columns():
             if column is ON_COLUMN:
-                cells.append(
-                    "[b]OFF[/b]" if not self._preset.is_active(index + 1) else "on"
-                )
+                cells.append("[b]OFF[/b]" if not self._is_on(index + 1) else "on")
             elif column is SPOT_COLUMN:
                 cells.append(self._spot(track))
             elif column is NAME_COLUMN:
@@ -1329,11 +1347,16 @@ class MultiScreen(ModalScreen[None]):
     def action_toggle_track(self) -> None:
         """``space``: the track under the cursor, on or off.
 
-        **The pile is what is written**, not the status byte: the
-        specification's track structure has no off state, and the dumps
-        show the tracks the panel draws as off carrying the same LOCAL
-        status as the one that is sounding.  See
-        ``docs/PRESET-FRAMING.md``.
+        **Switching off is two changes, because one is not enough.**
+        The pile says which tracks are selected or layered, and it is
+        what the panel's track LEDs show.  But the unit still receives
+        on a track's MIDI channel when the track is not in the pile --
+        the manual recommends *EXT* for turning a track off when the SQ
+        is a multitimbral receiver in MULTI mode.  So off removes the
+        track from the pile **and** sets its status to *EXT*; on adds it
+        back and restores the status it had (LOCAL if this screen never
+        saw it on).  That is the difference between the panel's "-" and
+        a "2" that lights on incoming notes.
 
         **The primary track stays on.**  The pile's first byte names
         it, and a preset without a primary track is not a state the
@@ -1346,20 +1369,35 @@ class MultiScreen(ModalScreen[None]):
             self._refuse_write()
             return
         number = index + 1
-        if number == self._preset.primary_track:
+        track = self._preset.tracks[index]
+        active = self._is_on(number)
+        if active and number == self._preset.primary_track:
             self.say(
-                f"track {number} is the primary track and always stays on — "
-                "a preset without a primary track is not a state the unit offers",
+                f"track {number} is the primary track and cannot be switched "
+                "off from here — a preset without a primary track is not a "
+                "state the unit offers",
                 refused=True,
             )
             return
-        active = self._preset.is_active(number)
         try:
-            self._preset.set_active(number, not active)
+            if active:
+                self._preset.set_active(number, False)
+                if track.status != EXTERNAL_STATUS:
+                    self._status_before_off[number] = track.status
+                track = track.updated(status=EXTERNAL_STATUS)
+            else:
+                self._preset.set_active(number, True)
+                if track.status == EXTERNAL_STATUS:
+                    status = self._status_before_off.pop(number, 1)
+                    if status == EXTERNAL_STATUS:
+                        status = 1
+                    track = track.updated(status=status)
         except ValueError as exc:
             self.say(str(exc), refused=True)
             return
-        self._draw_cell(index, ON_COLUMN)
+        self._preset.tracks[index] = track
+        for column in self._columns():
+            self._draw_cell(index, column)
         was = "on" if active else "off"
         now = "off" if active else "on"
         self._on_apply(self._preset, f"track {number} {was}→{now}")
@@ -1508,7 +1546,10 @@ class MultiScreen(ModalScreen[None]):
         after = column.text_of(updated)
         self._pending.append((index, column.key, getattr(track, column.field)))
         self._preset.tracks[index] = updated
-        self._draw_cell(index, column)
+        # The row, not just the cell: the `on` cell also depends on the
+        # status, and an edit that turns *EXT* on must dim it at once.
+        for visible in self._columns():
+            self._draw_cell(index, visible)
         # The sentence the undo log is labelled with names the *field*,
         # not the column's short label: "track 3 volume 50→49".  The
         # field is what a reader of the undo log will be looking for.
@@ -1632,7 +1673,8 @@ class MultiScreen(ModalScreen[None]):
                 self._preset.tracks[index] = self._with_value(track, column, old_value)
             except ValueError:  # pragma: no cover - the old value was valid
                 return
-            self._draw_cell(index, column)
+            for visible in self._columns():
+                self._draw_cell(index, visible)
             return
 
     @staticmethod

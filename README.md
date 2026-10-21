@@ -264,7 +264,7 @@ channel, and a track that is off does not receive at all. Three keys reach it.
 
 The track editor's columns are grouped, and `tab` cycles the groups the way
 rxved's does. Two columns are in every group — `trk`, the track's own number,
-and `on`, whether the track is in the pile — then:
+and `on`, whether the track plays internal voices — then:
 
 | group | columns | what the panel calls them |
 |---|---|---|
@@ -275,10 +275,16 @@ and `on`, whether the track is in the pile — then:
 
 `⏎` edits the cell under the cursor — a list to pick from when the values are
 words, a number to type when they are numbers — a digit starts that number,
-`+`/`-` nudge it, and `space` switches the whole track on or off. A track's
-on/off state lives in the **pile**, not the MIDI status byte: the status byte
-says BOTH/LOCAL/MIDI/*EXT* and has no off at all, while the panel shows a track
-as `—` when it is off. The primary track cannot be switched off.
+`+`/`-` nudge it, and `space` switches the whole track on or off. Switching a
+track off is **two changes**, because one is not enough in MULTI mode: the
+track leaves the **pile** (the panel's selected/layered state, its `—`) and its
+MIDI status becomes ***EXT***. The pile alone still receives on the track's
+channel — a track that is not layered but is LOCAL keeps sounding from MIDI,
+which is the difference between the panel's `-` and a track number that lights
+on incoming notes. *EXT* is the manual's own answer for turning a track off in
+a multitimbral setup: it receives and can send, but does not play internal
+voices. Switching it on restores the status it had (LOCAL if the editor never
+saw it on). The primary track cannot be switched off from here.
 
 The effect editor lists the thirteen effects by the panel's own names (CONCERT
 REVERB … CMPRSS+DIST+VERB), then the parameters of the active set, the FX1/FX2
