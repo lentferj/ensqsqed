@@ -510,6 +510,12 @@ a preset edit's audible effect follows ENTER/SAVE (or leaving Edit mode on
 the panel), and why an on/off change made while the unit is in that mode
 cannot be judged by playing into it.
 
+**Confirmed the other way round, without a power cycle.** With a preset
+whose track 2 is out of the pile and `*EXT`, once the panel left Edit mode:
+a note on channel 12 was silent (RMS ≈ 7, the noise floor) while track 1 on
+channel 11 sounded (RMS ≈ 55). The same preset while Edit mode was open
+played nothing. The bytes are right; the mode is what hides them.
+
 The status line after every send says this. A future write path must not
 claim a live change it cannot observe.
 

@@ -306,9 +306,13 @@ refused or unmatched write is reported, not assumed.
 MIDI.** Measured on the bench: one preset dump — even one byte for byte the
 preset already there — silences every track, including the base channel, and
 no MIDI message (Start/Stop, Song Select, clock, program change, reset) brings
-it back; the front panel does. So an edit is a *preset* change first and an
-audible one after ENTER/SAVE (or after leaving Edit mode on the unit). The
-status line says so after every send.
+it back; leaving Edit mode on the unit does. So an edit is a *preset* change
+first and an audible one after ENTER/SAVE and leaving Edit mode. The status
+line says so after every send.
+
+Confirmed with a track switched off (out of the pile and `*EXT`): in Edit mode
+nothing plays; with Edit mode left, channel 12 is silent while track 1 on
+channel 11 sounds — no power cycle needed.
 
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle

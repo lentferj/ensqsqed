@@ -291,7 +291,9 @@ Reading the preset back did not. The protocol has no message to leave the
 mode or to store, so a preset edit is audible only after ENTER/SAVE (or
 leaving Edit mode on the unit). Every send's status sentence now says so.
 The *EXT off is correct in the preset, but it cannot be judged by playing
-into a unit that is still in Edit Preset mode.
+into a unit that is still in Edit Preset mode. Confirmed without a power
+cycle: the same preset (track 2 out of the pile, `*EXT`) is silent on
+channel 12 once Edit mode is left, while track 1 on channel 11 sounds.
 
 **The layered entries are a compact list, not fixed slots.** Confirmed on the
 bench (2026-10-21): a preset sent with pile `01 00 03` reads back as `01 03 00`,
