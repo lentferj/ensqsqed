@@ -839,6 +839,67 @@ class TestThePresetList:
             assert await _wait(lambda: "into slot 1" in _status(screen), pilot)
 
 
+class TestTheSentenceAfterASend:
+    """What the app says after a send is a measurement, not a mood.
+
+    The withdrawn claim -- that the unit does not play incoming MIDI
+    while the Edit Preset is open, and that the change is heard only
+    after the panel leaves Edit mode -- was confounded by the one-way
+    *EXT* latch that ran before it.  The clean measurement says the
+    send is live, the unit goes briefly deaf and answers again within
+    about half a minute, and storing is the unit's own ENTER/SAVE.
+    Both editors say it, and neither says the withdrawn claim.
+    """
+
+    async def test_the_track_editor_says_the_send_is_live(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await _open_mix_view(screen, pilot)
+            await pilot.press("minus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            assert await _wait(lambda: "sent." in _status(screen), pilot)
+            said = _status(screen)
+            # The send is live: the unit plays the preset it was sent.
+            assert "the change is live" in said
+            # The blackout is short and the unit comes back by itself.
+            assert "briefly deaf" in said
+            assert "about half a minute" in said
+            # Storing is the unit's own act.
+            assert "ENTER/SAVE" in said
+            # The withdrawn claim is gone.
+            assert "does not play incoming MIDI" not in said
+            assert "leave Edit mode" not in said
+
+    async def test_the_effect_editor_says_the_same(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            await pilot.press("x")
+            assert await _wait(lambda: app._fx_screen is not None, pilot)
+            screen = app._fx_screen
+            assert screen is not None
+            table = screen.query_one("#fx-table", DataTable)
+            table.move_cursor(row=1)
+            await pilot.pause()
+            await pilot.press("plus")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            assert await _wait(lambda: "sent." in _status(screen), pilot)
+            said = _status(screen)
+            assert "the change is live" in said
+            assert "about half a minute" in said
+            assert "ENTER/SAVE" in said
+            assert "does not play incoming MIDI" not in said
+
+
 class TestTheUndoDispatch:
     """The undo log holds two kinds of record, and both must work.
 

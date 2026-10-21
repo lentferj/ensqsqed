@@ -1610,10 +1610,13 @@ class EnsqsqedApp(App):
     # takes about twelve seconds, which is why `p` says so before it
     # starts rather than after.
     #
-    # **A write reaches the Edit Preset buffer and nothing else.**  The
+    # **A write reaches the working preset, and the unit plays it.**  The
     # unit displays "Press ENTER to save new preset", and no message in
     # this protocol stores a preset: storing it is the user's front
-    # panel act.  Every sentence the app writes after a send says so.
+    # panel act.  The change itself is live -- the dump lands in the
+    # buffer the unit plays from -- and the unit goes briefly deaf to
+    # incoming MIDI after a send, answering again by about thirty-five
+    # seconds.  Every sentence the app writes after a send says so.
 
     def action_multi(self) -> None:
         """``m``: the eight tracks of the preset in hand.
@@ -2073,9 +2076,16 @@ class EnsqsqedApp(App):
     def _store_sentence(self, description: str) -> str:
         """What the app says after a change has landed.
 
-        **The unit is holding the change in its Edit Preset buffer**, and
-        storing it is a front-panel act: this protocol has no message
-        that stores a preset.  So the sentence says so every time, and
+        **The send is live.**  The dump lands in the unit's working
+        preset -- the Edit Preset buffer -- and that is the preset the
+        unit plays from, so the change is heard.  What the bench caught
+        is a short blackout: the unit goes briefly deaf to incoming
+        MIDI after a send and answers again by about thirty-five
+        seconds, by itself (the clean no-op dump measured 32.65 before,
+        5.72 at +5 s and 29.72 at +35 s).
+
+        **Storing is a front-panel act**: this protocol has no message
+        that stores a preset, so the sentence says so every time, and
         names the slot when the app knows which one the preset came
         from -- which it does after a pick out of the preset list, and
         does not after a read of the unit's own current preset.
@@ -2084,10 +2094,11 @@ class EnsqsqedApp(App):
         if self._edit_slot is not None:
             where = f" into slot {self._edit_slot + 1}"
         return (
-            f"{description} — sent. The unit holds it in the Edit Preset "
-            f"buffer and does not play incoming MIDI while that is open; "
-            f"press ENTER/SAVE to store it{where}, then leave Edit mode on "
-            f"the unit to hear it."
+            f"{description} — sent. The unit holds it in its working preset "
+            f"(its Edit Preset buffer), so the change is live; it goes briefly "
+            f"deaf to incoming MIDI after a send and answers again within about "
+            f"half a minute. Storing it is a front-panel act: press ENTER/SAVE "
+            f"to store it{where}."
         )
 
     def _undo_from_screen(self, count: Optional[int]) -> None:
@@ -2589,9 +2600,12 @@ The preset editor
 
   A change is sent as a whole preset -- the sequence data and the 168
   bytes of the preset -- because this protocol has no field-level
-  write. The unit takes it into its Edit Preset buffer and its display
-  says "Press ENTER to save new preset": **storing it is a front panel
-  act**, and nothing this program does stores a preset.
+  write. The unit takes it into its working preset (its Edit Preset
+  buffer) and plays it, so the change is live; the unit goes briefly
+  deaf to incoming MIDI right after a send and answers again within
+  about half a minute. Its display says "Press ENTER to save new
+  preset": **storing it is a front panel act**, and nothing this
+  program does stores a preset.
 
   `z` puts the previous preset back, the whole of it. The editors are
   behind the write gate, so arm it with `w` before editing.
