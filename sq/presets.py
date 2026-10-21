@@ -1330,8 +1330,18 @@ class Preset:
     def set_active(self, number: int, active: bool) -> None:
         """Switch a track on or off, in the pile.
 
-        A track that is off has a zero pile byte; a track that is on is
-        named by its byte.  The primary track is named by the pile's
+        **The layered tracks are a compact ordered list, not one slot
+        per track number.**  The specification calls the pile an
+        "ordered list of eight bytes with one byte per track", but the
+        unit compacts it on receipt: sending ``01 00 03`` (track 3
+        layered, track 2 absent) is read back as ``01 03 00``.  A write
+        that leaves a hole therefore fails the read-back check and the
+        change appears to be refused -- the track that was switched off
+        goes on being shown as on.
+
+        So switching a track off removes its number from the list and
+        shifts the ones after it left; switching it on appends to the
+        end of the list.  The primary track is named by the pile's
         first byte and stays on -- a preset without a primary track is
         not a state the unit offers.
         """
@@ -1341,6 +1351,13 @@ class Preset:
             if not active:
                 raise ValueError("the primary track stays on")
             return
-        pile = bytearray(self.pile)
-        pile[number - 1] = number if active else 0
-        self.pile = bytes(pile)
+        layered = [track for track in self.pile[1:] if track]
+        if active:
+            if number in layered:
+                return
+            if len(layered) >= 7:
+                raise ValueError("all seven layered tracks are already in the pile")
+            layered.append(number)
+        else:
+            layered = [track for track in layered if track != number]
+        self.pile = bytes([self.primary_track] + layered + [0] * (7 - len(layered)))

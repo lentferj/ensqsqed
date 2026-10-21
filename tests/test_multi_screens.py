@@ -706,6 +706,36 @@ class TestTheTrackSwitch:
             assert preset.is_active(2)
             assert applied == ["track 2 off→on"]
 
+    async def test_switching_off_a_middle_track_leaves_no_hole(self):
+        """Two layered tracks, then the lower one off: the pile compacts."""
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            _focus(table, 2, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.pile == bytes([1, 2, 3, 0, 0, 0, 0, 0])
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.pile == bytes([1, 3, 0, 0, 0, 0, 0, 0])
+            assert not preset.is_active(2)
+            assert preset.is_active(3)
+            assert applied[-1] == "track 2 on→off"
+
     async def test_space_leaves_the_status_byte_alone(self):
         preset = _preset()
         app = _Host()

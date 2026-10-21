@@ -483,10 +483,47 @@ class TestThePile:
         preset = presets.Preset.from_bytes(_single_dump()[48:216])
         preset.set_active(4, True)
         assert preset.is_active(4)
-        assert preset.pile[3] == 4
+        assert 4 in preset.pile[1:]
         preset.set_active(4, False)
         assert not preset.is_active(4)
-        assert preset.pile[3] == 0
+        assert preset.pile == b"\x01" + b"\x00" * 7
+
+    def test_the_layered_tracks_are_a_compact_ordered_list(self):
+        """The unit packs them, and keeps the order they were layered in."""
+        preset = presets.Preset.from_bytes(_single_dump()[48:216])
+        preset.set_active(3, True)
+        preset.set_active(2, True)
+        assert preset.pile == bytes([1, 3, 2, 0, 0, 0, 0, 0])
+        assert preset.is_active(2)
+        assert preset.is_active(3)
+
+    def test_switching_off_a_middle_track_leaves_no_hole(self):
+        """The bench's failure: ``01 00 03`` is not what the unit stores.
+
+        The unit compacts it to ``01 03``, so a write that leaves the
+        hole fails its own read-back and the track appears to stay on.
+        """
+        preset = presets.Preset.from_bytes(_single_dump()[48:216])
+        preset.set_active(2, True)
+        preset.set_active(3, True)
+        preset.set_active(2, False)
+        assert preset.pile == bytes([1, 3, 0, 0, 0, 0, 0, 0])
+        assert not preset.is_active(2)
+        assert preset.is_active(3)
+
+    def test_switching_off_the_last_layered_track_keeps_the_others(self):
+        preset = presets.Preset.from_bytes(_single_dump()[48:216])
+        preset.set_active(2, True)
+        preset.set_active(3, True)
+        preset.set_active(3, False)
+        assert preset.pile == bytes([1, 2, 0, 0, 0, 0, 0, 0])
+        assert preset.is_active(2)
+
+    def test_a_hole_in_a_parsed_pile_is_compacted_by_the_next_write(self):
+        preset = presets.Preset.from_bytes(_single_dump()[48:216])
+        preset.pile = bytes([1, 0, 4, 0, 0, 0, 0, 0])
+        preset.set_active(5, True)
+        assert preset.pile == bytes([1, 4, 5, 0, 0, 0, 0, 0])
 
     def test_the_primary_track_stays_on(self):
         preset = presets.Preset.from_bytes(_single_dump()[48:216])
@@ -825,10 +862,10 @@ class TestThePileHelpers:
             preset = presets.Preset.from_bytes(_single_dump()[48:216])
             preset.set_active(number, True)
             assert preset.is_active(number)
-            assert preset.pile[number - 1] == number
+            assert number in preset.pile[1:]
             preset.set_active(number, False)
             assert not preset.is_active(number)
-            assert preset.pile[number - 1] == 0
+            assert preset.pile == b"\x01" + b"\x00" * 7
 
     def test_a_track_outside_the_preset_is_refused_by_both_doors(self):
         preset = presets.Preset.from_bytes(_single_dump()[48:216])

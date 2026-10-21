@@ -273,6 +273,16 @@ track 1's pile byte is 1, tracks 2–8's are 0, and 0 is the panel's `—`. The
 parsers therefore read and write the on/off state through the pile, and the
 status value *EXT* (3) is left alone — no dump exercises it.
 
+**The layered entries are a compact list, not fixed slots.** Confirmed on the
+bench (2026-10-21): a preset sent with pile `01 00 03` reads back as `01 03 00`,
+so the unit packs the layered track numbers to the left. Writing a hole makes
+the read-back differ and the write is refused, which is the "track on works,
+track off does not" report: turning off a track below another layered one left
+a hole. `Preset.set_active` removes the number and shifts the rest left
+(and appends when turning on); a hole read from a third-party dump is compacted
+by the next write. The name bytes' bit 7 is not a writable per-track mute —
+the unit restores those bits on receipt.
+
 **The pan rule is stated by the model, not settled by the documents.** Note 7
 says a value stored 0–127 and shown 0–99 is converted through a 128-entry
 table, and that for a negative internal value the sign bit is ignored to get

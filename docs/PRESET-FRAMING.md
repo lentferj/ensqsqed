@@ -277,6 +277,17 @@ spec-defined but unverified by this fixture; do not map OFF to it.** Marked
 empirical/unverified for the *EXT* interpretation; the pile-based OFF is verified
 against the fixture's observed data.
 
+**The layered list is compact (bench, 2026-10-21).** Bytes 1..7 are an *ordered
+list* of the layered track numbers, packed to the left — not one slot per track
+number. Sending `01 00 03` (track 3 layered, a hole where track 2 would sit) is
+read back as `01 03 00`: the unit compacts it. A write that leaves a hole
+therefore fails its own read-back comparison, which is why switching off a track
+below another layered track looked like it did nothing (the app restored the
+cell). `Preset.set_active` now removes the number and shifts the rest left, and
+appends when switching a track on. The name field's bit 7 is **not** usable as a
+per-track mute: the unit rewrites those bits on receipt (`d0 f2 …` came back
+unchanged after clearing one), so this project neither reads nor writes them.
+
 ### Other track bytes (verified values)
 
 | Byte | Spec field | Fixture value (all 640 tracks) |

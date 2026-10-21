@@ -226,6 +226,15 @@ class TestHardwarePresetReads:
             f"the pile names track {preset.primary_track} as the primary "
             "one, and the primary track is one of the eight"
         )
+        # The unit compacts the layered list: reading back a pile with a
+        # hole (``01 00 03``) gives ``01 03 00``.  If the unit ever
+        # returns a hole, writing that shape back would fail its own
+        # read-back -- which is the bug this invariant guards.
+        used = bytes(byte for byte in preset.pile[1:] if byte)
+        assert preset.pile[1:] == used + b"\x00" * (7 - len(used)), (
+            f"the pile has a hole: {preset.pile.hex()}; the unit keeps the "
+            "layered tracks packed to the left"
+        )
 
         print(
             f"\ncurrent preset: {len(seq_blob)} bytes of sequence data and "
