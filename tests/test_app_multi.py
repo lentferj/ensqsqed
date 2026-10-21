@@ -391,10 +391,16 @@ class TestTheGateArmed:
             assert preset_raw[34] == PRESET_RAW[34] - 1
             assert preset_raw[35:] == PRESET_RAW[35:]
 
-    async def test_track_off_sends_the_external_status(
+    async def test_track_off_sends_the_pile_and_touches_no_status_byte(
         self, app: EnsqsqedApp, device: FakeMultiDevice
     ):
-        """Off is the pile *and* *EXT*; the pile alone still receives."""
+        """Off is the pile.  The status byte is not written any more.
+
+        A dump that carries *EXT* silences the track in the stored preset
+        and nowhere else, and it latches: a later dump that restores
+        LOCAL does not bring the live map back.  So the switch writes
+        the pile and leaves every status byte as it was.
+        """
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("w")
@@ -406,12 +412,41 @@ class TestTheGateArmed:
             _focus(table, 1, "trk")
             await pilot.press("space")  # on
             assert await _wait(lambda: len(device.sent) == 1, pilot)
+            on = Preset.from_bytes(device.sent[0][1])
+            before = [track.status for track in on.tracks]
             await pilot.press("space")  # off
             assert await _wait(lambda: len(device.sent) == 2, pilot)
             preset = Preset.from_bytes(device.sent[1][1])
             assert not preset.is_active(2)
             assert preset.pile[1] == 0
-            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert [track.status for track in preset.tracks] == before
+            assert preset.tracks[1].status != EXTERNAL_STATUS
+
+    async def test_switching_on_repairs_a_stored_external_status(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """A stored *EXT* is put back to LOCAL when the track goes on.
+
+        The repair is of the *stored* preset: the unit applies it when
+        the preset is selected again.
+        """
+        stored = Preset.from_bytes(PRESET_RAW)
+        stored.tracks[1] = stored.tracks[1].updated(status=EXTERNAL_STATUS)
+        device.current = CurrentPreset(seq_blob=SEQ_BLOB, preset_raw=stored.to_bytes())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            assert await _wait(lambda: len(device.sent) == 1, pilot)
+            sent = Preset.from_bytes(device.sent[0][1])
+            assert sent.tracks[1].status == 1
+            assert sent.is_active(2)
 
     async def test_undo_sends_the_original_bytes_back(
         self, app: EnsqsqedApp, device: FakeMultiDevice

@@ -413,7 +413,7 @@ class TestTheColumns:
 
     async def test_the_hints_name_the_keys(self):
         assert "tab columns" in KEY_HINTS_BLOCK
-        assert "space track on/off" in KEY_HINTS_BLOCK
+        assert "space track layer" in KEY_HINTS_BLOCK
 
 
 class TestEditing:
@@ -681,7 +681,7 @@ class TestTheGateInTheScreen:
 
 
 class TestTheTrackSwitch:
-    """``space``: the track on and off, and the primary track's refusal."""
+    """``space``: the track in the layer list and out of it."""
 
     async def test_space_switches_the_track_on(self):
         preset = _preset()
@@ -735,16 +735,17 @@ class TestTheTrackSwitch:
             assert preset.pile == bytes([1, 3, 0, 0, 0, 0, 0, 0])
             assert not preset.is_active(2)
             assert preset.is_active(3)
-            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert preset.tracks[1].status == 1, "the status byte is untouched"
             assert preset.tracks[2].status == 1
             assert applied[-1] == "track 2 on→off"
 
-    async def test_switching_off_sets_the_external_status(self):
-        """The pile alone does not stop a MULTI channel receiving.
+    async def test_switching_off_leaves_every_status_byte_alone(self):
+        """Off is the pile.  The status byte is not part of it any more.
 
-        The manual recommends *EXT* for that; the panel shows "-", and
-        incoming MIDI no longer plays internal voices.  Off is therefore
-        both changes, and on puts the status back.
+        A dump that carries *EXT* silences the track in the stored
+        preset and nowhere else, and it latches: a later dump that
+        restores LOCAL does not bring the live map back.  So the switch
+        writes the pile and nothing else.
         """
         preset = _preset()
         applied = []
@@ -764,16 +765,40 @@ class TestTheTrackSwitch:
             await pilot.press("space")  # on
             await pilot.pause()
             assert preset.tracks[1].status == 1
+            before = [track.status for track in preset.tracks]
             await pilot.press("space")  # off
             await pilot.pause()
             assert not preset.is_active(2)
-            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert [track.status for track in preset.tracks] == before
+            assert preset.tracks[1].status != EXTERNAL_STATUS
             assert applied[-1] == "track 2 on→off"
-            await pilot.press("space")  # on again
+
+    async def test_switching_off_says_the_live_switch_is_on_the_panel(self):
+        """The sentence must not promise a live change.
+
+        The unit's live switch is a front-panel gesture, and the status
+        line says where it is instead of pretending the dump did it.
+        """
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
             await pilot.pause()
-            assert preset.is_active(2)
-            assert preset.tracks[1].status == 1
-            assert applied[-1] == "track 2 off→on"
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            said = _status(screen)
+            assert "layer list" in said
+            assert "front panel" in said
+            assert "ENTER/SAVE" in said
 
     async def test_the_primary_track_cannot_be_switched_off(self):
         preset = _preset()
@@ -820,6 +845,39 @@ class TestTheTrackSwitch:
             assert preset.tracks[0].status == 1
             assert applied == ["track 1 off→on"]
 
+    async def test_a_stored_external_track_is_repaired_to_local(self):
+        """Switching a track on repairs a stored *EXT* status.
+
+        *EXT* is the status that stops the internal voices, so a track
+        the user wants to hear should not carry it.  The repair is of
+        the *stored* preset: the unit applies it when the preset is
+        selected again.
+        """
+        preset = _preset()
+        preset.tracks[1] = preset.tracks[1].updated(status=EXTERNAL_STATUS)
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "trk")
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.tracks[1].status == 1
+            assert preset.is_active(2)
+            assert applied == ["track 2 off→on"]
+            said = _status(screen)
+            assert "LOCAL" in said
+            assert "selected again" in said
+
     async def test_a_switched_on_track_can_be_switched_off_again(self):
         preset = _preset()
         app = _Host()
@@ -841,7 +899,7 @@ class TestTheTrackSwitch:
             await pilot.pause()
             assert preset.pile[1] == 0
             assert not preset.is_active(2)
-            assert preset.tracks[1].status == EXTERNAL_STATUS
+            assert preset.tracks[1].status == 1, "the status byte is untouched"
 
 
 class TestTheRange:

@@ -38,7 +38,7 @@ focused cell, a digit starts a number, ``+`` and ``-`` nudge it, and
 Three decisions are worth stating up front, because they are the ones a
 reader of the manual would expect to be different.
 
-**A track's off state is the pile *and* the MIDI status.**  The
+**A track's off state is the pile, and ``space`` edits the pile.**  The
 specification's track structure has no off state, but the two fields do
 different jobs.  The pile byte is the panel's selected/layered state --
 the track LEDs and the "—".  It does not gate the receiver: on the bench
@@ -46,8 +46,20 @@ a track removed from the pile, with the preset read back exactly, still
 received on its MIDI channel and played.  The manual's *EXT* status is
 what stops internal voices ("good for turning off certain tracks when
 using the SQ as a multitimbral receiver in MULTI Mode"), and the panel
-shows it as "-".  So ``space`` off does both -- out of the pile and
-*EXT* -- and on restores the status; see ``docs/PRESET-FRAMING.md``.
+shows it as "-".  So the two together say whether a track plays, and
+this screen edits the pile: off leaves the layer list, and the status
+byte is left exactly as it was.
+
+**What ``space`` does not do is switch the track off on the unit.**  The
+live switch is a front-panel gesture -- Select Sound, then the Track
+buttons -- and this protocol has no message for it.  A dump reaches the
+unit's Edit Preset buffer and not its live map, so a track switched off
+here is off in the stored preset, and on the panel only after that
+preset is stored and selected again.  Writing *EXT* there would not help
+either: it silences the track in the stored preset and nowhere else,
+and it latches -- a later dump that restores LOCAL does not bring the
+live map back.  So the status byte is repaired, never used to switch a
+track off; see ``docs/PRESET-FRAMING.md``.
 
 **The primary track cannot be switched off.**  The pile's first byte
 names the primary track, and a preset without one is not a state the
@@ -103,12 +115,20 @@ from vinsynlib.keys import wrap_blocks
 __all__ = [
     "COLUMN_VIEWS",
     "KEY_HINTS_BLOCK",
+    "LOCAL_STATUS",
     "ChoicePicker",
     "MultiScreen",
     "NumberPrompt",
     "PresetListScreen",
     "SoundPickerScreen",
 ]
+
+#: The MIDI status a track that shall play its internal voices carries.
+#: LOCAL -- it receives, it plays, and it is the status the panel calls
+#: the track being on.  It is the value a stored *EXT* is repaired to;
+#: the repair is a repair of the *stored* preset, and the unit applies
+#: it when that preset is selected again.
+LOCAL_STATUS = STATUS_NAMES.index("LOCAL")
 
 
 def _literal(text: str) -> str:
@@ -134,7 +154,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "⏎ edit",
     "0-9 type",
     "+ - nudge",
-    "space track on/off",
+    "space track layer",
     "w write gate",
     "esc close",
 )
@@ -281,8 +301,8 @@ class _Column:
 TRACK_COLUMN = _Column("trk", "trk")
 
 #: The track's on/off state: in the pile and not *EXT*.  It writes
-#: nothing either -- ``space`` writes both fields -- but it is the
-#: answer to the question the screen is usually opened with.
+#: nothing -- ``space`` edits the pile -- but it is the answer to the
+#: question the screen is usually opened with.
 ON_COLUMN = _Column("on", "on")
 
 #: The sound the track plays: the group and the slot inside it.
@@ -881,9 +901,10 @@ class MultiScreen(ModalScreen[None]):
     **The gestures are the family's.**  ``⏎`` edits the focused cell --
     a list to pick from when the values are words, a number to type when
     they are numbers -- a digit starts that number with the digit in it,
-    ``+`` and ``-`` nudge the value by its own step, and ``space``
-    switches the whole track on or off.  Every one of them is the same
-    path: the value is changed in the model and handed to the app.
+    ``+`` and ``-`` nudge the value by its own step, and ``space`` moves
+    the track in and out of the preset's layer list.  Every one of them
+    is the same path: the value is changed in the model and handed to
+    the app.
 
     **A refused change is put back.**  The screen knows the value each
     cell held before the change, so when the app answers
@@ -919,7 +940,7 @@ class MultiScreen(ModalScreen[None]):
         # its own cell selection, so it arrives as CellSelected instead;
         # see on_data_table_cell_selected.
         Binding("tab", "toggle_view", "Columns", show=False),
-        Binding("space", "toggle_track", "Track on/off", show=False),
+        Binding("space", "toggle_track", "Track layer", show=False),
         Binding("plus", "bump(1)", "Value +", show=False),
         # `=` as well as `+`, because `+` is a shift on most layouts and
         # a nudge is a one-handed gesture.
@@ -993,10 +1014,6 @@ class MultiScreen(ModalScreen[None]):
         #: copied so `w` here toggles the object every edit is checked
         #: against, and the note can be redrawn from it.
         self._gate = gate
-        #: The status a track had before it was switched off, so switching
-        #: it on restores BOTH/MIDI instead of assuming LOCAL.  Keyed by
-        #: track number; only this screen session's switches are in here.
-        self._status_before_off: Dict[int, int] = {}
         #: An optional second route for the sentence, called as
         #: ``say_(message, refused=refused)``.  The app does not pass
         #: one: its status line is the dimmed backdrop behind this
@@ -1135,6 +1152,11 @@ class MultiScreen(ModalScreen[None]):
         manual recommends *EXT* when the SQ is a multitimbral receiver
         in MULTI mode, and that is the status the panel shows as "-".
         So "on" is: in the pile **and** not *EXT*.
+
+        This is what the *stored* bytes say, which is why the column can
+        show a track as off that this screen never switched off.  It is
+        not a claim about the unit's live map: a dump does not reach
+        that.
         """
         if not self._preset.is_active(number):
             return False
@@ -1345,18 +1367,27 @@ class MultiScreen(ModalScreen[None]):
         self._apply(index, column, stepped)
 
     def action_toggle_track(self) -> None:
-        """``space``: the track under the cursor, on or off.
+        """``space``: the track under the cursor, in the layer list or out.
 
-        **Switching off is two changes, because one is not enough.**
-        The pile says which tracks are selected or layered, and it is
-        what the panel's track LEDs show.  But the unit still receives
-        on a track's MIDI channel when the track is not in the pile --
-        the manual recommends *EXT* for turning a track off when the SQ
-        is a multitimbral receiver in MULTI mode.  So off removes the
-        track from the pile **and** sets its status to *EXT*; on adds it
-        back and restores the status it had (LOCAL if this screen never
-        saw it on).  That is the difference between the panel's "-" and
-        a "2" that lights on incoming notes.
+        **This is a preset edit, not a live switch.**  The live switch
+        for a track is a front-panel gesture -- Select Sound, then the
+        Track buttons -- and this protocol has no message for it.  A
+        dump reaches the unit's Edit Preset buffer and not its live map,
+        so a track switched off here is off in the *stored* preset and
+        on the panel only once that preset is stored and selected again.
+
+        So off is the pile alone: the track leaves the layer list and
+        its status byte is left exactly as it was.  Writing *EXT* there
+        would silence the track in the stored preset and nowhere else,
+        and it latches -- a later dump that restores LOCAL does not
+        bring the live map back.  So the status byte is never written to
+        switch a track off.
+
+        On is the pile again, plus one repair: a track whose stored
+        status is *EXT* is put back to LOCAL, because that status is
+        what stops the internal voices and a track the user wants to
+        hear should not carry it.  The repair is of the stored preset
+        too; the unit applies it when the preset is selected again.
 
         **The primary track stays on.**  The pile's first byte names
         it, and a preset without a primary track is not a state the
@@ -1379,19 +1410,17 @@ class MultiScreen(ModalScreen[None]):
                 refused=True,
             )
             return
+        added = False
+        repaired = False
         try:
             if active:
                 self._preset.set_active(number, False)
-                if track.status != EXTERNAL_STATUS:
-                    self._status_before_off[number] = track.status
-                track = track.updated(status=EXTERNAL_STATUS)
             else:
+                added = not self._preset.is_active(number)
                 self._preset.set_active(number, True)
                 if track.status == EXTERNAL_STATUS:
-                    status = self._status_before_off.pop(number, 1)
-                    if status == EXTERNAL_STATUS:
-                        status = 1
-                    track = track.updated(status=status)
+                    track = track.updated(status=LOCAL_STATUS)
+                    repaired = True
         except ValueError as exc:
             self.say(str(exc), refused=True)
             return
@@ -1401,6 +1430,39 @@ class MultiScreen(ModalScreen[None]):
         was = "on" if active else "off"
         now = "off" if active else "on"
         self._on_apply(self._preset, f"track {number} {was}→{now}")
+        self.say(self._toggle_sentence(number, added=added, repaired=repaired))
+
+    def _toggle_sentence(self, number: int, *, added: bool, repaired: bool) -> str:
+        """What the switch did, said without promising a live change.
+
+        Three facts, and only facts: what the stored preset now says,
+        what the unit does with it, and where the live switch is.
+        """
+        if repaired:
+            head = f"track {number}'s stored status repaired to LOCAL (it was *EXT*)"
+            if added:
+                head = (
+                    f"track {number} added to the preset's layer list and its "
+                    "stored status repaired to LOCAL (it was *EXT*)"
+                )
+            tail = (
+                "the unit applies the repaired status when the preset is selected again"
+            )
+        elif added:
+            head = f"track {number} added to the preset's layer list"
+            tail = ""
+        else:
+            head = f"track {number} removed from the preset's layer list"
+            tail = ""
+        parts = [head]
+        if tail:
+            parts.append(tail)
+        parts.append(
+            "the live MIDI switch for a track is on the unit's front panel "
+            "(Select Sound, then the Track buttons)"
+        )
+        parts.append("press ENTER/SAVE on the unit to keep this")
+        return " — ".join(parts)
 
     # --- offering an edit --------------------------------------------------
 
