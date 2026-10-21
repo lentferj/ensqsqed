@@ -402,10 +402,14 @@ class EnsqsqedApp(App):
         self._write_gate = EditGate(armed=allow_write)
         #: The preset the editors are working on, and where it came from.
         #:
-        #: **One live preset per session.**  ``m`` and ``x`` are two
-        #: views of the same object, so an edit made in one is an edit in
-        #: the other -- and the bytes that go to the unit are the ones
-        #: the model holds.
+        #: **One live preset per opening.**  ``m`` and ``x`` are two
+        #: views of the same object while an editor is open, so an edit
+        #: made in one is an edit in the other -- and the bytes that go
+        #: to the unit are the ones the model holds.  Opening an editor
+        #: for the unit's current preset re-reads it first: the panel can
+        #: change the unit while the app is not looking, and a cached
+        #: on/off would make the next keypress write the wrong direction.
+        #: A preset picked from the list is a copy of a slot and is kept.
         self._edit_preset: Optional[Preset] = None
         #: The sequence data the preset plays, verbatim. It does not
         #: change when a track is edited: the edits are in the preset's
@@ -1614,20 +1618,33 @@ class EnsqsqedApp(App):
     def action_multi(self) -> None:
         """``m``: the eight tracks of the preset in hand.
 
-        The editor is over one live :class:`sq.presets.Preset`, and the
-        session keeps it: ``x`` opens the effect editor over the same
-        object, so the two screens are two views of one preset rather
-        than two copies of it -- a copy would be a screen that could
-        show a value the unit never accepted.
+        **A current-preset editor reads again every time it opens.**  The
+        unit can be edited on its panel between two openings, and its
+        Edit Preset mode can leave the app holding a state the unit no
+        longer has; a cached copy then shows the old on/off and a
+        keypress writes the wrong direction.  A preset picked from the
+        list is a copy of a slot, not the unit's current preset, so that
+        one is kept.
+
+        Within one opening, ``m`` and ``x`` are two views of the same
+        object -- the app re-reads, so they cannot disagree.
         """
-        if self._preset_loaded and self._edit_preset is not None:
+        if (
+            self._preset_loaded
+            and self._edit_preset is not None
+            and self._edit_slot is not None
+        ):
             self._push_multi_screen()
             return
         self._read_preset(open_fx=False)
 
     def action_fx(self) -> None:
-        """``x``: the effect of the preset in hand."""
-        if self._preset_loaded and self._edit_preset is not None:
+        """``x``: the effect of the preset in hand, re-read on opening."""
+        if (
+            self._preset_loaded
+            and self._edit_preset is not None
+            and self._edit_slot is not None
+        ):
             self._push_fx_screen()
             return
         self._read_preset(open_fx=True)

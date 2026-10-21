@@ -507,14 +507,14 @@ class TestOnePresetPerSession:
             await pilot.pause()
             await pilot.press("x")
             assert await _wait(lambda: app._fx_screen is not None, pilot)
-            # The preset was read once: the second editor is over the
-            # session's preset, not over a second reading of the unit.
-            assert device.reads == 1
+            # Each opening re-reads the current preset: the panel can
+            # have changed it between the two.
+            assert device.reads == 2
 
     async def test_the_track_editor_opens_again_over_the_same_preset(
         self, app: EnsqsqedApp, device: FakeMultiDevice
     ):
-        """`m` twice is the same preset, read once."""
+        """`m` twice reads the unit twice: the panel may have changed it."""
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("m")
@@ -523,7 +523,34 @@ class TestOnePresetPerSession:
             await pilot.pause()
             await pilot.press("m")
             assert await _wait(lambda: app._multi_screen is not None, pilot)
-            assert device.reads == 1
+            assert device.reads == 2
+
+    async def test_an_edit_made_on_the_panel_between_openings_is_seen(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The stale on/off trap: re-open must read the unit, not the copy."""
+        changed = Preset.from_bytes(PRESET_RAW)
+        changed.set_active(2, True)
+        changed.tracks[1] = changed.tracks[1].updated(status=1)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            # The panel changed the unit while the editor was closed.
+            device.current = CurrentPreset(
+                seq_blob=SEQ_BLOB, preset_raw=changed.to_bytes()
+            )
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            table = screen.query_one("#track-table", DataTable)
+            assert "on" in str(table.get_cell("t2", "on"))
+            assert app._edit_preset is not None
+            assert app._edit_preset.is_active(2)
+            assert app._edit_preset.tracks[1].status == 1
 
 
 class TestTheRefusedWrite:
