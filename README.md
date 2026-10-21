@@ -257,6 +257,9 @@ channel, and a track that is off does not receive at all. Three keys reach it.
   `⏎` on a track's sound opens a browser with **all five groups** — Internal,
   ROM, Card A, Card B and the drum kits — so a multi setup can mix sounds
   from anywhere the unit holds them, not just the bank the browser is on.
+  `v` steps the same three favourites views the browser has: all sounds,
+  this group's favourites, every favourite across groups (shown as
+  `INT 003`, `CARDA 007`, …).
 - **`x` — the effect editor.** The preset's one effect.
 
 The track editor's columns are grouped, and `tab` cycles the groups the way

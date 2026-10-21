@@ -2165,6 +2165,7 @@ class EnsqsqedApp(App):
             SoundPickerScreen(
                 self.catalog,
                 current=(track.group, track.slot),
+                favorites=self.favorites,
             ),
             picked,
         )

@@ -471,6 +471,24 @@ class ChoicePicker(ChoiceScreen):
             yield from super().compose()
 
 
+#: What `v` steps through in the sound picker.  The same three views and
+#: the same strings the browser's own favourites key uses, so a user who
+#: has learned `v` in one place has learned it in the other.
+SOUND_VIEW_ALL = "all"
+SOUND_VIEW_BANK_FAVOURITES = "bank-favourites"
+SOUND_VIEW_ALL_FAVOURITES = "all-favourites"
+SOUND_VIEW_CYCLE = (
+    SOUND_VIEW_ALL,
+    SOUND_VIEW_BANK_FAVOURITES,
+    SOUND_VIEW_ALL_FAVOURITES,
+)
+SOUND_VIEW_LABELS = {
+    SOUND_VIEW_ALL: "all sounds",
+    SOUND_VIEW_BANK_FAVOURITES: "favourites in this group",
+    SOUND_VIEW_ALL_FAVOURITES: "every favourite, all groups",
+}
+
+
 class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
     """Pick a sound for a track, from **any** of the five groups.
 
@@ -480,15 +498,24 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
     ROM and the cards unreachable from a track that was on Internal --
     the one thing a MULTI setup is for.
 
+    **`v` steps through the same three favourites views the browser has**
+    -- all sounds, this group's favourites, every favourite across
+    groups -- because the sounds marked there are exactly the ones a
+    setup is built from, and hunting for them again in a second browser
+    is the thing the favourites store exists to prevent.  In the
+    all-groups view the slot column carries the group ("CARDA 007") and
+    the group pane no longer filters.
+
     The screen answers ``(group_id, slot)`` with the picture the rest of
     the family uses: group ids are ``INT``/``ROM``/``CARDA``/``CARDB``/
     ``DRUM`` and slots count from one, exactly as the panel prints them.
     Names come from the catalog the app hands in; a missing one shows as
     ``(no name)`` rather than a blank cell, which reads as corruption.
 
-    ``tab`` swaps panes, the arrows move, ``⏎`` picks, ``esc`` cancels.
-    ``⏎`` is handled as the table's own row selection, not as a binding:
-    a binding at screen level would be eaten by the focused DataTable.
+    ``tab`` swaps panes, the arrows move, ``⏎`` picks, ``v`` cycles the
+    views, ``esc`` cancels.  ``⏎`` is handled as the table's own row
+    selection, not as a binding: a binding at screen level would be
+    eaten by the focused DataTable.
     """
 
     DEFAULT_CSS = """
@@ -511,24 +538,33 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
         Binding("escape", "cancel", "Cancel"),
         Binding("q", "cancel", "Cancel"),
         Binding("tab", "switch_pane", "Switch pane", show=False),
+        Binding("v", "cycle_view", "Favourites view", show=False),
     ]
 
     def __init__(
         self,
         catalog,
         current: Optional[Tuple[str, int]] = None,
+        *,
+        favorites=None,
+        view: int = 0,
     ) -> None:
         super().__init__()
         self._catalog = catalog
         #: ``(group_id, slot)`` the track plays now, marked in the list.
         self._current = current
+        #: The favourites store, for `v`.  ``None`` in a test that does
+        #: not care about favourites: `v` then says so and does nothing.
+        self._favorites = favorites
+        #: Index into :data:`SOUND_VIEW_CYCLE`, cycled by `v`.
+        self._view = view % len(SOUND_VIEW_CYCLE)
         self._group_ids: List[str] = banks.group_ids()
         #: The group whose slots are drawn; set by the group pane.
         self._filled_group: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("[b]Pick a sound for this track[/b]", id="picker-title")
+            yield Label(self._title(), id="picker-title")
             with Horizontal():
                 yield DataTable(id="picker-groups", cursor_type="row")
                 yield DataTable(id="picker-slots", cursor_type="row")
@@ -537,6 +573,7 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
                     (
                         "tab pane",
                         "↑↓ move",
+                        "v favourites view",
                         "⏎ pick",
                         "esc cancel",
                     ),
@@ -569,8 +606,39 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
             return self._current[0]
         return self._group_ids[0]
 
+    def _title(self) -> str:
+        """The heading, carrying which of the three views is showing."""
+        label = SOUND_VIEW_LABELS[SOUND_VIEW_CYCLE[self._view]]
+        return f"[b]Pick a sound for this track[/b]  [dim]· {label}[/dim]"
+
+    def _visible_slots(self, group_id: str) -> List[banks.Slot]:
+        """The rows the slot pane should show, for the current view.
+
+        In the all-groups favourites view the rows come from every group,
+        so callers cannot assume every slot belongs to ``group_id``; the
+        row keys carry the group for that reason.
+        """
+        view = SOUND_VIEW_CYCLE[self._view]
+        if view == SOUND_VIEW_ALL:
+            return banks.slots(group_id)
+        if self._favorites is None:
+            return []
+        if view == SOUND_VIEW_BANK_FAVOURITES:
+            marked = self._favorites.keys_for_bank(group_id)
+            return [slot for slot in banks.slots(group_id) if slot.number in marked]
+        rows: List[banks.Slot] = []
+        for favourite in self._favorites.all(order="bank"):
+            try:
+                rows.append(banks.slot(favourite.bank_id, favourite.number))
+            except LookupError:
+                # A favourite for a group this build no longer defines.
+                continue
+        order = {group: index for index, group in enumerate(self._group_ids)}
+        rows.sort(key=lambda slot: (order.get(slot.group_id, len(order)), slot.number))
+        return rows
+
     def _place_current(self) -> None:
-        """Put both cursors on what the track plays now."""
+        """Put both cursors on what the track plays now, when it is shown."""
         if self._current is None:
             return
         group_id, slot = self._current
@@ -581,26 +649,29 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
         )
         self._fill_slots(group_id)
         table = self.query_one("#picker-slots", DataTable)
-        for index, entry in enumerate(banks.slots(group_id)):
-            if entry.number == slot:
+        for index, entry in enumerate(self._visible_slots(group_id)):
+            if entry.group_id == group_id and entry.number == slot:
                 table.move_cursor(row=index)
                 break
 
-    def _fill_slots(self, group_id: str) -> None:
-        """Draw one group's sounds, keeping the slot pane's shape stable."""
-        if group_id == self._filled_group:
+    def _fill_slots(self, group_id: str, *, force: bool = False) -> None:
+        """Draw the current view's sounds, keeping the slot pane stable."""
+        if group_id == self._filled_group and not force:
             return
         self._filled_group = group_id
         table = self.query_one("#picker-slots", DataTable)
+        across = SOUND_VIEW_CYCLE[self._view] == SOUND_VIEW_ALL_FAVOURITES
         table.clear(columns=True)
         table.add_column("#", key="num")
         table.add_column("name", key="name")
-        for slot in banks.slots(group_id):
+        for slot in self._visible_slots(group_id):
             name = self._catalog.display_name(slot.bank_id, slot.number)
             table.add_row(
-                f"{slot.number:03d}",
+                f"{slot.group_id} {slot.number:03d}"
+                if across
+                else f"{slot.number:03d}",
                 _literal(name) if name else "[dim](no name)[/dim]",
-                key=f"{group_id}:{slot.number}",
+                key=f"{slot.group_id}:{slot.number}",
             )
 
     def _group_under_cursor(self) -> Optional[str]:
@@ -613,9 +684,38 @@ class SoundPickerScreen(ModalScreen[Optional[Tuple[str, int]]]):
     def on_data_table_row_highlighted(self, event) -> None:
         if event.data_table.id != "picker-groups":
             return
+        # In the all-groups favourites view the slot pane is the whole
+        # store, not one group's slice; letting the group cursor rebuild
+        # it would make that view impossible to hold still.
+        if SOUND_VIEW_CYCLE[self._view] == SOUND_VIEW_ALL_FAVOURITES:
+            return
         group_id = self._group_under_cursor()
         if group_id is not None:
             self._fill_slots(group_id)
+
+    def action_cycle_view(self) -> None:
+        """``v``: all sounds, this group's favourites, every favourite.
+
+        Exactly the browser's three steps, and always three even when a
+        view is empty: skipping one to be helpful makes a keypress land
+        somewhere different depending on what happens to be favourited.
+        """
+        if self._favorites is None:
+            self.app.notify("no favourites database", severity="warning")
+            return
+        self._view = (self._view + 1) % len(SOUND_VIEW_CYCLE)
+        try:
+            self.query_one("#picker-title", Label).update(self._title())
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+        group_id = self._group_under_cursor() or self._start_group()
+        self._fill_slots(group_id, force=True)
+        table = self.query_one("#picker-slots", DataTable)
+        if table.row_count:
+            table.move_cursor(row=0)
+        if not table.row_count:
+            label = SOUND_VIEW_LABELS[SOUND_VIEW_CYCLE[self._view]]
+            self.app.notify(f"{label} — nothing favourited yet")
 
     def on_data_table_row_selected(self, event) -> None:
         if event.data_table.id != "picker-slots":

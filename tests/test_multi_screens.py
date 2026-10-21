@@ -47,6 +47,7 @@ from ensqsqed.multi import (
     _Column,
 )
 from sq import catalog as cat
+from sq import favorites as fav
 from sq.presets import Preset, Track, sound_word
 
 
@@ -254,6 +255,93 @@ class TestTheSoundPicker:
             await pilot.press("escape")
             await pilot.pause()
             assert picked == [None]
+
+
+class TestTheSoundPickerFavourites:
+    """`v` steps the same three views the browser's own table has."""
+
+    @staticmethod
+    def _store(tmp_path):
+        return fav.Favorites(str(tmp_path / "f.db"))
+
+    async def test_v_steps_all_this_group_then_every_favourite(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            store.add("INT", 3, name="three")
+            store.add("INT", 7, name="seven")
+            store.add("CARDA", 5, name="card")
+            app = _Host()
+            async with app.run_test() as pilot:
+                screen = SoundPickerScreen(
+                    cat.empty(), current=("INT", 1), favorites=store
+                )
+                await app.push_screen(screen, lambda result: None)
+                await pilot.pause()
+                slots = screen.query_one("#picker-slots", DataTable)
+                assert slots.row_count == 80, "the first view is all sounds"
+                await pilot.press("v")
+                await pilot.pause()
+                assert slots.row_count == 2, "this group's favourites"
+                await pilot.press("v")
+                await pilot.pause()
+                assert slots.row_count == 3, "every favourite, all groups"
+                # The all-groups view names the group in the slot column.
+                assert slots.get_cell_at(Coordinate(0, 0)) == "INT 003"
+                assert slots.get_cell_at(Coordinate(2, 0)) == "CARDA 005"
+        finally:
+            store.close()
+
+    async def test_a_favourite_in_another_group_can_be_picked(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            store.add("INT", 3, name="three")
+            store.add("CARDA", 5, name="card")
+            picked = []
+            app = _Host()
+            async with app.run_test() as pilot:
+                screen = SoundPickerScreen(
+                    cat.empty(), current=("INT", 1), favorites=store
+                )
+                await app.push_screen(screen, picked.append)
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.press("v")
+                await pilot.pause()
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert picked == [("CARDA", 5)]
+        finally:
+            store.close()
+
+    async def test_a_group_with_no_favourites_is_empty(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            store.add("INT", 3, name="three")
+            app = _Host()
+            async with app.run_test() as pilot:
+                screen = SoundPickerScreen(
+                    cat.empty(), current=("ROM", 1), favorites=store
+                )
+                await app.push_screen(screen, lambda result: None)
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+                slots = screen.query_one("#picker-slots", DataTable)
+                assert slots.row_count == 0, "ROM has no favourites here"
+        finally:
+            store.close()
+
+    async def test_without_a_favourites_database_v_does_nothing(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = SoundPickerScreen(cat.empty(), current=("INT", 1))
+            await app.push_screen(screen, lambda result: None)
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            slots = screen.query_one("#picker-slots", DataTable)
+            assert slots.row_count == 80, "the only view there is"
 
 
 class TestTheColumns:
