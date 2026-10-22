@@ -479,10 +479,11 @@ when an edit is live, that is the edit (§9.6).
   `send_current_preset()`): it speaks the alert → ACK → dump handshake,
   waits the specification's one second for the ACK, and then re-reads and
   compares byte for byte.
-* **The verification does not mean the preset is stored.** The unit is
-  holding the change in a buffer and the display says
-  "Press ENTER to save new preset". Storing is a front-panel act; the UI
-  has to say so.
+* **The verification does not mean the preset is stored** — **superseded
+  by §9.7 (2026-10-22)**: a send via the spec's exchange *is* stored in
+  the currently selected slot's memory; the display's *Edited Preset* is
+  transient and no panel ENTER/SAVE is needed for a dump. The read-back
+  rule itself stands (command 03 returns the working preset).
 * **A read taken before any write is the stored preset; a read taken after
   one is the working preset** — the edited version (§9.6). An editor that
   reads once and writes later must read again to see its own change — the
@@ -490,7 +491,7 @@ when an edit is live, that is the edit (§9.6).
 * **The undo record can hold the whole dump.** Re-sending the previous
   216 bytes restores the previous state exactly, as measured above.
 
-### 9.5 The unit stops playing MIDI while the Edit Preset is open (2026-10-21) — **superseded in part, later the same day**
+### 9.5 The unit stops playing MIDI while the Edit Preset is open (2026-10-21) — **superseded in part, later the same day; superseded by §9.7 (2026-10-22) on stored memory**
 
 Measured on the bench, with the unit in MULTI mode and its audio captured:
 
@@ -541,7 +542,7 @@ unit. The run log is written to `/tmp/opencode/sqrex/probe_write.log` and
 the snapshot to `/tmp/opencode/sqrex/probe_snapshot_before.bin`; the
 committed fixture is what the run must reproduce.
 
-### 9.6 The corrected account: the send is live, the blackout is temporary (2026-10-21, second session)
+### 9.6 The corrected account: the send is live, the blackout is temporary (2026-10-21, second session) — **superseded by §9.8 (2026-10-23)**
 
 The clean test (`~/temp/tasks/h2f_deafness_test.py`, result
 `~/temp/tasks/H2f_result.json`, verdict `DEAFNESS_REFUTED`) separates the
@@ -570,7 +571,11 @@ final read-back matched the working bytes exactly
 - **Storing is a front-panel act.** No SysEx message stores a preset to a
   slot; the store is the manual's six-step dialog on the unit (ENTER/SAVE →
   confirm the name → pick the slot → ENTER/SAVE → *SAVED*), or the
-  double-click on ENTER/SAVE that stores to the same slot in one step.
+  double-click on ENTER/SAVE that stores to the same slot in one step —
+  **superseded by §9.7 (2026-10-22)**: a send via the spec's exchange *is*
+  stored in the currently selected slot's memory, and panel ENTER/SAVE is
+  not needed for a dump. The six-step dialog remains what stores *panel*
+  edits.
 - **The live MIDI switch for a track is the unit's front panel** (Select
   Sound, then the Track buttons). It is not reachable over SysEx — see
   `docs/BUTTON-MAP.md`.
@@ -601,6 +606,137 @@ The one byte that drifted in the 21-byte global block between the backup and
 a later read — dump index 17957, value 0 → 2 — went 0 → 2 in the same run in
 which the unit's selection moved from Preset-00 to Preset-02. That is a
 coincidence worth a later probe, not an established meaning.
+
+---
+
+### 9.7 The dump stores (2026-10-22)
+
+Measured on the unit today, 2026-10-22, with the owner at the panel
+(`~/temp/tasks/H3*_result.json`, scripts `~/temp/tasks/h3*_*.py`, ledger
+`~/temp/tasks/STATE.md`, H3 sections). This supersedes §9.5 and §9.6 where
+they treat a dump as never reaching stored memory: today's session
+falsified that. Their measurements stand; only the conclusion changes.
+
+**The session.** A probe preset — the backup bytes of slot 70, a marker
+name, and a sentinel volume at preset byte 34 (127 → 99) — was sent with
+the spec's three-step exchange (alert command 06 → ACK error code 01 →
+dump type 04, `SqBridge.send_preset`). Its address bytes were `46 0b`
+(slot 70) while slot 0 was selected (`H3_result.json`).
+
+- **The display.** Right after the send the unit showed *Edited Preset*.
+  The owner then moved the selection to Preset-01 and back
+  (`h3d_read_away.py`, `H3d_result.json`, verdict STORED). Slot 0's entry
+  in the all-dump kept the sentinel — 99 at byte 34 where the backup had
+  127 — while the unit sat on P-01; back on P-00 the display showed no
+  asterisk and the sentinel was still present. The content survived a
+  selection change, so a send via the spec's exchange is **stored in the
+  currently selected slot's memory**; no panel ENTER/SAVE was involved.
+- **No per-slot addressing.** The probe's address bytes `46 0b` were
+  rewritten to the selected slot's own values (`00 0a` for slot 0): slot
+  0's entry took the probe's content and slot 70's did not
+  (`H3_result.json`, verdict `STORED_SOMEWHERE_ELSE_[0]`). The destination
+  is always the current selection.
+- **The name is never taken from a dump.** The read-back and the display
+  kept "Preset-00", bit-7 decoration and all
+  (`H3e_result.json`, `name_took: false`).
+- **Preset byte 30 and tracks 2–8 channel bytes (`0x80|n`) are rewritten**
+  to the unit's current values; the probe's values there did not stick.
+  Sending a slot's own backed-up bytes back is therefore idempotent-safe:
+  the restore send passed `verify=True` and read back byte-identical
+  (`H3b_result.json`, final `slot0_eq_backup: true`, pile `0102`, track 2
+  ON).
+- **The all-dump reflects the selected slot's current content.** Slot 0's
+  entry showed the sentinel right after the send
+  (`H3c_result.json`); unselected slots reflect their stored content.
+
+**What the commit actually writes (the firmware's answer, 2026-10-23).**
+The OS 2.03 image (read from the ROM, `~/temp/sqr_re/RE_sysex.md`) names
+the mechanism: the one routine that commits the unsaved-preset latch is
+`$C15964`; it copies the **live engine's 120-byte track-and-pile
+snapshot** into the slot named by the selection variable (`$FFFFD930`)
+-- offsets **32 through 151** only (`$C12800` walks the eight 14-byte
+track records, `$C12910` appends the pile). The per-track byte 9
+(`sustain<<7 | program`) is saved before the copy and restored after
+(`$C128FA`), and recomputed from the engine's own field (`$C127A8`) --
+so **all eight** track byte-9s (offsets 41, 55, 69, 83, 97, 111, 125,
+139) keep the slot's own values. Everything else in the 168 bytes is
+**never written by a dump**: the name, the address bytes, byte 30,
+tempo and time signature, and -- with teeth for the app -- **the
+effect block (offsets 152 through 163)**. An effect edit sent via
+SysEx is real (it decodes into the edit buffer, it plays, and the
+send's read-back verifies it), but the preset's stored effect block is
+untouched, so reselecting the preset reverts to the stored effect;
+only the panel's ENTER/SAVE -- which stores the whole buffer --
+persists an effect change. This corrects the wording above and in
+`UNIT_KEPT_OFFSETS`: the name and friends are *kept because they are
+never written*, not "rewritten to the unit's current values", and the
+per-track channel bytes are the byte-9 save/restore, measured as the
+seven offsets above and confirmed on a restore the unit had landed.
+
+**What stays.** The panel's ENTER/SAVE is still what stores *panel* edits;
+for a dump no ENTER is needed. The display's *Edited Preset* clears by
+itself — observed after leaving and returning; no exact timing is claimed.
+The brief post-send deafness and recovery by about 35 seconds from
+§9.5/§9.6 stand as measured (the permanent-silence reading was the *EXT*
+latch, already withdrawn in §9.6). Feature A (live per-track on/off)
+remains front-panel only (`docs/BUTTON-MAP.md`).
+
+**Flakiness (open).** Acceptance is not 100 %: byte-identical hand-rolled
+replicas of the exchange landed 2/2 before panel navigation and 1/10 after
+it (including one mangled 160-byte probe that landed), while
+`send_preset` itself landed 5/5 in the same window
+(`~/temp/tasks/STATE.md`, H3 sections). Cause unknown — unit receiver
+state, USB timing, something else — uninvestigated. The app-side answer:
+`send_preset`'s `verify=True` read-back plus `PresetMismatch` is the
+guard, and a bounded retry wraps it
+(`send_preset_with_retry` next to `send_preset` in `sq/bridge.py`). See
+`TODO.md` for the open investigation item.
+
+**How to check.** Send a preset with sentinel 99 at preset offset 34
+while on slot K, move the selection away and back, and read the all-dump:
+slot K's entry keeps 99 at byte 34; its name and address bytes are the
+unit's own. The result files above are the record of that run.
+
+---
+
+### 9.8 What a dump does and does not change live (2026-10-23)
+
+This section was first written the same day as "the live map ignores
+dumps", from RMS measurements taken with `arecord -D hw:3,0`. **That
+conclusion is withdrawn**: the capture rig was broken. Later that day
+the same rig reported the same saturated level (peak 32767, RMS ≈ 5350)
+for a note that was audible and one the owner could not hear at all —
+it was not measuring the unit's output. The CV/recordings from H5/H6
+and the first H10 run are void as audio evidence.
+
+What *is* evidence, and supersedes them, is the owner's ear on the same
+sends, in the preset display:
+
+- **Level changes are live.** Volume 127 → audible; 60 → "a lot lower";
+  20 → inaudible, each measured 40 s after the verified send, past the
+  blackout. So the unit plays from a state that a dump updates, at least
+  for the track levels.
+- **The track status does not gate internal voices.** With all eight
+  tracks' status bytes set to 3 (the panel's *OFF*), the preset still
+  played on every channel — before and after a panel reload (P79 → P78
+  → P79). The stored bytes read back as status 3 (`0xDA`) and the
+  display/parameter accept them; the voices play anyway.
+- **The pile does not gate either** — the owner's original report: track
+  2 removed from the layer list still plays.
+- The effect block is still untested for liveness; the commit range
+  (§9.7) still says a dump never stores it.
+
+So the honest model is: **the send reaches the playing engine for the
+sound's level-side parameters (the volume was measured), while the
+track arrangement (status, pile) is stored but not heard, and the
+on/off state the panel's Track keys change is not reachable from MIDI.**
+The earlier sentence "Feature A is front-panel only" stays true; the
+sentence "dumps change nothing that plays" does not.
+
+**How to check.** With the preset display confirmed, send a volume
+change and listen 40 s later (the owner's ear, not the saturated
+capture); then send status = OFF for all tracks and listen — the notes
+still play. Restore the statuses to LOCAL and reload.
 
 ---
 

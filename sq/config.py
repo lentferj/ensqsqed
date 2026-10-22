@@ -13,7 +13,8 @@
 # FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
 # details.
 
-"""The local settings cache: which port answered, and which channel.
+"""The local settings cache: which port answered, which channel, and
+where the backups live.
 
 Now a binding of :class:`vinsynlib.config.Settings` rather than a second
 copy of it. The behaviour, including the traps it is written around, is
@@ -37,12 +38,15 @@ to be able to tell which one is unhappy.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from vinsynlib.config import DEFAULT_PATH, UNSET, Settings
 
 __all__ = [
+    "DEFAULT_BACKUP_ROOT",
     "DEFAULT_PATH",
+    "load_backup_root",
     "load_channel",
     "save_channel",
     "load_last_port",
@@ -56,6 +60,15 @@ __all__ = [
     "load_ui_state",
     "save_ui_state",
 ]
+
+#: Where the backup runs put their stamped directories.
+#:
+#: A backup run writes ``<stamp>/all_presets_dump.bin`` and the sidecars
+#: beside it; the store assist reads the newest stamp under this root.
+#: The location is the bench's own (``~/temp/sqr_backup``), and it is a
+#: key in the settings file so a user whose backups live elsewhere can
+#: say so without editing the program.
+DEFAULT_BACKUP_ROOT = str(Path.home() / "temp" / "sqr_backup")
 
 _settings = Settings("ensqsqed", DEFAULT_PATH)
 
@@ -90,6 +103,23 @@ def load_port_pair(path: Optional[str] = None) -> Optional[Tuple[str, str]]:
     if not send:
         return None
     return (send, _settings.load_recv_port(path) or send)
+
+
+def load_backup_root(path: Optional[str] = None) -> str:
+    """The directory to look under for backups.
+
+    ``backup_root`` is a path, and only a non-empty string is one: a
+    hand-edited ``backup_root = 7`` falls back to
+    :data:`DEFAULT_BACKUP_ROOT` rather than being joined onto as if it
+    were a path.  The default is the bench's ``~/temp/sqr_backup``, so a
+    settings file that has never heard of the key still finds the
+    backups that are there.
+    """
+    data = _settings.read(path)[0]
+    value = data.get("backup_root")
+    if isinstance(value, str) and value.strip():
+        return value
+    return DEFAULT_BACKUP_ROOT
 
 
 def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:

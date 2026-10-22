@@ -451,3 +451,84 @@ memory as it was at 20:35 that evening is in
   ("does not play incoming MIDI while that is open"). The measurement says
   the unit is briefly deaf and recovers by about 35 seconds; the sentence
   is to be reworded to say so.
+
+## 12. The store-assist resolution (2026-10-22)
+
+Today's H3 session with the owner at the panel changed the record that
+§11 was written against: a send via the spec's three-step exchange is
+**stored in the unit's currently selected slot's memory** — the panel's
+ENTER/SAVE is not needed for a dump, there is no per-slot addressing
+(address bytes 00/01 are rewritten to the selected slot's own values), the
+name is never taken from a dump (the unit keeps its own name), and preset
+byte 30 plus tracks 2–8 channel bytes are rewritten by the unit. The full
+record is in `docs/PRESET-FRAMING.md` §9.7, including the display evidence
+(*Edited Preset* right after the send; no asterisk after a Preset-01 round
+trip, with the sentinel volume 99 at preset byte 34 still present), the
+rewrites, and the acceptance flakiness (replica 1/10 post-navigation vs
+`send_preset` 5/5 in the same window, byte-identical frames, cause
+unknown — guard is `send_preset`'s `verify=True` read-back plus
+`PresetMismatch`, wrapped by a bounded retry).
+
+What this means:
+
+- **Feature B (permanent per-track on/off, via store) is reachable
+  cooperatively.** The owner selects the slot on the unit's front panel
+  (program changes do not move this unit's selection); the app sends that
+  slot's backed-up bytes — the pile with the track removed or restored —
+  and the unit stores them into the selected slot. The send is verified
+  byte for byte (`verify=True`) and a bounded retry wraps it; on success
+  the slot holds the backed-up bytes, the unit keeps its own name, and
+  re-sending a slot's own bytes is idempotent-safe.
+- **Feature A (live on/off) remains front-panel only.** The live MIDI
+  switch for a track is Select Sound, then the Track buttons; no SysEx
+  gesture reaches it (`docs/BUTTON-MAP.md`). The app's `space` is a preset
+  edit (the layer list), not a live switch, and it says so.
+
+Evidence: `~/temp/tasks/H3*_result.json`; scripts `~/temp/tasks/h3*_*.py`;
+ledger `~/temp/tasks/STATE.md` (H3 sections, incl. the open flakiness
+question). The open item — investigate the dump-acceptance flakiness
+(hand-rolled replica 1/10 vs `send_preset` 5/5, byte-identical frames) —
+is tracked in `TODO.md`, not resolved here. Nothing beyond the measured
+above is claimed; the failure cause is a hypothesis-free unknown.
+
+## 13. The selection resolution (2026-10-23)
+
+The firmware image settled what probing could only guess
+(`~/temp/sqr_re/RE_sysex.md`, `RE_buttons.md`; OS 2.03 = this unit's own):
+
+- **Program change is dead code for preset select.** The gate
+  `$FFFFD6BA` (read at `$C0E78A`) has exactly one reference in the whole
+  image and no writer; the power-up defaults table (`$C080DC`) clears it.
+  The five-condition select path exists in the code but is unreachable on
+  this unit.
+- **The arrows 16–19 post to the sequencer task** (`$C0FE32`, message tag
+  22 to `$FFFFFB66`), not the UI task — and they are inert for preset
+  selection, measured (H4).
+- **Virtual button 5 = "previous preset" (−1), 5/5 measured**, each step
+  verified by the read-back's seqno byte and address bytes
+  (P79→78→77→76→75). With mod-80 wraparound every target is ≤ 79 presses
+  away, and each press can be verified by reading the working preset.
+  Held keys do not autorepeat over the virtual route (H4d).
+- So the store assist now walks the selection itself (button 5 × n,
+  verified reads, re-sync on a dropped press) and then sends — **the
+  panel's selection step is gone from the flow**.
+- The store's commit range (§12's model, sharpened): the commit copies
+  only offsets 32–151 (tracks + pile, with the per-track byte-9s kept
+  from the slot's own values) — the name, address bytes, tempo and the
+  **effect block** are never written by a dump; effect edits persist only
+  through the panel's ENTER/SAVE.
+- **Liveness (ear-verified, 2026-10-23, H10/H11/H12)**: the audio capture
+  rig (`arecord -D hw:3,0`) turned out to be broken — it reported the same
+  saturated level for audible and inaudible notes — so all RMS conclusions
+  from H5/H6/H10's first run are void. The owner's ear on the same sends:
+  **volume changes are live** (127 audible, 60 "a lot lower", 20 silent,
+  each after the verified send and past the blackout); **the track status
+  does not gate internal voices** (all eight set to *OFF* still played,
+  before and after a panel reload), and **the pile does not gate either**.
+  So: level-side parameters are heard live; the track arrangement is
+  stored but not heard; the on/off remains panel-only. §9.8 in
+  `PRESET-FRAMING.md` carries the corrected record.
+  The owner's flow stays: edit → store (remote, verified) → **reload
+  (remote: the 80-press walk, the app's "reload on unit" action)** → the
+  changes take effect.
+

@@ -303,31 +303,48 @@ modulation destination and source share one) is two rows that each mask the bits
 they own.
 
 **A change is sent as a whole preset** — the sequence data and the 168 bytes of
-the preset — because this protocol has no field-level write. The unit takes it
-into its **working preset** (the *Edit Preset* buffer) and its display says
-*"Press ENTER to save new preset"*. The write gate (`w`) must be armed first,
-and every change is read back and compared byte for byte — a refused or
-unmatched write is reported, not assumed.
+the preset — because this protocol has no field-level write. The unit stores it
+into its **currently selected slot** (the display shows *Edited Preset*
+transiently; no panel ENTER/SAVE is needed for a dump — ENTER/SAVE is still
+what stores *panel* edits). The write gate (`w`) must be armed first, and
+every change is read back and compared byte for byte — a refused or unmatched
+write is reported, not assumed. What the store writes, the unit's own OS
+shows (§9.7): the commit copies only the tracks and the pile (offsets
+32–151, with each track's byte 9 kept from the slot's own values), so the
+name, the address bytes, tempo and **the effect block** are never written
+by a dump — an effect change lives in the edit buffer and reverts when the
+preset is reselected; only the panel's ENTER/SAVE stores an effect change.
+Sending a slot's own backed-up bytes back is idempotent-safe.
 
-**The send is live; the unit is briefly deaf right after it.** The dump lands
-in the buffer the unit plays from, so the change is heard. What the bench
-caught is a short blackout: five seconds after a byte-identical no-op dump a
-note on the sounding track's channel measured RMS 5.7 against a reference of
-32.7 — the noise floor — and thirty-five seconds later the same note measured
-29.7, so the unit had come back by itself. An earlier claim in these docs,
-that a dump silences the unit *permanently* (44 s of silence, and no MIDI
-message brings it back), was **confounded**: that run came after the one-way
-*EXT* latch experiments, and it was the latch doing the silencing, not the
-dump. The corrected account is in `docs/PRESET-FRAMING.md` §9.6.
+**The send is live for the sound's levels; the track arrangement needs a reload.**
+Ear-verified on the unit on 2026-10-23: a volume send is heard immediately
+(127 audible, 60 "a lot lower", 20 silent, each after the verified send and
+past any settling time), while the track on/off — the status byte set to
+*OFF*, or a track removed from the pile — is **not** heard: all eight
+tracks set to OFF still played, before and after a reload. Level-side
+changes therefore reach the playing engine; the arrangement is stored and
+takes effect when the preset is **reloaded**. A reload is a preset-select
+event, which the app can force remotely: the reload action steps the
+unit's selection through all 80 presets (about a minute, audibly) and
+reselects it. (An earlier paragraph here quoted readings from an audio
+capture that turned out to be broken — it reported the same saturated
+level for audible and inaudible notes — so those numbers are withdrawn;
+the 2026-10-21 "the send is live" record was right about the levels for
+the wrong reason.)
 
-**Storing it is a front-panel act, and nothing this program does stores a
-preset.** There is no SysEx message that stores one — probed and refuted, see
-`docs/RESOLUTION_NOTES.md` §11 — and the editors are deliberately fenced off
-from the front panel. On the unit, the store is the manual's six steps: check
-that the Edit Preset is displayed, press **ENTER/SAVE** ("Save Preset
-\<name\>?"), optionally edit the name with the cursors, press **ENTER/SAVE**,
-pick the slot with the cursors, press **ENTER/SAVE** again — the display says
-*SAVED*. A double-click on ENTER/SAVE stores to the same slot in one step.
+**Storing is remote now.** The app sends that slot's backed-up bytes and
+the unit stores them — the display's *Edited Preset* is transient and
+the unit keeps its own name. Panel edits still go through the manual's
+six steps: check that the Edit Preset is displayed, press
+**ENTER/SAVE** ("Save Preset \<name\>?"), optionally edit the name with
+the cursors, press **ENTER/SAVE**, pick the slot with the cursors,
+press **ENTER/SAVE** again — the display says *SAVED*. A double-click on
+ENTER/SAVE stores to the same slot in one step. The store path itself
+is the whole-preset dump behind the write gate (`w`), byte-verified;
+sending a stored slot's own bytes back is idempotent
+safe. Feature B (permanent per-track on/off via stored bytes) is reachable
+this way; Feature A (live on/off) stays front-panel only — the live MIDI
+switch for a track is on the unit (`docs/BUTTON-MAP.md`).
 
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle
@@ -351,16 +368,16 @@ sqcli multi --preset 12            # one of the eighty stored presets (reads all
 sqcli multi --out p.syx            # write the raw dump (the wire bytes `send` takes)
 sqcli presets                      # the current preset as .syx (silent)
 sqcli presets --all                # all eighty, as .syx (silent)
-sqcli send preset-current.syx --yes   # WRITE it into the unit's Edit Preset
+sqcli send preset-current.syx --yes   # WRITE it into the unit's selected slot
 ```
 
-**What this deliberately does not do.** It does not store a preset to a memory
-slot: a stored slot changes only when somebody presses ENTER on the unit, and
-the editors never press it. It does not drive the front panel: the unit's
-virtual buttons exist, but no reliable gesture among them was found, so the
-live switch for a track stays on the instrument (`docs/BUTTON-MAP.md`). It
-does not decode the 21-byte global block or the trailing bytes of the ten
-54-byte sequence blobs — the dumps do not exercise them, and
+**What this deliberately does not do.** It does not drive the front panel:
+the unit's virtual buttons exist, but no reliable gesture among them was
+found, so the live switch for a track stays on the instrument
+(`docs/BUTTON-MAP.md`) — live on/off (Feature A) is front-panel only;
+permanent per-track on/off (Feature B) goes through the cooperative store
+above. It does not decode the 21-byte global block or the trailing bytes of
+the ten 54-byte sequence blobs — the dumps do not exercise them, and
 `docs/RESOLUTION_NOTES.md` says so. And it does not change what the unit is
 playing by moving the cursor: reading is silent.
 
@@ -382,14 +399,21 @@ single slot back, take it out on its own:
 sqcli multi --preset 12 --out slot-12.syx   # one slot, in the form `send` takes
 ```
 
-**Putting a preset back is a panel act too.** There is no SysEx message that
-stores a preset to a slot, so a restore is two steps and the second one is on
-the instrument:
+**Putting a preset back is cooperative now.** The owner selects the slot on
+the unit's front panel, the app sends the slot's backed-up bytes, and the
+unit stores them — the display's *Edited Preset* is transient, no panel
+ENTER/SAVE is needed for a dump, and the unit keeps its own name:
 
-1. `sqcli send slot-12.syx --yes` — the file lands in the unit's *working*
-   preset, not in a slot. The dump is read back and compared byte for byte.
-2. On the unit: **ENTER/SAVE** → confirm the name → pick the slot with the
-   cursors → **ENTER/SAVE** → the display says *SAVED*.
+1. `sqcli send slot-12.syx --yes` — the file is stored into the selected
+   slot; the dump is read back and compared byte for byte (verify=True,
+   bounded retry).
+2. On the unit, panel edits still go the manual's way: **ENTER/SAVE** →
+   confirm the name → pick the slot with the cursors → **ENTER/SAVE** → the
+   display says *SAVED*.
+
+The owner's `.sqs` / `.syx` files remain the restore source for the memory
+as it was before the 2026-10-21 button-probe contamination
+(`docs/BUTTON-MAP.md` §8).
 
 **This unit's memory was changed by the button experiments of 2026-10-21, and
 the owner should know it.** The blind button presses walked the unit's save

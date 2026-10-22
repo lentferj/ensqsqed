@@ -70,12 +70,21 @@ dump. :meth:`SqBridge.send_preset` speaks that side of it, and the
 bytes it sends are the whole preset -- this protocol has no
 field-level write, so one changed byte means one whole dump.
 
-**What that writes is the Edit Preset, and nothing else.** The unit
-takes the dump into the buffer the manual describes, says "Press ENTER
-to save new preset" and blinks its Edit Preset LED. No message in
-this protocol stores a preset: a stored slot changes only when the
-user presses ENTER on the unit's front panel. Driving that panel
-through virtual buttons is out of scope here on purpose.
+**What that writes is the slot the unit is on -- measured 2026-10-22.**
+A sentinel byte sent into the current preset (track one's volume, 127
+to 99) was still there after the owner selected another slot and came
+back, and the display's *Edited Preset* -- the notice the send lights
+up, which the manual pairs with "Press ENTER to save new preset" --
+had cleared by itself in between. No ENTER is involved in this path:
+the panel's ENTER/SAVE is what stores *panel* edits, and a dump
+stores its own. There is also no addressing: the payload's address
+bytes (preset offsets 00 and 01) are rewritten to the selected slot's
+own values, so the destination is always the current selection. The
+name is never taken from a dump either -- the unit keeps its own name
+bytes, bit-7 decoration and all -- and preset byte 30 and the channel
+bytes of tracks 2 through 8 are rewritten to the unit's current
+values. Driving that panel through virtual buttons stays out of scope
+here on purpose.
 """
 
 from __future__ import annotations
@@ -95,6 +104,10 @@ __all__ = [
     "DeviceRefused",
     "PresetRefused",
     "PresetMismatch",
+    "PresetSelectionError",
+    "PresetWalkError",
+    "PresetWalkFailed",
+    "PresetNotConverged",
     "PresetAlert",
     "CurrentPreset",
     "AllPresetsDump",
@@ -171,6 +184,31 @@ class PresetMismatch(DeviceError):
         return self.result.diff_offsets
 
 
+class PresetSelectionError(DeviceError):
+    """The unit did not end up on the preset the walk aimed at.
+
+    A :class:`DeviceError`, so it is caught with the rest. It carries
+    the slot the unit was observed on, in both the sentence and
+    :attr:`observed_slot`, so a caller can say where the walk stopped
+    rather than pretending it arrived.
+
+    The walk is best-effort and bounded: a dropped button press is
+    detected by the check-read and corrected by re-synchronising, but
+    when it cannot converge the observed slot is the honest answer.
+    """
+
+    def __init__(self, sentence: str, *, observed_slot: int) -> None:
+        super().__init__(sentence)
+        #: The slot the unit was on when the walk gave up.
+        self.observed_slot = observed_slot
+
+
+#: Aliases for the walk's failure, under the names a caller might use.
+PresetWalkError = PresetSelectionError
+PresetWalkFailed = PresetSelectionError
+PresetNotConverged = PresetSelectionError
+
+
 DEFAULT_TIMEOUT = 2.0
 PROBE_TIMEOUT = 0.6
 #: An internal bank dump is 32647 bytes; at MIDI's 3125 bytes a second
@@ -214,6 +252,26 @@ PRESET_SETTLE = 0.5
 #: The alert's sequence/song flag: 0 is a sequence and 255 is a song
 #: (specification section 3.1.7). A preset edit is a sequence.
 SEQUENCE_FLAG = 0x00
+
+#: The preset offsets a read-back may differ at without the send having
+#: failed -- the regions the unit keeps for itself on a store.
+#:
+#: The store commits only offsets 32-151 (the live engine's 120-byte
+#: track-and-pile snapshot) of the selected slot; everything outside
+#: that range -- 0-31 and 152-167 -- is never written by a dump, so
+#: the seqno byte (0), the flag byte (1), the name bytes (2-17), the
+#: bar/time-sig/edit-start/tempo/song-step bytes (18-31) and the
+#: effect block and trailing bytes (152-167) are kept from the slot's
+#: own values. Inside the committed range, the per-track byte 9
+#: (sustain<<7 | program) of all eight tracks -- offsets 41, 55, 69,
+#: 83, 97, 111, 125 and 139 -- is saved and restored from the slot's
+#: own values by the store, so a dump's per-track MIDI program and
+#: sustain bit are never adopted. Everything else in 32-151 -- the
+#: tracks' other parameters and the pile -- is what the send writes,
+#: and a difference there is a real mismatch.
+UNIT_KEPT_OFFSETS = frozenset(
+    {0, 1, *range(2, 19), 30, 41, 55, 69, 83, 97, 111, 125, 139}
+)
 
 #: One preset is 168 bytes: eight tracks, a pile, an effect, and the
 #: sequence it belongs to (specification section 4.8.2).
@@ -391,14 +449,19 @@ class PresetSent:
 
     The unit answered the alert, the dump went out, and -- when the
     caller asked for it -- the preset was read back and compared. That
-    comparison is worth something: command 03 returns the **Edit
-    Preset** while one is live, so the bytes that came back are the
-    bytes that were sent (measured on the bench; see
-    ``docs/PRESET-FRAMING.md`` section 9.3).
+    comparison is worth something: command 03 returns the preset the
+    unit is on, and after a send that is what was sent -- minus the
+    regions the unit keeps for itself, which
+    :meth:`SqBridge.send_preset` names and the comparison leaves out
+    (:data:`sq.bridge.UNIT_KEPT_OFFSETS`; the name, preset byte 30, the
+    channel bytes of tracks 2 through 8; measured 2026-10-22).
 
-    **A verified send is not a stored preset.** The unit is holding
-    the change in its Edit Preset buffer and its display says "Press
-    ENTER to save new preset". Storing is the user's front-panel act.
+    **A verified send is a stored change -- of the unit's current
+    selection.** Measured on the unit, 2026-10-22: the sent bytes
+    survived a selection change away and back, while the display's
+    *Edited Preset* -- which a send does light up -- had cleared by
+    itself in between. What the verification itself says is narrower:
+    the unit holds, right now, what was sent.
     """
 
     #: Whether the unit acknowledged the alert. Always true: a
@@ -1084,7 +1147,7 @@ class SqBridge:
         )
         return AllPresetsDump._from_reply(data, alert)
 
-    # --- writing, which is the Edit Preset and nothing else ------------------
+    # --- writing, which stores into the unit's selected slot ----------------
 
     def send_preset(
         self,
@@ -1127,23 +1190,48 @@ class SqBridge:
         sent** and :class:`PresetRefused` says so. Silence inside the
         window is a :class:`TimeoutError` that names the alert.
 
-        **This does not store anything.** The dump lands in the unit's
-        *Edit Preset* buffer: the display says "Press ENTER to save
-        new preset" and the Edit Preset LED blinks in Preset Select
-        Mode. A stored slot is changed only when the user presses
-        ENTER on the unit's front panel -- this protocol has no
-        message that stores a preset, and driving the front panel
-        through virtual buttons is out of scope here on purpose.
+        **This stores into the slot the unit is on -- measured
+        2026-10-22.** A sentinel byte sent into the current preset
+        (track one's volume, 127 to 99) was still there after the
+        owner selected another slot and came back, and the display's
+        *Edited Preset* -- which the send lights up, and which the
+        manual pairs with "Press ENTER to save new preset" -- had
+        cleared by itself in between. No ENTER is needed for a dump:
+        the panel's ENTER/SAVE is what stores *panel* edits, and this
+        exchange stores its own.
+
+        **The destination is the current selection, and nothing is
+        addressed.** The payload's address bytes (preset offsets 00
+        and 01) are rewritten to the selected slot's own values on the
+        way in -- a payload carrying slot 70's ``46 0b`` lands in slot
+        0 when slot 0 is selected -- so what a send writes is wherever
+        the unit is pointing. Select first, send second, or the bytes
+        land somewhere else.
+
+        **Three regions stay the unit's.** The name is never taken
+        from a dump: the unit keeps its own name bytes, bit-7
+        decoration and all, and every probe that meant to change a
+        name was either rewritten or dropped. Preset byte 30 and the
+        channel bytes of tracks 2 through 8 are rewritten to the
+        unit's current values too -- so restoring a slot's own bytes
+        is idempotent-safe, byte for byte.
 
         **``verify`` reads the preset back and compares it byte for
         byte**, and that comparison means something: command 03
-        returns the Edit Preset while one is live, so the bytes that
-        go out are the bytes that come back. A mismatch raises
-        :class:`PresetMismatch` -- a :class:`DeviceError` -- naming the
-        offsets that differ. A read-back whose sequence data is a
-        different length is a :class:`DeviceError` of its own, with
-        both lengths in the sentence: that is not a byte that differs
-        but a sequence that changed size.
+        returns the preset the unit is on, and after a send that is
+        what was sent -- the read-back of a send that landed. The
+        comparison skips :data:`UNIT_KEPT_OFFSETS`, the regions the
+        unit rewrites on receipt: a read-back that differs from what
+        went out only in those regions is a verified send, measured so
+        twice on 2026-10-22 (a restore whose read-back carried the
+        unit's own channel bytes where the backup carried the factory
+        values was a landed store the old comparison refused three
+        times). Any other difference raises :class:`PresetMismatch` --
+        a :class:`DeviceError` -- naming the offsets that differ. A
+        read-back whose sequence data is a different length is a
+        :class:`DeviceError` of its own, with both lengths in the
+        sentence: that is not a byte that differs but a sequence that
+        changed size.
 
         ``timeout`` is the budget for that read-back. It is not the
         acknowledgement window, which is the specification's one
@@ -1187,7 +1275,15 @@ class SqBridge:
         expected = seq_blob + preset_raw
         actual = read_back.seq_blob + read_back.preset_raw
         diff_offsets = tuple(
-            index for index in range(len(expected)) if expected[index] != actual[index]
+            index
+            for index in range(len(expected))
+            if expected[index] != actual[index]
+            # The unit's own regions are not part of what a send can
+            # change, so a difference there is not a failed store: the
+            # comparison skips them (see UNIT_KEPT_OFFSETS).
+            and (
+                index < len(seq_blob) or index - len(seq_blob) not in UNIT_KEPT_OFFSETS
+            )
         )
         result = PresetSent(
             acked=True,
@@ -1198,6 +1294,202 @@ class SqBridge:
         if diff_offsets:
             raise PresetMismatch(self._mismatch_sentence(diff_offsets), result)
         return result
+
+    def send_preset_with_retry(
+        self,
+        seq_blob: bytes,
+        preset_raw: bytes,
+        *,
+        attempts: int = 3,
+        verify: bool = True,
+        timeout: float = SEQ_TIMEOUT,
+    ) -> "PresetSent":
+        """Send a preset, and ask again when the read-back says no.
+
+        :meth:`send_preset` with the verification on is the whole
+        exchange -- alert, acknowledgement, dump, settle, read-back --
+        and it raises :class:`PresetMismatch` when the read-back is
+        not what went out. On the unit this program was measured
+        against (2026-10-22) that failure came and went with no cause
+        anyone could name: hand-rolled replicas of the very bytes
+        :meth:`send_preset` puts on the wire were accepted twice out
+        of two before the panel was touched and once out of ten after
+        the owner navigated it, while :meth:`send_preset` itself
+        landed five out of five in the same window -- byte-identical
+        frames. No theory explains that, and this method is not a
+        theory: asking again is what a receiver like this gets.
+
+        So the **whole** exchange goes again -- alert, dump, and the
+        verify read-back -- up to ``attempts`` times in all. Only a
+        :class:`PresetMismatch` is retried: a refusal is the unit
+        saying no, a silence is the unit not answering, and neither
+        grows better on repetition. When the tries run out, the last
+        :class:`PresetMismatch` is the one raised, so its
+        :attr:`~PresetMismatch.diff_offsets` are the final read-back's.
+
+        ``attempts`` counts the tries, so ``attempts=1`` is
+        :meth:`send_preset` with nothing added. ``verify`` and
+        ``timeout`` pass through, and the default of ``verify`` is the
+        point of the whole method: a send that is not read back cannot
+        mismatch, so there is nothing to retry and the one try is the
+        try.
+
+        One honesty a caller should carry: the unit rewrites the name,
+        preset byte 30 and the channel bytes of tracks 2 through 8 on
+        the way in (see :meth:`send_preset`), so a mismatch whose
+        offsets all live in those regions is the unit keeping itself,
+        not a failed store. The comparison knows that now --
+        :data:`UNIT_KEPT_OFFSETS` is skipped before a mismatch is
+        declared -- so a landed store whose read-back differs only
+        there verifies on the first try and no retry is spent on it.
+        The retries that remain are for the drops no one can name.
+        """
+        if attempts < 1:
+            raise ValueError(
+                f"a retry needs at least one attempt; this one was given {attempts}"
+            )
+        remaining = attempts
+        while True:
+            try:
+                return self.send_preset(
+                    seq_blob, preset_raw, verify=verify, timeout=timeout
+                )
+            except PresetMismatch:
+                # Only a mismatch is retried, and the whole exchange
+                # goes again. On the last try this raises, and what
+                # comes out is that try's own read-back's mismatch.
+                remaining -= 1
+                if remaining <= 0:
+                    raise
+
+    def select_preset_by_walk(
+        self,
+        target_slot: int,
+        *,
+        known_slot: int,
+        force_reload: bool = False,
+        check_every: int = 8,
+        settle: float = 0.4,
+    ) -> int:
+        """Step the unit's preset selection to ``target_slot`` with button 5.
+
+        Button 5 is the only selection step on the wire, one press
+        moves one slot down (mod 80), and there is no addressing and no
+        "+1": the arrows 16-19 post to the sequencer task and are
+        inert for presets, and the program-change gate
+        (``$FFFFD6BA``) has no writer in the OS. The walk is verified
+        by reading the working preset, whose seqno byte (preset
+        offset 0) is the slot the unit is on.
+
+        ``force_reload`` changes what happens when the target is already
+        the known slot.  A dump stores tracks and pile into the selected
+        slot's memory, but the unit's live engine ignores dumps
+        entirely -- not the track status, not the pile, not the volume
+        (measured RMS 6550 -> 6552 after a volume 127 -> 60 send, past
+        the 40 s blackout).  What plays changes only when the preset is
+        reloaded, which is a preset-select event.  So re-selecting the
+        same slot reloads it with its stored content, and that reload
+        can be forced remotely by walking the selection a full lap:
+        80 presses of button 5 (minus one times eighty is the same slot,
+        and every press is a selection event, the last one reloading the
+        target).  With ``force_reload`` true and a zero distance, the
+        walk therefore still makes 80 presses instead of returning
+        immediately, and the periodic check-reads and the end
+        verification apply as usual (after k presses the expected slot
+        is ``(start - k) mod 80``; the final read must equal the target).
+
+        The cost is real and audible: about 45-60 s for the full lap,
+        and the unit audibly steps through every preset's sounds as the
+        selection moves, because each step selects that preset.  Callers
+        that force a reload must warn the user and get confirmation
+        before starting it.
+        """
+        if not 0 <= target_slot < 80:
+            raise ValueError(
+                f"a preset slot is 0..79; the walk was aimed at {target_slot}"
+            )
+        if not 0 <= known_slot < 80:
+            raise ValueError(
+                f"a preset slot is 0..79; the walk started from {known_slot}"
+            )
+        if check_every < 1:
+            raise ValueError(
+                f"check_every must be at least 1; this one was {check_every}"
+            )
+
+        current = known_slot
+        last_observed = known_slot
+        # One more round than the budget, so the budget bounds the
+        # re-synchronisations rather than the reads.
+        for _ in range(6):
+            remaining = (current - target_slot) % 80
+            if remaining == 0 and force_reload:
+                remaining = 80
+            if remaining == 0:
+                observed = self._read_walk_slot()
+                last_observed = observed
+                if observed == target_slot:
+                    return target_slot
+                current = observed
+                continue
+            observed = self._walk_one_round(
+                current, target_slot, remaining, check_every, settle
+            )
+            last_observed = observed
+            if observed == target_slot:
+                return target_slot
+            current = observed
+
+        raise PresetSelectionError(
+            f"the preset walk did not converge: the unit is on "
+            f"P{last_observed:02d} (observed slot P{last_observed:02d}), "
+            f"not P{target_slot:02d}",
+            observed_slot=last_observed,
+        )
+
+    def _walk_one_round(
+        self,
+        start: int,
+        target: int,
+        remaining: int,
+        check_every: int,
+        settle: float,
+    ) -> int:
+        """Walk ``remaining`` presses, checking every ``check_every``.
+
+        Returns the target slot on success, or the observed slot on a
+        mismatch (so the caller can re-synchronise).
+        """
+        _PRESS_HOLD = 0.12
+        _RELEASE_GAP = 0.4
+        walked = 0
+        while walked < remaining:
+            chunk = min(check_every, remaining - walked)
+            for _ in range(chunk):
+                self._out.send_message(
+                    list(m.virtual_button(5, down=True, channel=self.channel))
+                )
+                time.sleep(_PRESS_HOLD)
+                self._out.send_message(
+                    list(m.virtual_button(5, down=False, channel=self.channel))
+                )
+                time.sleep(_RELEASE_GAP)
+                walked += 1
+            time.sleep(settle)
+            expected = (start - walked) % 80
+            observed = self._read_walk_slot()
+            if observed != expected:
+                return observed
+            if walked == remaining:
+                return target
+        return self._read_walk_slot()
+
+    def _read_walk_slot(self) -> int:
+        """Read the working preset and return its seqno byte (offset 0)."""
+        current = self.read_current_preset()
+        if not current.preset_raw:
+            raise DeviceError("the unit's preset dump is empty")
+        return current.preset_raw[0]
 
     def send_current_preset(
         self,

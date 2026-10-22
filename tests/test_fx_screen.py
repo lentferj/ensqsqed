@@ -858,6 +858,14 @@ class TestTheGateInTheScreen:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert "write gate locked" in self._note(screen)
+            # The note also carries the write contract: an effect edit
+            # lives in the unit's edit buffer and reverts on
+            # reselection; only the panel's ENTER/SAVE stores it.
+            assert "edit buffer" in self._note(screen)
+            assert "reverts when the preset is reselected" in self._note(screen)
+            assert "the unit's ENTER/SAVE is what stores an effect change" in (
+                self._note(screen)
+            )
             await pilot.press("w")
             await pilot.pause()
             assert gate.describe() == "write gate ARMED"

@@ -138,11 +138,12 @@ class TestPresetList:
             await pilot.pause()
             table = screen.query_one("#preset-table", DataTable)
             assert table.row_count == 3
-            # The unit counts its preset locations from one and the
-            # dump's slots from zero, so the row shows one more than
-            # the slot the screen answers with.
-            assert table.get_cell("0", "slot") == "001"
-            assert table.get_cell("2", "slot") == "003"
+            # The unit's display counts its preset locations from
+            # zero (P00 through P79, the owner's reading of the
+            # display on 2026-10-22), and the dump's slots are counted
+            # the same way: the row shows the unit's number.
+            assert table.get_cell("0", "slot") == "P00"
+            assert table.get_cell("2", "slot") == "P02"
             # The current slot is marked, and only the current slot.
             assert table.get_cell("1", "mark") == "←"
             assert table.get_cell("0", "mark") == ""

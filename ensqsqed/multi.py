@@ -65,24 +65,32 @@ track off; see ``docs/PRESET-FRAMING.md``.
 names the primary track, and a preset without one is not a state the
 unit offers.  The refusal says so rather than quietly doing nothing.
 
-**Nothing here writes to the unit.**  A screen owns no device and starts
-no worker: every change is handed to the app through ``on_apply``, and
-the app does the gate, the send, the read-back and the undo record.  The
-screen holds the one live :class:`~sq.presets.Preset` object, changes it,
-and shows what it now says -- which is the truth about the model, and
-about the unit only once the app has said the write landed.
+**A screen writes nothing by itself.**  A change is handed to the app
+through ``on_apply``, and the app does the gate, the send, the read-back
+and the undo record.  The screen holds the one live
+:class:`~sq.presets.Preset` object, changes it, and shows what it now
+says -- which is the truth about the model, and about the unit only once
+the app has said the write landed.  The one action that has to know
+about the unit is the store assist (``ctrl+s``): it reads a backed-up
+slot out of the newest dump, asks the owner which one and confirms it,
+and hands the 168 bytes to the app, which does the gate, the send and
+the verified retry.  The screen still owns no device and starts no
+worker.
 
 **What the panel numbers and what the dump numbers are not the same
-number.**  The unit counts its preset locations from one ("PSET 001")
-and the dump's slots from zero, so the list screen shows the unit's
-number and answers with the dump's slot.  Both are in the class
-docstring, because an off-by-one here would be invisible until it had
-already written the wrong preset.
+number.**  The unit's display shows its preset locations as ``P00``
+through ``P79`` -- zero-based, the owner's reading of the display on
+2026-10-22 -- which is the same zero-based counting the dump's slots
+use, so the app speaks one numbering everywhere: the display's ``P``
+numbers.  (The manual's ``PSET 001`` wording is one-based; the display
+wins.)  Both are in the class docstring, because an off-by-one here
+would be invisible until it had already written the wrong preset.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from textual.app import ComposeResult
@@ -94,6 +102,9 @@ from textual.widgets import DataTable, Input, Label, Static
 from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from sq import banks
+from sq import messages as m
+from sq.bridge import AllPresetsDump, DeviceError, PresetAlert
+from sq.config import DEFAULT_BACKUP_ROOT
 from sq.presets import (
     EXTERNAL_STATUS,
     OUTPUT_NAMES,
@@ -111,8 +122,10 @@ from sq.presets import (
     stored_value,
 )
 from vinsynlib.keys import wrap_blocks
+from vinsynlib.ui.confirm import ConfirmScreen
 
 __all__ = [
+    "BACKUP_DUMP_NAME",
     "COLUMN_VIEWS",
     "KEY_HINTS_BLOCK",
     "LOCAL_STATUS",
@@ -121,7 +134,116 @@ __all__ = [
     "NumberPrompt",
     "PresetListScreen",
     "SoundPickerScreen",
+    "StoreAssistError",
+    "backup_slot_raw",
+    "newest_backup",
 ]
+
+#: The file a backup run writes, and the one the store assist reads.
+BACKUP_DUMP_NAME = "all_presets_dump.bin"
+
+#: The number of presets in the all-presets dump.  The parser is given
+#: the count the alert carries, and every backup the bench wrote has all
+#: eighty, whether or not a slot was ever changed.
+BACKUP_PRESET_COUNT = 80
+
+#: One preset, in bytes.  A backup slot is sent verbatim, so the length
+#: it must have is the whole of what "verbatim" means here.
+BACKUP_PRESET_BYTES = 168
+
+
+class StoreAssistError(ValueError):
+    """The backup cannot answer the question the store assist asked.
+
+    A :class:`ValueError` rather than a device error: nothing has been
+    sent and the unit is not involved.  The sentence is written to be
+    shown to the user, naming the directory or the file that could not
+    answer, because a refusal that does not say where it looked is a
+    refusal a user cannot act on.
+    """
+
+
+def newest_backup(root: Optional[str]) -> Optional[Path]:
+    """The newest all-presets dump under ``root``, or ``None``.
+
+    The backup runs write stamped directories -- ``<stamp>/`` -- and
+    the investigation read the newest of them.  The stamp is a
+    zero-padded date and time, so its directory name sorts the same way
+    its time does; the modification time is the tie-break for two
+    directories that cannot be told apart by name.  A dump directly in
+    ``root`` is considered too, so a single hand-kept copy works.
+
+    No backup at all is not an error here: ``None`` is the answer, and
+    the caller says so in words.  A path that does not exist is the
+    same answer for the same reason.
+    """
+    if not root:
+        return None
+    base = Path(root).expanduser()
+    candidates = [path for path in base.glob(f"*/{BACKUP_DUMP_NAME}") if path.is_file()]
+    direct = base / BACKUP_DUMP_NAME
+    if direct.is_file():
+        candidates.append(direct)
+    if not candidates:
+        return None
+
+    def stamp(path: Path) -> Tuple[str, float]:
+        """The run's name, with a plain dump in the root below any run."""
+        name = "" if path.parent == base else path.parent.name
+        return name, path.stat().st_mtime
+
+    return max(candidates, key=stamp)
+
+
+def backup_slot_raw(root: Optional[str], slot: int) -> bytes:
+    """One slot's backed-up 168 bytes, verbatim.
+
+    **The array order is not the slot order.**  The dump holds the
+    presets in the order the unit laid them out, and the preset table
+    says which one belongs to which slot -- slot 0 is array 10, and
+    slots 70 through 79 are arrays 0 through 9 on the bench's dump --
+    so the bytes are looked up through :meth:`AllPresetsDump.slot_offsets`
+    and never by indexing ``presets_raw`` with a slot number.
+
+    The bytes are returned exactly as the dump holds them, address
+    bytes included.  This protocol has no per-slot addressing: the
+    unit rewrites those bytes to the selected slot on receipt, and
+    stripping them here would be inventing a different payload rather
+    than sending the backup.
+    """
+    path = newest_backup(root)
+    if path is None:
+        where = root or DEFAULT_BACKUP_ROOT
+        raise StoreAssistError(
+            f"no {BACKUP_DUMP_NAME} was found under {where} — there are no "
+            "backed-up bytes to send"
+        )
+    try:
+        payload = path.read_bytes()
+        dump = AllPresetsDump._from_reply(
+            payload,
+            PresetAlert(
+                command=m.CommandType.ALL_SEQUENCE_ALERT,
+                size=0,
+                flag=0,
+                count=BACKUP_PRESET_COUNT,
+            ),
+        )
+        offsets = dump.slot_offsets()
+    except (OSError, DeviceError, IndexError, ValueError) as exc:
+        raise StoreAssistError(
+            f"the backup {path} could not be read as a preset dump: {exc}"
+        ) from exc
+    if slot not in offsets:
+        raise StoreAssistError(f"the backup {path} holds no P{slot:02d}")
+    raw = dump.presets_raw[offsets[slot]]
+    if len(raw) != BACKUP_PRESET_BYTES:
+        raise StoreAssistError(
+            f"the backup {path} holds {len(raw)} bytes for P{slot:02d}; "
+            f"a preset is {BACKUP_PRESET_BYTES}"
+        )
+    return bytes(raw)
+
 
 #: The MIDI status a track that shall play its internal voices carries.
 #: LOCAL -- it receives, it plays, and it is the status the panel calls
@@ -746,14 +868,15 @@ class PresetListScreen(ModalScreen[Optional[int]]):
     list in here.  A modal that waited for the data would be a modal
     with nothing to do for twelve seconds.
 
-    **The number shown is the unit's, and the number answered with is
-    the dump's.**  The panel counts its preset locations from one --
-    "PSET 001" -- while the dump's slots are counted from zero, and the
-    two are one apart.  The row shows what the unit prints and the
-    screen answers with the slot, so the app can hand the slot straight
-    to the dump; the difference is written down here because an
-    off-by-one here would be invisible until it had already written the
-    wrong preset.
+    **The number shown is the unit's, and it is the dump's too.**  The
+    unit's display counts its preset locations from zero -- ``P00``
+    through ``P79``, the owner's reading of the display on 2026-10-22;
+    the manual's ``PSET 001`` wording is one-based, and the display
+    wins.  The dump's slots are counted from zero as well, so the row
+    shows the unit's number and the screen answers with the same
+    number as the dump's slot; the alignment is written down here
+    because an off-by-one here would be invisible until it had already
+    written the wrong preset.
 
     **The names are the unit's, and they are only ever shown.**  The
     name field carries the unit's mute flag in bit 7 of every byte
@@ -830,7 +953,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
         for slot, raw in self._presets:
             table.add_row(
                 "←" if slot == self._current else "",
-                f"{slot + 1:03d}",
+                f"P{slot:02d}",
                 self._name_of(raw),
                 self._names.get(slot, ""),
                 key=str(slot),
@@ -914,7 +1037,10 @@ class MultiScreen(ModalScreen[None]):
 
     **What is not here.**  The sound picker is the app's -- this screen
     says which track wants a sound and the app runs its own picker.
-    And nothing here writes to the unit: see the module docstring.
+    And the screen sends nothing itself, including the store assist:
+    ``ctrl+s`` finds and confirms the backed-up bytes and hands them to
+    the app, which does the gate, the send and the verified retry.  See
+    the module docstring.
     """
 
     DEFAULT_CSS = """
@@ -958,6 +1084,14 @@ class MultiScreen(ModalScreen[None]):
         # only be armed by closing the editor -- leaving the warning
         # that said so on the dimmed backdrop behind it.
         Binding("w", "toggle_write_gate", "Write gate", show=False),
+        # The cooperative restore: pick a backup slot, select it on the
+        # unit, confirm, and the app sends it to wherever the unit is
+        # selected.  See action_store_assist.
+        Binding("ctrl+s", "store_assist", "Store assist"),
+        # Force a reload of the preset this screen is editing: walk the
+        # unit's selection a full lap so the final press reloads it with
+        # its stored content.  See action_reload_on_unit.
+        Binding("ctrl+r", "reload_on_unit", "Reload on unit"),
     ]
 
     # The ten digits, added after the list rather than into it: the
@@ -988,6 +1122,12 @@ class MultiScreen(ModalScreen[None]):
         gate: Optional[EditGate] = None,
         say_: Optional[Callable[..., None]] = None,
         name_for: Optional[Callable[[str, int], Optional[str]]] = None,
+        on_store_assist: Optional[Callable[[int, bytes], None]] = None,
+        on_reload: Optional[Callable[[int], None]] = None,
+        on_reload_preset: Optional[Callable[[int], None]] = None,
+        slot: Optional[int] = None,
+        preset_slot: Optional[int] = None,
+        backup_root: Optional[str] = None,
     ) -> None:
         super().__init__()
         #: The one live preset object.  The screen changes it in place.
@@ -1024,6 +1164,31 @@ class MultiScreen(ModalScreen[None]):
         #: ``None`` means there is no catalog, and the name column says
         #: so rather than showing a blank that reads as a broken row.
         self._name_for = name_for
+        #: ``on_store_assist(slot, raw)`` -- the app's store-assist write
+        #: path.  The screen finds and confirms the backed-up bytes; the
+        #: app owns the gate, the exchange, the send and its read-back.
+        #: ``None`` means there is no write path to hand them to, and the
+        #: action says so rather than pretending it sent anything.
+        self._on_store_assist = on_store_assist
+        #: ``on_reload_preset(slot)`` -- the app's reload write path.
+        #: The screen confirms; the app owns the gate, the exchange and
+        #: the walk.  ``None`` means there is no write path to hand it
+        #: to, and the action says so rather than pretending it reloaded.
+        self._on_reload_preset = (
+            on_reload_preset if on_reload_preset is not None else on_reload
+        )
+        #: The slot this screen is editing, when it is known -- a preset
+        #: picked out of the list carries one, and the unit's own current
+        #: preset does not.  The reload re-selects this slot.
+        self._slot = slot if slot is not None else preset_slot
+        #: The slot and bytes waiting on the confirmation dialog.
+        self._reload_pending: Optional[int] = None
+        #: The directory backups live under.  Injected by the app; the
+        #: default is the bench's own location, so a standalone screen
+        #: still looks where the backup runs write.
+        self._backup_root = backup_root or DEFAULT_BACKUP_ROOT
+        #: The slot and bytes waiting on the confirmation dialog.
+        self._store_pending: Optional[Tuple[int, bytes]] = None
         #: Index into :data:`COLUMN_VIEWS`.  Cycled by ``tab``.
         self._view = 0
         #: The values the cells held before the last change, so a
@@ -1279,6 +1444,195 @@ class MultiScreen(ModalScreen[None]):
         self._gate.toggle()
         self._refresh_note()
         self.say(self._gate.describe())
+
+    # --- the store assist --------------------------------------------------
+
+    def action_store_assist(self) -> None:
+        """``ctrl+s``: send a slot's backed-up bytes to the unit.
+
+        **A send stores into the unit's current selection.**  The
+        measured model (2026-10-22) has no per-slot addressing: the
+        payload's address bytes are rewritten to whatever slot the unit
+        is selected to, so the selection is the destination.  The
+        action therefore does not try to address a slot -- it asks which
+        slot's backed-up bytes to send, says that the owner has to
+        select that slot on the unit's front panel, and sends nothing
+        until the confirmation is answered.
+
+        **The write gate is asked before the question is asked.**  A
+        locked gate is a refusal with the family's sentence, and no
+        dialog opens for a send that cannot happen.  It is asked again
+        after the confirmation, because the gate is a live key and can
+        have been locked while the dialog was up.
+        """
+        if not self._writes_allowed():
+            self._refuse_write()
+            return
+        if self._on_store_assist is None:
+            self.say(
+                "store assist not sent: this screen has no write path to "
+                "hand the bytes to",
+                refused=True,
+            )
+            return
+        if newest_backup(self._backup_root) is None:
+            self.say(
+                f"store assist: no {BACKUP_DUMP_NAME} was found under "
+                f"{self._backup_root} — there are no backed-up bytes to send",
+                refused=True,
+            )
+            return
+        self.app.push_screen(
+            NumberPrompt(
+                "Store assist — which preset's backed-up bytes? (00-79)",
+                select_all=True,
+            ),
+            self._store_slot_chosen,
+        )
+
+    def action_reload_on_unit(self) -> None:
+        """``ctrl+r``: force a reload of the preset this screen edits.
+
+        **The write gate is asked before the question is asked.**  A
+        locked gate is a refusal with the family's sentence, and no
+        dialog opens for a reload that cannot happen.  It is asked
+        again after the confirmation, because the gate is a live key
+        and can have been locked while the dialog was up.
+
+        The reload walks the unit's selection through all eighty
+        presets, so it takes about a minute and the unit audibly steps
+        through every preset's sounds along the way.  Any pending edit
+        on the unit's display is committed into the slot it names when
+        the selection steps, and at the end the unit is back on this
+        preset playing its stored content.
+        """
+        if not self._writes_allowed():
+            self._refuse_write()
+            return
+        if self._on_reload_preset is None:
+            self.say(
+                "reload not sent: this screen has no write path to hand the reload to",
+                refused=True,
+            )
+            return
+        slot = self._slot
+        if slot is None:
+            self.say(
+                "reload not sent: this screen does not know which preset it is editing",
+                refused=True,
+            )
+            return
+        self._reload_pending = slot
+        self.app.push_screen(
+            ConfirmScreen(
+                self._reload_question(slot),
+                confirm="Reload",
+                cancel="Cancel",
+            ),
+            self._reload_confirmed,
+        )
+
+    def _reload_question(self, slot: int) -> str:
+        panel = f"P{slot:02d}"
+        return (
+            f"Reload {panel} on the unit?\n\n"
+            "The app will step the unit's selection through all 80 "
+            "presets (about a minute, the unit will audibly step "
+            "through every preset's sounds), any pending edit on the "
+            "unit's display is committed into the slot it names when "
+            "the selection steps, and at the end the unit is back on "
+            "this preset playing its stored content."
+        )
+
+    def _reload_confirmed(self, confirmed: Optional[bool]) -> None:
+        pending = self._reload_pending
+        self._reload_pending = None
+        if not confirmed or pending is None:
+            return
+        if not self._writes_allowed():
+            self._refuse_write()
+            return
+        callback = self._on_reload_preset
+        if callback is None:  # pragma: no cover - the action refused first
+            self.say("reload not sent: no write path is open", refused=True)
+            return
+        callback(pending)
+
+    def _store_slot_chosen(self, text: Optional[str]) -> None:
+        """The slot prompt's answer: a panel number, then the bytes.
+
+        The number is the unit's own -- ``P00`` through ``P79``, the
+        numbers the unit's display shows in preset select -- and it is
+        the dump's slot number directly: the unit counts from zero
+        here, so no conversion happens and none can drift.
+        """
+        if text is None or not text.strip():
+            return
+        try:
+            number = int(text.strip())
+        except ValueError:
+            self.say(f"{text!r} is not a number", refused=True)
+            return
+        if not 0 <= number < BACKUP_PRESET_COUNT:
+            self.say(
+                "the unit's presets are numbered P00 through "
+                f"P{BACKUP_PRESET_COUNT - 1:02d}, not {number}",
+                refused=True,
+            )
+            return
+        slot = number
+        try:
+            raw = backup_slot_raw(self._backup_root, slot)
+        except StoreAssistError as exc:
+            self.say(str(exc), refused=True)
+            return
+        self._store_pending = (slot, raw)
+        self.app.push_screen(
+            ConfirmScreen(
+                self._store_question(slot),
+                confirm="Send",
+                cancel="Cancel",
+            ),
+            self._store_confirmed,
+        )
+
+    def _store_question(self, slot: int) -> str:
+        """What the confirmation says before anything is sent.
+
+        Four facts and no promises: which bytes, where they land, the
+        gesture that puts the unit there, and what the unit keeps for
+        itself.  The name is the unit's -- a dump never takes it -- and
+        the *Edited Preset* mark is transient, so neither is presented
+        as something the send changes.  The preset is named the way the
+        unit's display names it.
+        """
+        panel = f"P{slot:02d}"
+        return (
+            f"Send the backed-up bytes of {panel} to the unit?\n\n"
+            "The app will step the unit's preset selection with button-5 "
+            f"presses until it reaches {panel}, then send the backed-up "
+            "bytes.\n\n"
+            "Any pending edit shown on the unit's display will be stored "
+            "into the slot it names when the selection steps; check the "
+            "unit is not showing a save dialog before confirming.\n\n"
+            "The unit keeps its own name."
+        )
+
+    def _store_confirmed(self, confirmed: Optional[bool]) -> None:
+        """The confirmation's answer: hand the bytes to the app, or not."""
+        pending = self._store_pending
+        self._store_pending = None
+        if not confirmed or pending is None:
+            return
+        if not self._writes_allowed():
+            self._refuse_write()
+            return
+        callback = self._on_store_assist
+        if callback is None:  # pragma: no cover - the action refused first
+            self.say("store assist not sent: no write path is open", refused=True)
+            return
+        slot, raw = pending
+        callback(slot, raw)
 
     def action_toggle_view(self) -> None:
         """``tab``: the next column group.

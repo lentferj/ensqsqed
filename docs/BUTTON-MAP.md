@@ -111,6 +111,32 @@ Buttons 6, 7 and 8 moved the unit's selection to Preset-70, Preset-72 and
 Preset-02 in turn; from button 9 onwards the unit sat on Preset-02 and
 stayed there.
 
+**2026-10-23's controlled walks (H4/H4b/H4c/H4d)** revise this table
+substantially. Each press was followed by a read of the working preset;
+the read-back's name *and* its own address bytes say where the unit is:
+
+| number | what the controlled press did |
+|---|---|
+| **5** | **Select Preset — the owner watched the Preset Select display light up — and it steps the selection one slot DOWN (mod 80), 5/5 reliable: P79→78→77→76→75, verified by name and address bytes each time** |
+| 0, 1, 4, 6, 7, 9 | no selection change (4 pressed three times, 6/7 twice — mode/screen changes at most) |
+| 9 held + 10 (YES) / 11 (NO) | nothing (the manual's bank-jump combo, tried over the wire — H4d) |
+| 5 held | no autorepeat (a 1.5 s hold = 0 extra steps — the repeat is the panel's key scan, not the OS handler) |
+| 16–19 | **inert over SysEx, even in Preset Select mode** (owner-observed at P79); firmware: `$C0FE32` posts message tag 22 to the *sequencer* task (`$FFFFFB66`), not the UI task — the virtual arrows cannot act as the UI's cursor keys |
+| 2, 3, 8, 10, 11, 12, 13 | not re-pressed over the wire (the Track pair, Enter/Save's dialog, YES/NO's command execution, Copy Effect — the hazards) |
+
+The H2a walk's "buttons 6, 7 and 8 moved the selection to Preset-70/72/02"
+reads as the save dialog: button 8 is Enter/Save, the dialog's slot cursor
+was what moved, and the walk's later presses moved that cursor — which is
+where the contamination came from. The button-number→key identification
+is now anchored by the Select-Preset display observation (button 5).
+
+**What the map means for selection:** button 5 (−1, mod 80) is the *only*
+remote selection step; any target is ≤ 79 presses away, each step
+verifiable by reading the working preset (command 03), whose seqno byte
+(preset offset 0) is the current slot. There is no "+1" on the wire: the
+arrows are dead, and the program-change gate (`$FFFFD6BA`) has one `tstb`
+and no writer in OS 2.03 (`RE_sysex.md`) — dead code.
+
 **This probing contaminated the unit's memory.** See *Contamination* below.
 
 ---
@@ -228,10 +254,15 @@ the protocol does not expose it.
   edit, discard it) is not built. Every one of its macros would be built on
   a gesture that was measured to be unreliable or absent.
 - **The write path stays where it is:** one whole-preset dump
-  (`SqBridge.send_preset`), byte-verified, into the unit's working preset.
-- **The store stays a front-panel act.** No SysEx message stores a preset
-  to a slot, and the one remote candidate — a virtual ENTER/SAVE — is
-  refused by this firmware.
+  (`SqBridge.send_preset`), byte-verified — and it lands in the unit's
+  currently selected slot's memory: the unit stores it (the display shows
+  *Edited Preset* transiently; no panel ENTER/SAVE is needed for a dump).
+- **The store is cooperative now.** A dump does reach stored memory: the
+  owner selects the slot on the panel, the app sends the slot's backed-up
+  bytes, and the unit stores them into the selected slot (no panel
+  ENTER/SAVE needed for a dump; the unit keeps its own name). Panel edits
+  still need ENTER/SAVE, and the virtual ENTER/SAVE candidate (button 28)
+  is still refused by this firmware.
 - **The app says where the live switch is** after every track change, in the
   same words as this document: *the live MIDI switch for a track is on the
   unit's front panel (Select Sound, then the Track buttons)*.
@@ -253,11 +284,15 @@ walked and a store completed, and the result was:
 
 The unit's selection was left on **Preset-02**.
 
-**The restore is the owner's.** Nothing in this project can store a preset
-into a slot, so the restore is the owner's own `.sqs` / `.syx` files put
-back through the unit's own dialog (ENTER/SAVE, confirm the name, pick the
-slot, ENTER/SAVE again — the manual's six steps, Teil 3, 3-3). The
-run's own backup of the memory as it was at 20:35 that evening is in
+**The restore is the owner's (or the app's, cooperatively).** A slot's
+backed-up bytes can now be written back the same way a send stores:
+the owner selects the slot on the panel, the app sends the slot's
+backed-up bytes, the unit stores them — no panel ENTER/SAVE needed for a
+dump. For the button-probe contamination above the owner still uses their
+own `.sqs` / `.syx` files through the unit's own dialog
+(ENTER/SAVE, confirm the name, pick the slot, ENTER/SAVE again — the
+manual's six steps, Teil 3, 3-3). The run's own backup of the memory as
+it was at 20:35 that evening is in
 `~/temp/sqr_backup/20261021-203542/` (all five artefacts: the all-presets
 dump, the current preset, the current sequence blob, the slot offsets and
 the internal sound bank).

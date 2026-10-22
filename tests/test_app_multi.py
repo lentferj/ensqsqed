@@ -802,10 +802,12 @@ class TestThePresetList:
             assert isinstance(screen, PresetListScreen)
             table = screen.query_one("#preset-table", DataTable)
             assert table.row_count == PRESET_COUNT
-            # The unit counts its preset locations from one and the
-            # dump's slots from zero.
-            assert table.get_cell("0", "slot") == "001"
-            assert table.get_cell("79", "slot") == "080"
+            # The unit's display counts its preset locations from
+            # zero (P00 through P79, the owner's reading of the
+            # display on 2026-10-22), and the dump's slots are counted
+            # the same way.
+            assert table.get_cell("0", "slot") == "P00"
+            assert table.get_cell("79", "slot") == "P79"
 
     async def test_a_cancelled_list_loads_nothing(
         self, app: EnsqsqedApp, device: FakeMultiDevice
@@ -866,16 +868,16 @@ class TestTheSentenceAfterASend:
             assert await _wait(lambda: len(device.sent) == 1, pilot)
             assert await _wait(lambda: "sent." in _status(screen), pilot)
             said = _status(screen)
-            # The send is live: the unit plays the preset it was sent.
-            assert "the change is live" in said
-            # The blackout is short and the unit comes back by itself.
-            assert "briefly deaf" in said
-            assert "about half a minute" in said
-            # Storing is the unit's own act.
+            # The send is live for levels; the arrangement waits for a
+            # reload (the blackout claim was meter-based and is gone).
+            assert "live for the sound's levels" in said
+            assert "ctrl+r forces that reload remotely" in said
+            # A whole-buffer store is the unit's own act.
             assert "ENTER/SAVE" in said
-            # The withdrawn claim is gone.
+            # The withdrawn claims are gone.
             assert "does not play incoming MIDI" not in said
             assert "leave Edit mode" not in said
+            assert "briefly deaf" not in said
 
     async def test_the_effect_editor_says_the_same(
         self, app: EnsqsqedApp, device: FakeMultiDevice
@@ -894,10 +896,11 @@ class TestTheSentenceAfterASend:
             assert await _wait(lambda: len(device.sent) == 1, pilot)
             assert await _wait(lambda: "sent." in _status(screen), pilot)
             said = _status(screen)
-            assert "the change is live" in said
-            assert "about half a minute" in said
+            assert "live for the sound's levels" in said
+            assert "ctrl+r forces that reload remotely" in said
             assert "ENTER/SAVE" in said
             assert "does not play incoming MIDI" not in said
+            assert "briefly deaf" not in said
 
 
 class TestTheUndoDispatch:

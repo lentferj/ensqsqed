@@ -15,6 +15,21 @@
 
 """The preset's effect, edited over one live preset.
 
+**What a write reaches, and what it does not.**  The application's
+write path is a whole-preset dump, and the unit's OS (v2.03, read from
+the ROM) commits a received dump by copying only the live engine's
+120-byte track-and-pile snapshot into the preset's stored bytes --
+offsets 32 through 151.  **The effect block (offsets 152 through 163)
+is never written by a dump.**  An effect edit made here is real: it is
+decoded into the unit's edit buffer, it applies to what the unit is
+playing, and the send's read-back verifies it byte for byte.  But the
+preset's *stored* effect block keeps its own values, so selecting the
+preset again loads the stored effect and this edit is gone.  What
+persists an effect change is the unit's panel gesture -- ENTER/SAVE,
+which stores the whole edit buffer, effect block included -- and the
+screen's note says so rather than letting the verification imply more
+than the instrument does.
+
 **The rows are the model's, not this screen's.**  The effect is not one
 parameter but a whole family of them: the specification prints six
 parameter sets (§5.2), each of which says what the ten bytes of the
@@ -311,7 +326,12 @@ class FxScreen(ModalScreen[None]):
         state = self._gate_description()
         if not self._writes_allowed():
             state += " — edits are refused; w arms it"
-        return f"parameter set: {set_name} · {state}"
+        return (
+            f"parameter set: {set_name} · {state} — an effect edit lives "
+            "in the unit's edit buffer and reverts when the preset is "
+            "reselected; the unit's ENTER/SAVE is what stores an effect "
+            "change"
+        )
 
     def _gate_description(self) -> str:
         """The gate's state, read from the gate itself when there is one.

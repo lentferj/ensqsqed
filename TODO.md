@@ -6,23 +6,31 @@
 What is open. *How* anything was resolved goes in
 `docs/RESOLUTION_NOTES.md`.
 
-## Status, 2026-10-21 (MULTI mode & presets)
+## Status, 2026-10-22 (store assist)
 
 The MULTI-mode feature landed on `feature/multi-and-fx`: the unit's 80
 presets are read, browsed and edited (eight tracks and the one shared
-effect), and written back to the unit's **working preset** (its Edit Preset
-buffer) behind the write gate. Item 3 is closed by it.
+effect), and a change is sent as a whole preset behind the write gate.
+Today's bench measurement (H3 session with the owner) showed the send is
+**stored in the currently selected slot's memory** — no panel ENTER/SAVE
+needed for a dump — so storing a slot's backed-up bytes is reachable
+**cooperatively**: the owner selects the slot on the unit, the app sends
+the slot's bytes, the unit stores them. Item 3 is closed by it; the store
+question below is adjusted accordingly
+(`docs/PRESET-FRAMING.md` §9.7, `docs/RESOLUTION_NOTES.md` §12).
 
-**Two questions are closed by the bench, not by code, and the answers are
-negative:**
+**Two questions are closed by the bench:**
 
-- **Storing a preset to a memory slot without the front panel: there is no
-  SysEx path.** The unit holds the edit in its Edit Preset buffer until
-  somebody presses ENTER/SAVE. The two candidates were probed and refuted —
-  the addressing bytes do not address (a preset addressed to slot 1 never
-  landed in slot 1), and the bulk All-Sequences write is not even
-  transportable on this machine's ALSA port. The store is the manual's
-  six-step dialog on the instrument, or the double-click on ENTER/SAVE.
+- **Storing a preset to a memory slot without the front panel:** reachable
+  cooperatively, not by a raw SysEx path alone. The unit stores a dump into
+  its currently selected slot; address bytes 00/01 are rewritten to that
+  slot's own values and the name is never taken from a dump (the unit keeps
+  its own name); preset byte 30 and tracks 2–8 channel bytes are rewritten
+  at receive time, so sending a slot's own backed-up bytes back is
+  idempotent-safe. The flow: owner selects the slot on the panel; app sends
+  the slot's backed-up bytes (`send_preset`, `verify=True`, bounded retry);
+  unit stores. **Feature B (permanent per-track on/off via stored bytes) is
+  reachable this way; Feature A (live on/off) stays front-panel only.**
 - **Live track on/off: the front panel only.** The unit's live MIDI switch
   for a track is a Select-Sound-and-Track-buttons gesture, and it is not
   reachable over SysEx. The unit does have virtual buttons and answers an
@@ -31,6 +39,39 @@ negative:**
   chord hit once in roughly sixty attempts and changed the layer list, not
   the track status. The app's `space` is a **preset edit** (the layer list),
   not a live switch, and it says so. `docs/BUTTON-MAP.md` has the record.
+
+**Open**
+
+- Investigate the dump-acceptance flakiness (hand-rolled replica 1/10 vs
+  `send_preset` 5/5 with byte-identical frames). **Refined 2026-10-23 by
+  the firmware read:** the name-drop part is explained — no name
+  validation exists in the OS, and the commit copies only offsets 32–151,
+  so what "landed" and what did not was the commit range all along. But
+  the real silent drops remain: byte-identical frames were accepted and
+  then dropped with the alert ACKed and nothing written anywhere (the
+  45-second watch, `H3h_result.json`). Cause still unknown (unit
+  receiver state, USB timing, …). App-side guard in place:
+  `send_preset(..., verify=True)` plus `PresetMismatch`, wrapped by a
+  bounded retry (`send_preset_with_retry`). See
+  `docs/PRESET-FRAMING.md` §9.7 and `~/temp/tasks/STATE.md` (H3 sections).
+- Measure how fast the virtual button-5 walk can run without drops (the
+  current timing is 0.12 s hold / 0.4 s gap, ≈ 50 s per forced reload —
+  the button path has been 8/8 reliable so far, so the sleeps may be
+  conservative).
+- **Fix the audio measurement rig.** `arecord -D hw:3,0` reported the
+  same saturated level (peak 32767) for a note the owner heard and one
+  he could not hear — it is not capturing the unit's output. Identify
+  the right device and validate it with a known-silent/known-loud pair
+  before trusting any RMS number. All RMS results from H5/H6/H10's first
+  run are void (PRESET-FRAMING §9.8).
+- **Re-verify the post-send blackout by ear.** The "silent at 5 s, back
+  by 35 s" numbers came from the broken rig; nobody has listened through
+  a send yet.
+- **Find the actual live gate for a track.** The status byte = OFF does
+  not silence internal voices even after a reload (owner-verified), and
+  the pile does not either; the panel's Track keys do. Identify where
+  the live on/off state lives (the firmware's live-map variable) and
+  whether any MIDI path can reach it.
 
 The 21-byte global block and the 54-byte blobs' trailing bytes are still
 undecoded (RESOLUTION_NOTES §11). Sequences themselves are still a different

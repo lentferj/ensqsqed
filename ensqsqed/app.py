@@ -131,6 +131,13 @@ SCAN_SETTLE = 0.08
 #: playing whatever it already had.
 STUCK_SLOT_LIMIT = 4
 
+#: How many times the store assist asks the unit to take the backed-up
+#: bytes.  The receiver measured on 2026-10-22 accepted byte-identical
+#: dumps 2/2 before panel navigation and 1/10 after it, with no cause
+#: to name; :meth:`sq.bridge.SqBridge.send_preset_with_retry` is the
+#: app's answer, and three tries is the budget it is given here.
+STORE_ASSIST_ATTEMPTS = 3
+
 
 def _group_source(group: "banks.Group") -> str:
     """Where this group's names can come from, in one word.
@@ -371,6 +378,7 @@ class EnsqsqedApp(App):
         config_path: Optional[str] = None,
         read_names_at_startup: bool = False,
         allow_write: bool = False,
+        backup_root: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.device = device
@@ -391,6 +399,10 @@ class EnsqsqedApp(App):
         #: reason: a test that exercises a bank read must not write into
         #: the real data directory.
         self._live_names_path: Optional[str] = None
+        #: Where the store assist looks for backups.  Injected by
+        #: ``main`` from the settings file; ``None`` means the screen
+        #: uses its own default, which is the bench's location.
+        self._backup_root = backup_root
         self.view_mode = VIEW_ALL
         self._lock = threading.RLock()
         self._bank_ids: List[str] = banks.group_ids()
@@ -1610,13 +1622,14 @@ class EnsqsqedApp(App):
     # takes about twelve seconds, which is why `p` says so before it
     # starts rather than after.
     #
-    # **A write reaches the working preset, and the unit plays it.**  The
-    # unit displays "Press ENTER to save new preset", and no message in
-    # this protocol stores a preset: storing it is the user's front
-    # panel act.  The change itself is live -- the dump lands in the
-    # buffer the unit plays from -- and the unit goes briefly deaf to
-    # incoming MIDI after a send, answering again by about thirty-five
-    # seconds.  Every sentence the app writes after a send says so.
+    # **A write reaches the working preset.**  The unit displays
+    # "Press ENTER to save new preset", and no message in this protocol
+    # stores a preset: storing it is the user's front panel act.  The
+    # send stores into the buffer the unit plays from, but what it plays
+    # changes only when the preset is reloaded -- ctrl+r forces that
+    # reload remotely.  The unit goes briefly deaf to incoming MIDI
+    # after a send, answering again by about thirty-five seconds.  Every
+    # sentence the app writes after a send says so.
 
     def action_multi(self) -> None:
         """``m``: the eight tracks of the preset in hand.
@@ -1821,6 +1834,10 @@ class EnsqsqedApp(App):
             allow_write=self._gate.armed,
             gate=self._gate,
             name_for=self.catalog.display_name,
+            on_store_assist=self._store_assist,
+            on_reload_preset=self._reload_preset,
+            slot=self._edit_slot,
+            backup_root=self._backup_root,
         )
         self._multi_screen = screen
         self.push_screen(screen, self._editor_closed)
@@ -1889,6 +1906,204 @@ class EnsqsqedApp(App):
             self._refuse_change(screen, preset, description, "busy")
             return
         self._apply_preset_worker(preset, description, screen)
+
+    # --- the store assist --------------------------------------------------
+
+    def _store_assist(self, slot: int, preset_raw: bytes) -> None:
+        """Send a slot's backed-up bytes to the unit's selected slot.
+
+        **This is a write, and the gate is asked here as well as in the
+        screen.**  The screen asks before it opens its dialogs and again
+        after the confirmation; this check is the one between a
+        confirmation and the wire, and it is the same one every other
+        writer goes through.
+
+        The unit is not addressed.  The bytes are the backed-up slot's
+        own 168, address bytes included; the unit rewrites those to the
+        selected slot on receipt, and there is no message that says
+        otherwise.  So the destination is whatever the owner selected on
+        the front panel, and the sentence after the send says exactly
+        that.
+        """
+        if not hasattr(self.device, "send_preset_with_retry") or not hasattr(
+            self.device, "read_current_preset"
+        ):
+            self._say_to_editor(
+                "store assist not sent: this device does not answer preset requests",
+                refused=True,
+            )
+            return
+        if not self._gate.armed:
+            self._say_to_editor(
+                self._gate.refuse("the store assist"),
+                refused=True,
+            )
+            return
+        if self._busy:
+            self._say_to_editor("store assist not sent: busy", refused=True)
+            return
+        # Main thread; see action_select for why it is claimed here.
+        if not self._exchange.acquire(blocking=False):
+            self._say_to_editor("store assist not sent: busy", refused=True)
+            return
+        self._store_assist_worker(slot, preset_raw)
+
+    # --- the reload ---------------------------------------------------------
+
+    def _reload_preset(self, slot: int) -> None:
+        """Force a reload of the preset the editor is editing.
+
+        **This is a write, and the gate is asked here as well as in the
+        screen.**  The screen asks before it opens its dialog and again
+        after the confirmation; this check is the one between a
+        confirmation and the wire, and it is the same one every other
+        writer goes through.
+        """
+        if not hasattr(self.device, "select_preset_by_walk") or not hasattr(
+            self.device, "read_current_preset"
+        ):
+            self._say_to_editor(
+                "reload not sent: this device does not answer preset requests",
+                refused=True,
+            )
+            return
+        if not self._gate.armed:
+            self._say_to_editor(
+                self._gate.refuse("the reload"),
+                refused=True,
+            )
+            return
+        if self._busy:
+            self._say_to_editor("reload not sent: busy", refused=True)
+            return
+        # Main thread; see action_select for why it is claimed here.
+        if not self._exchange.acquire(blocking=False):
+            self._say_to_editor("reload not sent: busy", refused=True)
+            return
+        self._reload_preset_worker(slot)
+
+    @work(thread=True)
+    def _reload_preset_worker(self, slot: int) -> None:
+        """**MIDI only** -- read the position, then walk a full lap."""
+        failure: Optional[BaseException] = None
+        try:
+            with self._busy_gate, self._lock:
+                known = self.device.read_current_preset()
+                known_slot = known.preset_raw[0] if known.preset_raw else 0
+                self.device.select_preset_by_walk(
+                    slot, known_slot=known_slot, force_reload=True
+                )
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._reload_preset_done, slot, failure)
+
+    def _reload_preset_done(self, slot: int, failure: Optional[BaseException]) -> None:
+        """Say what the reload did.  Main thread."""
+        if failure is not None:
+            self._say_to_editor(f"reload not sent: {failure}", refused=True)
+            return
+        self._say_to_editor(
+            f"the unit walked around and reloaded P{slot:02d}; "
+            "what it plays now is the preset's stored bytes."
+        )
+
+    @work(thread=True)
+    def _store_assist_worker(self, slot: int, preset_raw: bytes) -> None:
+        """**MIDI only** -- read, send, verify and retry, as one operation.
+
+        The sequence data is the preset's own, read from the unit now:
+        a send is the whole preset, and the backed-up 168 bytes are
+        only the half that comes after it.  The sequence read and the
+        send share the one exchange lock, because a read landing between
+        a send and its verification would be read back as the
+        verification's answer.
+
+        ``send_preset_with_retry`` is the guard the receiver needs: the
+        read-back is compared byte for byte, and a mismatch asks the
+        whole exchange again.  Only the last mismatch escapes, with its
+        own offsets.
+        """
+        failure: Optional[BaseException] = None
+        mismatch: Optional[BaseException] = None
+        try:
+            with self._busy_gate, self._lock:
+                known = self.device.read_current_preset()
+                known_slot = known.preset_raw[0] if known.preset_raw else 0
+                self.device.select_preset_by_walk(slot, known_slot=known_slot)
+                # Read the sequence data *after* the walk: the buffer
+                # reloaded from the target slot on the last selection,
+                # so this is the slot's own sequence data, which is
+                # what a restore of the preset should carry.
+                current = self.device.read_current_preset()
+                self.device.send_preset_with_retry(
+                    current.seq_blob,
+                    preset_raw,
+                    attempts=STORE_ASSIST_ATTEMPTS,
+                    verify=True,
+                )
+        except PresetMismatch as exc:
+            # Its own case: the unit took the dump and holds something
+            # else, and the offsets are the sentence.
+            mismatch = exc
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._store_assist_done, slot, failure, mismatch)
+
+    def _store_assist_done(
+        self,
+        slot: int,
+        failure: Optional[BaseException],
+        mismatch: Optional[BaseException],
+    ) -> None:
+        """Say what the store assist did.  Main thread."""
+        if mismatch is not None:
+            self._say_to_editor(
+                self._store_assist_mismatch_sentence(slot, mismatch),
+                refused=True,
+            )
+            return
+        if failure is not None:
+            # The bridge's own sentence: a refusal and a silence each
+            # say what happened, and neither is improved by a rewrite.
+            self._say_to_editor(f"store assist not sent: {failure}", refused=True)
+            return
+        self._say_to_editor(self._store_assist_sentence(slot))
+
+    def _store_assist_sentence(self, slot: int) -> str:
+        """What a verified store assist did, in the measured model's words.
+
+        The send stores into the selected slot -- that is measured, not
+        inferred -- but this program cannot read back which slot that
+        is, so the sentence names the backed-up preset and says the
+        destination is the unit's selection.  The name is the unit's
+        own and *Edited Preset* is transient; both are stated because
+        both are the parts a user would otherwise wonder about.
+        """
+        return (
+            f"store assist — the backed-up bytes of P{slot:02d} are "
+            f"stored in P{slot:02d}. The send is live for the sound's "
+            f"levels; the track arrangement takes effect when the preset "
+            f"is reloaded — ctrl+r forces that reload remotely. The unit "
+            f"is left in Preset Select Mode at P{slot:02d}; the unit "
+            f"keeps its own name."
+        )
+
+    def _store_assist_mismatch_sentence(
+        self, slot: int, mismatch: BaseException
+    ) -> str:
+        """A refusal that names the offsets the final read-back differed at."""
+        offsets = getattr(mismatch, "diff_offsets", ())
+        where = ", ".join(str(offset) for offset in offsets) or "unknown"
+        return (
+            f"store assist not sent: after {STORE_ASSIST_ATTEMPTS} tries the "
+            f"unit's read-back differs at offset(s) {where} — the backed-up "
+            f"bytes of P{slot:02d} are not verified in the selected slot "
+            f"P{slot:02d}."
+        )
 
     @work(thread=True)
     def _apply_preset_worker(
@@ -2094,11 +2309,13 @@ class EnsqsqedApp(App):
         if self._edit_slot is not None:
             where = f" into slot {self._edit_slot + 1}"
         return (
-            f"{description} — sent. The unit holds it in its working preset "
-            f"(its Edit Preset buffer), so the change is live; it goes briefly "
-            f"deaf to incoming MIDI after a send and answers again within about "
-            f"half a minute. Storing it is a front-panel act: press ENTER/SAVE "
-            f"to store it{where}."
+            f"{description} — sent. The send is live for the sound's "
+            f"levels and stores the preset's tracks and pile into the "
+            f"unit's working preset (its Edit Preset buffer). The track "
+            f"arrangement -- which tracks are on -- takes effect when the "
+            f"preset is reloaded; ctrl+r forces that reload remotely. A "
+            f"whole-buffer store (the effect included) is still the "
+            f"panel's ENTER/SAVE{where}."
         )
 
     def _undo_from_screen(self, count: Optional[int]) -> None:
@@ -2601,11 +2818,11 @@ The preset editor
   A change is sent as a whole preset -- the sequence data and the 168
   bytes of the preset -- because this protocol has no field-level
   write. The unit takes it into its working preset (its Edit Preset
-  buffer) and plays it, so the change is live; the unit goes briefly
-  deaf to incoming MIDI right after a send and answers again within
-  about half a minute. Its display says "Press ENTER to save new
-  preset": **storing it is a front panel act**, and nothing this
-  program does stores a preset.
+  buffer) and updates the stored slot's tracks and pile. The send is
+  live for the sound's levels; the track arrangement takes effect when
+  the preset is reloaded -- ctrl+r forces that reload remotely. A
+  whole-buffer store (the effect included) is still the panel's
+  ENTER/SAVE.
 
   `z` puts the previous preset back, the whole of it. The editors are
   behind the write gate, so arm it with `w` before editing.
@@ -2707,6 +2924,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         config_path=config_path,
         read_names_at_startup=True,
         allow_write=bool(getattr(args, "allow_write", False)),
+        backup_root=cfg.load_backup_root(config_path),
     )
     app._live_names_path = live_names_path
     try:

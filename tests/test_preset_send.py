@@ -34,7 +34,12 @@ What is pinned here:
   unit itself sends;
 * the **verification**, which compares the bytes that were sent with
   the bytes that come back, and says which offsets differ when they
-  do not match.
+  do not match;
+* the **retry**, which asks again from the alert when the read-back
+  does not match -- the unit measured on 2026-10-22 accepted
+  byte-identical exchanges two times out of two before panel
+  navigation and one out of ten after it, with no cause to name, and
+  asking again is the app's answer to a receiver like that.
 
 Nothing here asserts on a name: the names in the fixture are factory
 defaults, and a name is not part of the contract.
@@ -431,6 +436,170 @@ def test_an_echo_of_our_own_messages_is_not_the_read_back():
     assert len(exchange.sent()) == 3
 
 
+# --- the retry -----------------------------------------------------------------
+
+
+def _changed_dump(offset: int) -> bytes:
+    """The fixture with one byte changed: a read-back that differs."""
+    changed = bytearray(DUMP)
+    changed[offset] = (changed[offset] + 1) % 256
+    return bytes(changed)
+
+
+class _FlakyUnit(_FakeUnit):
+    """A unit whose read-back is a list of answers, taken in order.
+
+    The last answer is reused once the list runs out. This is the
+    measured flakiness in miniature: the same bytes and the same
+    exchange, accepted on one attempt and coming back wrong on the
+    next, with no cause to point at (2026-10-22: byte-identical
+    replicas accepted 2/2 before panel navigation and 1/10 after,
+    while the real method landed 5/5 in the same window).
+    """
+
+    def __init__(self, *, read_backs: List[bytes]) -> None:
+        super().__init__()
+        self.read_backs = list(read_backs)
+        #: How many read requests the unit has answered.
+        self.reads = 0
+
+    def answer(self, message: bytes, inbox: List[bytes]) -> None:
+        packet = m.parse(message)
+        if (
+            packet is not None
+            and packet.function == m.Function.COMMAND
+            and m.from_nibbles(packet.payload)[:1]
+            == bytes([m.CommandType.SINGLE_SEQUENCE_REQUEST])
+        ):
+            self.reads += 1
+            which = min(self.reads, len(self.read_backs))
+            self.read_back = self.read_backs[which - 1]
+        super().answer(message, inbox)
+
+
+def test_the_retry_sends_again_when_the_first_read_back_differs():
+    """One exchange came back wrong, the second did not: the retry is
+    what turned the mismatch into the verified send."""
+    unit = _FlakyUnit(read_backs=[_changed_dump(82), DUMP])
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.send_preset_with_retry(BLOB, PRESET)
+
+    assert result.acked is True
+    assert result.verified is True
+    assert result.diff_offsets == ()
+    # Two read requests: the failed try's and the successful one's.
+    assert unit.reads == 2
+    # Two whole exchanges went out: alert, dump, read request, twice.
+    assert len(exchange.sent()) == 6
+    # And both dumps were the same bytes.
+    dumps = [
+        packet
+        for packet in (m.parse(raw) for raw in exchange.sent())
+        if packet is not None and packet.function == m.Function.SINGLE_SEQUENCE_DUMP
+    ]
+    assert len(dumps) == 2
+    assert m.from_nibbles(dumps[0].payload) == BLOB + PRESET
+    assert m.from_nibbles(dumps[1].payload) == BLOB + PRESET
+    # And each dump came after its own acknowledgement.
+    assert exchange.unit.acked_first == [True, True]
+
+
+def test_when_the_retries_run_out_the_last_mismatch_is_the_one_raised():
+    """Three tries, three mismatches -- and the offsets on the
+    exception are the last read-back's, not the first try's."""
+    unit = _FlakyUnit(
+        read_backs=[_changed_dump(82), _changed_dump(83), _changed_dump(83)]
+    )
+    exchange = FakeExchangeBridge(unit)
+
+    with pytest.raises(b.PresetMismatch) as caught:
+        exchange.bridge.send_preset_with_retry(BLOB, PRESET, attempts=3)
+
+    assert caught.value.diff_offsets == (83,)
+    # Three tries were made, and three whole exchanges went out.
+    assert unit.reads == 3
+    assert len(exchange.sent()) == 9
+
+
+def test_attempts_of_one_is_send_preset_with_nothing_added():
+    """One try, one mismatch, raised. The helper does not retry."""
+    unit = _FlakyUnit(read_backs=[_changed_dump(82), DUMP])
+    exchange = FakeExchangeBridge(unit)
+
+    with pytest.raises(b.PresetMismatch) as caught:
+        exchange.bridge.send_preset_with_retry(BLOB, PRESET, attempts=1)
+
+    assert caught.value.diff_offsets == (82,)
+    assert unit.reads == 1
+    # One exchange only: the alert, the dump, the read request.
+    assert len(exchange.sent()) == 3
+
+
+def test_attempts_below_one_is_refused_before_anything_is_sent():
+    """A retry of no attempts is a mistake, and it is caught here."""
+    exchange = FakeExchangeBridge(_FlakyUnit(read_backs=[DUMP]))
+
+    with pytest.raises(ValueError) as caught:
+        exchange.bridge.send_preset_with_retry(BLOB, PRESET, attempts=0)
+
+    assert "at least one attempt" in str(caught.value)
+    assert "0" in str(caught.value)
+    assert exchange.sent() == []
+
+
+def test_a_read_back_that_differs_only_in_the_units_own_regions_verifies():
+    """The 2026-10-22 restore, in miniature: the store landed, and the
+    read-back differed only at the offsets the unit rewrites on
+    receipt.
+
+    The real run: the owner's backup of P79 carried the factory
+    channel bytes ``0x81``..``0x87`` at preset offsets 55 through 139
+    step 14; the unit's read-back carried its own ``0x80`` there and
+    matched everywhere else. The old comparison called that a
+    mismatch three times and the assist refused a landed store. The
+    comparison skips :data:`b.UNIT_KEPT_OFFSETS` now, so these
+    read-backs verify.
+    """
+    read_back = bytearray(DUMP)
+    for preset_offset in (55, 69, 83, 97, 111, 125, 139):
+        read_back[48 + preset_offset] = (read_back[48 + preset_offset] + 1) % 256
+    # The unit's other keepings, for good measure: the name bytes and
+    # the address word.
+    read_back[48 + 0] = (read_back[48 + 0] + 1) % 256
+    read_back[48 + 1] = (read_back[48 + 1] + 1) % 256
+    read_back[50] = (read_back[50] + 1) % 256
+    read_back[48 + 30] = (read_back[48 + 30] + 1) % 256
+    unit = _FlakyUnit(read_backs=[bytes(read_back)])
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.send_preset_with_retry(BLOB, PRESET)
+
+    assert result.verified is True
+    assert result.diff_offsets == ()
+    assert unit.reads == 1
+    # One exchange: the mismatch regions bought no retry.
+    assert len(exchange.sent()) == 3
+
+
+def test_a_difference_outside_the_units_own_regions_still_mismatches():
+    """The skip is for the unit's regions only: a real difference, on
+    its own or beside the kept ones, is still a mismatch."""
+    read_back = bytearray(DUMP)
+    # Kept regions differ...
+    read_back[48 + 55] = (read_back[48 + 55] + 1) % 256
+    read_back[48 + 139] = (read_back[48 + 139] + 1) % 256
+    # ...and so does byte 34, track one's volume, which the unit takes.
+    read_back[48 + 34] = (read_back[48 + 34] + 1) % 256
+    unit = _FlakyUnit(read_backs=[bytes(read_back)])
+    exchange = FakeExchangeBridge(unit)
+
+    with pytest.raises(b.PresetMismatch) as caught:
+        exchange.bridge.send_preset_with_retry(BLOB, PRESET)
+
+    assert caught.value.diff_offsets == (82,)
+
+
 # --- the sizes ----------------------------------------------------------------
 
 
@@ -512,3 +681,88 @@ def test_the_sent_result_says_what_happened() -> None:
     assert result.read_back is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.acked = False  # type: ignore[misc]
+
+
+# --- the preset walk -----------------------------------------------------------
+
+
+class _WalkUnit(_FakeUnit):
+    """A unit whose preset selection moves on button 5 and reads back its slot.
+
+    ``drop_presses`` names the 1-based presses that are swallowed: the
+    message still arrives, but the slot does not move, which is what a
+    dropped press looks like on the wire.
+    """
+
+    def __init__(
+        self,
+        *,
+        start_slot: int = 5,
+        drop_presses: Optional[set] = None,
+        drop_all: bool = False,
+    ) -> None:
+        super().__init__()
+        self.slot = start_slot % 80
+        self.drop_presses = set(drop_presses or ())
+        self.drop_all = drop_all
+        self.press_count = 0
+
+    def answer(self, message: bytes, inbox: List[bytes]) -> None:
+        packet = m.parse(message)
+        if packet is not None and packet.function == m.Function.COMMAND:
+            body = m.from_nibbles(packet.payload)
+            if body and body[0] == m.CommandType.VIRTUAL_BUTTON:
+                button = body[1] if len(body) > 1 else 0
+                if button == 5:
+                    self.press_count += 1
+                    if not self.drop_all and self.press_count not in self.drop_presses:
+                        self.slot = (self.slot - 1) % 80
+                return
+            if body and body[0] == m.CommandType.SINGLE_SEQUENCE_REQUEST:
+                read_back = bytearray(DUMP)
+                read_back[48] = self.slot
+                self.read_back = bytes(read_back)
+        super().answer(message, inbox)
+
+
+def test_the_walks_message_count_for_a_small_distance(monkeypatch: pytest.MonkeyPatch):
+    """Two presses: four button messages and one check-read."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=2)
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.select_preset_by_walk(0, known_slot=2)
+
+    assert result == 0
+    # Two press+release pairs, then one read of the working preset.
+    assert len(exchange.sent()) == 2 * 2 + 1
+    assert unit.press_count == 2
+
+
+def test_a_dropped_press_is_detected_and_corrected(monkeypatch: pytest.MonkeyPatch):
+    """One swallowed press shows up at the check-read and is re-synced."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=2, drop_presses={1})
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.select_preset_by_walk(0, known_slot=2)
+
+    assert result == 0
+    # The first round pressed twice, the second round once more.
+    assert unit.press_count == 3
+
+
+def test_a_walk_that_cannot_converge_names_the_observed_slot(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A unit that never moves is reported where it stayed."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=5, drop_all=True)
+    exchange = FakeExchangeBridge(unit)
+
+    with pytest.raises(b.DeviceError) as caught:
+        exchange.bridge.select_preset_by_walk(0, known_slot=5)
+
+    assert isinstance(caught.value, b.PresetSelectionError)
+    assert "P05" in str(caught.value)
+    assert caught.value.observed_slot == 5
