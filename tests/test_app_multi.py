@@ -1119,3 +1119,42 @@ class TestTheUndoFromTheEditor:
             # Nothing more went out, and the record is still there.
             assert len(device.sent) == 1
             assert len(app._undo_log) == 1
+
+
+class TestABurstOfEdits:
+    """A burst of +/- presses is coalesced, not refused as "busy".
+
+    The send takes a moment; a second press lands while the first is on
+    the wire.  The sibling p2ked keeps one target slot for exactly this:
+    the worker sends the last value next, and nothing is refused.
+    """
+
+    async def test_two_quick_bumps_both_land(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        import time as clock
+
+        original = device.send_preset
+
+        def slow(*args, **kwargs):
+            clock.sleep(0.2)
+            return original(*args, **kwargs)
+
+        device.send_preset = slow
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("x")
+            assert await _wait(lambda: app._fx_screen is not None, pilot)
+            screen = app._fx_screen
+            assert screen is not None
+            await pilot.press("w")  # arm the gate for this screen
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("+")
+            await pilot.press("+")
+            assert await _wait(lambda: len(device.sent) >= 2, pilot)
+            said = _status(screen)
+            assert "busy" not in said
+            # The second press changed the value again before the first
+            # send finished, so the two dumps differ.
+            assert device.sent[0][1] != device.sent[1][1]

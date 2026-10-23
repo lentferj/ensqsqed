@@ -275,3 +275,28 @@ class TestStructuralRules:
                 ):
                     offenders.append(node.name)
         assert not offenders, f"worker(s) {offenders} set _busy themselves"
+
+
+class TestDeviceInfo:
+    """`i` asks the unit who it is -- and must not crash the app."""
+
+    async def test_pressing_i_does_not_release_an_unheld_lock(self, app):
+        """The exchange is claimed by the action, released by the worker.
+
+        The first version started the worker without acquiring the lock,
+        so its ``finally`` released a lock nobody held: the app crashed
+        with "release unlocked lock" on the first press of ``i``.
+        """
+        import time as clock
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("i")
+            for _ in range(100):
+                await pilot.pause()
+                if not app._exchange.locked():
+                    break
+            # The worker finished and released what the action took: an
+            # unbalanced release would have raised inside the worker and
+            # the lock would still be held.
+            assert app._exchange.locked() is False

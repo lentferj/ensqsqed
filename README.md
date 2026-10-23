@@ -343,8 +343,26 @@ ENTER/SAVE stores to the same slot in one step. The store path itself
 is the whole-preset dump behind the write gate (`w`), byte-verified;
 sending a stored slot's own bytes back is idempotent
 safe. Feature B (permanent per-track on/off via stored bytes) is reachable
-this way; Feature A (live on/off) stays front-panel only — the live MIDI
-switch for a track is on the unit (`docs/BUTTON-MAP.md`).
+this way. Feature A — the **live** on/off — is reachable too, through the
+unit's own gesture: the two Track keys as a chord (virtual buttons 10 and
+12). The MULTI screen's `l` sends that chord; it mutes or unmutes the
+track under the panel's cursor, and the app cannot read that cursor, so
+the sentence says so rather than pretending it picks the track
+(`docs/KEY-MAP.md` §3).
+
+**A remote window (`ctrl+o`) mirrors the panel, ungated.** The left cluster holds
+the arrows and the entry keys, the right cluster the
+System/Effects/Track pair, the Select/Edit row and Copy/Compare. Every
+button on screen is also a PC key in the same physical place, and the
+mapping is layout-immune — only keys that sit identically on QWERTY and
+QWERTZ are used (a 3x2 block Q/W/E over A/S/D beside a 4x2 block U/I/O/P over
+H/J/K/L; Space for the live-mute chord). The four mode
+keys are buttons 1-4 in panel order (Select Sound, Select Preset, Edit
+Sound, Edit Track); Bank Select is 0, System is 11, Effects is 13, and
+YES/NO are the Up/Down keys (7 and 5). Copy
+Effect and Compare are secondary functions (of Select Sound and Edit
+Sound), not keys of their own. The key map and
+the caveats are in `docs/KEY-MAP.md` §5.
 
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle

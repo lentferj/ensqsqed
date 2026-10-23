@@ -89,6 +89,7 @@ here on purpose.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -263,6 +264,10 @@ SEQUENCE_FLAG = 0x00
 #: firmware map.
 PRESET_PREV_BUTTON = 5
 PRESET_NEXT_BUTTON = 7
+
+#: Enter/Save: the panel's save key, and the dialog's "next" (the
+#: manual's three-step save is three presses of it).
+ENTER_SAVE_BUTTON = 9
 
 #: The two Track keys. A single press moves the panel's track cursor
 #: (10 backwards, 12 forwards); both together toggle the track under
@@ -724,6 +729,52 @@ def likely_ports() -> List[str]:
     return [p for p in outs if any(w in p.lower() for w in wanted)]
 
 
+#: The minimum gap between outgoing SysEx messages, in seconds.  **The
+#: unit crashes under a flood** -- measured 2026-10-23: two keys pressed
+#: in quick succession gave "MIDI SYSEX ERROR" once and a reboot with
+#: "unexpected event ID=131" another time.  The sibling k2kremote paces
+#: its K2000 for the same reason; its revised-in-use default is 500 ms
+#: (150 ms looked safe in a sweep and locked the unit up in ordinary
+#: use), so this sits between the two: 300 ms per message.
+SYSEX_GAP = 0.30
+
+
+class PacedOut:
+    """A MIDI output that never sends SysEx faster than ``gap`` seconds.
+
+    Every message this instrument takes is SysEx -- virtual buttons and
+    the dump exchange -- so everything is paced.  The lock is held
+    across the sleep on purpose: serialising the senders *is* the
+    throttle, the argument k2kremote's ``ThrottledOut`` makes.
+    """
+
+    def __init__(self, port, gap: float = SYSEX_GAP) -> None:
+        self._port = port
+        self._gap = max(gap, 0.0)
+        self._last = 0.0
+        self._lock = threading.Lock()
+        #: Cumulative seconds spent waiting on the gap, for tests and
+        #: instrumentation: "slow" and "throttled" are not the same.
+        self.throttled_seconds = 0.0
+
+    def send_message(self, message) -> None:
+        with self._lock:
+            wait = self._gap - (time.monotonic() - self._last)
+            if wait > 0:
+                self.throttled_seconds += wait
+                time.sleep(wait)
+            self._port.send_message(message)
+            self._last = time.monotonic()
+
+    # The raw port's lifecycle, delegated so :meth:`SqBridge.close` and
+    # the tests can treat this as the port.
+    def close_port(self) -> None:
+        self._port.close_port()
+
+    def delete(self) -> None:
+        self._port.delete()
+
+
 class SqBridge:
     """One open pair of ports, and the requests this program makes."""
 
@@ -737,7 +788,9 @@ class SqBridge:
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self._in = midi_in
-        self._out = midi_out
+        #: The paced output: the unit reboots under a flood of SysEx, so
+        #: nothing may leave faster than :data:`SYSEX_GAP`.
+        self._out = PacedOut(midi_out)
         #: The unit's **base MIDI channel**, 0-15. It is the fifth byte of
         #: every message, and a request carrying the wrong one is ignored
         #: in silence.
@@ -1520,6 +1573,29 @@ class SqBridge:
             )
             time.sleep(0.02)
 
+    def tap_button(self, number: int, *, hold: float = 0.12) -> None:
+        """One press (down) and one release (up) of a virtual button.
+
+        The remote window's single key: the same wire frames as the
+        panel's own buttons, sent through this bridge rather than by
+        hand.  The gate that decides whether the press may go is the
+        caller's business -- this method sends what it is asked to send,
+        and the unit answers a button number it does not recognise
+        (14 and 15, in particular) with error 02, which the caller's
+        exchange machinery reports.
+
+        The release is the button number plus
+        :data:`sq.messages.CommandType.BUTTON_UP_OFFSET` (96), as the
+        specification asks for one up for every down.
+        """
+        self._out.send_message(
+            list(m.virtual_button(number, down=True, channel=self.channel))
+        )
+        time.sleep(hold)
+        self._out.send_message(
+            list(m.virtual_button(number, down=False, channel=self.channel))
+        )
+
     def _walk_one_round(
         self,
         start: int,
@@ -1558,6 +1634,82 @@ class SqBridge:
         if not current.preset_raw:
             raise DeviceError("the unit's preset dump is empty")
         return current.preset_raw[0]
+
+    def store_current_slot(
+        self,
+        seq_blob: bytes,
+        preset_raw: bytes,
+        *,
+        attempts: int = 3,
+        timeout: float = SEQ_TIMEOUT,
+    ) -> "PresetSent":
+        """Store the whole working buffer into the slot the unit is on.
+
+        **Measured on the unit, 2026-10-23.**  A dump alone stores only
+        the live engine's 120-byte track-and-pile snapshot (offsets
+        32-151); the effect block (152-163) and the name are outside the
+        commit (``docs/PRESET-FRAMING.md`` §9.7).  The panel's save
+        dialog stores the *whole* buffer, and it can be driven blind: a
+        dump leaves an edit pending, and then three presses of
+        Enter/Save walk the manual's steps -- "Save Preset <name>?"
+        (the name is left alone), the slot selection (defaulting to the
+        slot the unit is on), and the confirmation, after which the
+        display says *SAVED*.
+
+        Verified end to end with an effect edit: FX1 MIX 42 -> 100 sent,
+        the three presses, then a reload (one "previous" and one "next"
+        press), and the effect read back as 100 -- it survived the
+        reload, so the slot's stored bytes changed.
+
+        **The verification is the reload, not the read-back**: command
+        03 returns the buffer, which holds the edit either way.  After
+        the store this method re-selects the slot and compares the
+        read-back with what was sent, skipping :data:`UNIT_KEPT_OFFSETS`
+        -- the regions the unit keeps its own values in.  A mismatch is
+        a :class:`PresetMismatch`.
+
+        Blind by nature: the dialog's state cannot be read, so the
+        caller must have just sent a dump (an edit pending), and the
+        owner should be watching the display.  If a press is dropped the
+        dialog may be left open; ``select``/the panel's Select Preset
+        closes it.
+        """
+        self.send_preset_with_retry(
+            seq_blob, preset_raw, attempts=attempts, timeout=timeout
+        )
+        # The manual's save steps: the dialog, the name page, the slot
+        # selection, the confirmation.
+        for _ in range(3):
+            self._press_release(ENTER_SAVE_BUTTON)
+        # Leave and return, so the read-back is the slot's stored bytes.
+        self._press_release(PRESET_PREV_BUTTON)
+        self._press_release(PRESET_NEXT_BUTTON)
+        time.sleep(PRESET_SETTLE)
+        read_back = self.read_current_preset(timeout=timeout)
+        if len(read_back.seq_blob) != len(seq_blob):
+            raise DeviceError(
+                f"the unit's sequence data is {len(read_back.seq_blob)} "
+                f"bytes after {len(seq_blob)} bytes were sent"
+            )
+        expected = seq_blob + preset_raw
+        actual = read_back.seq_blob + read_back.preset_raw
+        diff_offsets = tuple(
+            index
+            for index in range(len(expected))
+            if expected[index] != actual[index]
+            and (
+                index < len(seq_blob) or index - len(seq_blob) not in UNIT_KEPT_OFFSETS
+            )
+        )
+        result = PresetSent(
+            acked=True,
+            verified=not diff_offsets,
+            diff_offsets=diff_offsets,
+            read_back=read_back,
+        )
+        if diff_offsets:
+            raise PresetMismatch(self._mismatch_sentence(diff_offsets), result)
+        return result
 
     def send_current_preset(
         self,

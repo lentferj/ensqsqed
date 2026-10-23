@@ -277,6 +277,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "0-9 type",
     "+ - nudge",
     "space track layer",
+    "x fx",
     "w write gate",
     "esc close",
 )
@@ -1097,6 +1098,9 @@ class MultiScreen(ModalScreen[None]):
         # the only way to change what the unit plays without touching the
         # stored preset.  See action_live_mute.
         Binding("l", "live_mute", "Live mute"),
+        # The effect is part of this preset: its editor opens from here,
+        # not only from the browser behind.
+        Binding("x", "open_fx", "FX"),
     ]
 
     # The ten digits, added after the list rather than into it: the
@@ -1131,6 +1135,7 @@ class MultiScreen(ModalScreen[None]):
         on_reload: Optional[Callable[[int], None]] = None,
         on_reload_preset: Optional[Callable[[int], None]] = None,
         on_live_mute: Optional[Callable[[], None]] = None,
+        on_open_fx: Optional[Callable[[], None]] = None,
         slot: Optional[int] = None,
         preset_slot: Optional[int] = None,
         backup_root: Optional[str] = None,
@@ -1188,6 +1193,10 @@ class MultiScreen(ModalScreen[None]):
         #: the gate, the exchange and the send.  ``None`` means there is
         #: no write path, and the action says so.
         self._on_live_mute = on_live_mute
+        #: ``on_open_fx()`` -- open the effect editor for the same preset.
+        #: The effect is part of the preset, so its editor belongs to the
+        #: preset editor's own key row; the app owns the screen.
+        self._on_open_fx = on_open_fx
         #: The slot this screen is editing, when it is known -- a preset
         #: picked out of the list carries one, and the unit's own current
         #: preset does not.  The reload re-selects this slot.
@@ -1753,6 +1762,13 @@ class MultiScreen(ModalScreen[None]):
             )
             return
         self._on_live_mute()
+
+    def action_open_fx(self) -> None:
+        """``x``: the effect editor over this same preset."""
+        if self._on_open_fx is None:
+            self.say("the effect editor is not reachable from here", refused=True)
+            return
+        self._on_open_fx()
 
     def action_toggle_track(self) -> None:
         """``space``: the track under the cursor, in the layer list or out.

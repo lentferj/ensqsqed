@@ -1859,3 +1859,24 @@ class TestTheLiveMute:
             await pilot.press("l")
             await pilot.pause()
             assert called == [True]
+
+
+class TestTheEffectEditorFromHere:
+    """The effect is part of the preset, so `x` opens its editor here."""
+
+    async def test_x_opens_the_effect_editor(self):
+        opened = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_open_fx=lambda: opened.append(True),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            assert opened == [True]

@@ -5,7 +5,7 @@
 #
 # ensqsqed is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
+# Software Foundation, either version 2 of the License, or (at your option)
 # any later version.
 #
 # ensqsqed is distributed in the hope that it will be useful, but WITHOUT
@@ -805,6 +805,11 @@ class FxScreen(ModalScreen[None]):
         the unit holds rather than what it was asked to hold.  A
         failure puts the old value back: nothing was sent, so the
         screen must not go on showing a change that did not happen.
+
+        On success, ``_before`` is kept (not cleared) because a
+        coalesced burst may have overwritten it with the next edit's
+        pre-state; the next ``_apply`` will save its own ``_before``.
+        On failure, ``_before`` is restored from and then cleared.
         """
         if ok:
             if row is not None:
@@ -812,7 +817,7 @@ class FxScreen(ModalScreen[None]):
         elif self._before is not None:
             self._preset.effect = self._before
             self._rebuild()
-        self._before = None
+            self._before = None
         self.say(message, refused=not ok)
         if self._result_hook is not None:
             self._result_hook(ok, message)

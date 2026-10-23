@@ -70,20 +70,20 @@ key" column mixes measurement and inference as marked.
 
 | key | action | what the code does (decompiled) | panel key (measured 2026-10-23 unless marked) |
 |----:|---|---|---|
-| 0 | `$C0B82C` | global/system parameter page | **System** (Master Tune / Global Bend page shown) |
-| 1 | `$C0B6BE` | returns screen record `$C0AC24` (sid 8) | **Effects** (the sound/effects page, ROM 09 "Analog Power") |
-| 2 | `$C0B9C8` | saves `$FFFFD930`, loads the edit buffer, returns `$C0AC44` (sid 16 = VOICES editor) | **Edit Sound** |
-| 3 | `$C0BB64` | sets up an edit object at `$FFFFDC40` | not Edit Track (see below); showed the VOICES page in one test |
-| 4 | `$C0BC74` | select-sound flow → `$C0AC50`/`$C0AC4C` (sid 18) | **Select Sound** (sound-select page) |
-| 5 | `$C0B776` | installs preset screen record `$FFFFAD18` | **Down** (preset: previous slot, −1, 5/5: P79→78→77→76→75) |
+| 0 | `$C0B82C` | cycles the pages of the active menu | **Bank Select** (no function on the preset display; cycles the FX/System pages when one is open) |
+| 1 | `$C0B6BE` | returns screen record `$C0AC24` (sid 8) | **Select Sound** (the sound page — "ROM 09 Analog Power") |
+| 2 | `$C0B9C8` | saves `$FFFFD930`, loads the edit buffer, returns `$C0AC44` (sid 16) | **Select Preset** |
+| 3 | `$C0BB64` | sets up an edit object at `$FFFFDC40` | **Edit Sound**; pressed again while editing it toggles the **compare** view (the original sound, LED blinking — the OFF voices read ON because that is the original) |
+| 4 | `$C0BC74` | select-sound flow → `$C0AC50`/`$C0AC4C` (sid 18) | **Edit Track** |
+| 5 | `$C0B776` | installs preset screen record `$FFFFAD18` | **Down / NO** (the same key; preset: previous slot, −1, 5/5: P79→78→77→76→75) |
 | 6 | `$C0B722` | current part value, key 6 = tens digit −1 | **Left** (System page: previous page, wraps to the last; preset: tens −1, P00→P70) |
 | 7 | `$C0B770` | installs preset screen record `$FFFFAD14` | **Up** (preset: next slot, +1: P79→P00) |
 | 8 | `$C0B722` | same handler, key 8 = tens digit +1 | **Right** (System page: next page; preset: tens +1, P70→P00) |
 | 9 | `$C0BD38`-family | the Enter/Save action | **Enter/Save** (opens the "Replace edit preset?" copy prompt) |
 | 10 | `$C0BD38` | confirm/menu family | **Track L** (moves the blinking track cursor backwards: 1→8→7→6, measured) |
-| 11 | `$C0B39E` | sets `$FFFFDBFE=$D214`, returns `$C0AC58` (sid 20) | ambiguous: showed the store hint once, the System menu another time |
-| 12 | `$C0BD38` | same function, key 12 → `$C0ACA0` (sid 36) | **NO** — and Down on **any** editable field (owner-verified on the System page: left/right switch rows, up/down change values) |
-| 13 | `$C0B3F0` | returns `$C0AC6C` (sid 24) | **Compare** (the effect display: Chorus Rate/Depth) |
+| 11 | `$C0B39E` | sets `$FFFFDBFE=$D214`, returns `$C0AC58` (sid 20) | **System** (opens the System menu from the preset display, restoring the page last active there — owner-measured) |
+| 12 | `$C0BD38` | same function, key 12 → `$C0ACA0` (sid 36) | **Track R** (single presses move the track cursor forwards) |
+| 13 | `$C0B3F0` | returns `$C0AC6C` (sid 24) | **Effects** (the effect parameters page: Chorus Rate/Depth) |
 
 **The measured facts that corrected the first inferences.** Button 2
 opened the `EditVoice=VOICES` editor (the Edit Sound LED lit); button 4
@@ -119,15 +119,17 @@ and on a sound it is the blinking **Edit Sound** LED (manual Teil 3 and
 Teil 2/4). The dedicated Compare key's action is the effect display
 above.
 
-**YES/Up = button 7.** The manual treats "Yes/No" and "Up/Down" as the
-same pair ("Mit den Up/Down (bzw. Yes/No) Tasten"), and on the unit the
-up function is button 7: it raises the value on an editable field (the
-System page) and steps the preset up in the list. The down side is
-button 5 (Down), with button 12 (NO) acting as down on editable fields
-too.
+**YES/Up = button 7 and NO/Down = button 5** — the same keys. The
+manual treats "Yes/No" and "Up/Down" as one pair ("Mit den Up/Down
+(bzw. Yes/No) Tasten"), and on the unit the owner confirmed it: the NO
+key is the Down key. Up (7) raises the value on an editable field (the
+System page) and steps the preset up in the list; Down/NO (5) does the
+opposite and steps it down.
 
-**Still unassigned:** Bank Select, Edit Track, Select Preset and Copy
-Effect. The remaining candidate numbers are 3, 11 and 16–19.
+**Nothing is unassigned.** The fourteen soft-key numbers 0–13 cover all
+fourteen panel keys of that kind; Copy Effect and Compare are secondary
+functions (Select Sound and Edit Sound respectively), not keys of their
+own; 16–19 carry no panel key.
 
 ## 3. The live-track gate and the Track keys
 
@@ -194,6 +196,63 @@ It drives the display, not the audio.
   visible: the panel's cursor cannot be read back, so the action
   toggles whichever track the panel is on — the app must say that, and
   the owner aligns the panel cursor first.
+
+## 5. The remote window
+
+The app has a remote-control window (`ctrl+o`) that mirrors the panel:
+the left cluster holds the arrows and the entry keys, the right cluster
+the System/Effects/Track pair, the Select/Edit row and
+Copy/Compare. Every button on screen is also a PC key, and the PC
+mapping is **layout-immune**: it uses only keys whose physical position
+is the same on QWERTY and QWERTZ — digits and letters except Y and Z,
+plus Enter, Tab, the arrow keys and PageUp/PageDown.
+
+**The remote is not gated.** The write gate guards this program's
+preset writes; the window presses the unit's own panel keys, and the
+program cannot tell which presses the unit treats as edits (and `w` is
+a panel key inside the window anyway). The gate is gone from the screen
+and from the app's press path; the MULTI and FX editors keep it for
+their own writes.
+
+The window is the panel's own arrangement: **two rows of seven**, a gap
+after the third button. The left three are the arrow/entry block; the
+right four the function/mode block. The PC keys mirror that: a 3×2 block
+(U/I/O over J/K/L) beside a 4×2 block (Q/W/E/R over A/S/D/F).
+
+```
+  Q Left    W Right   E Up/YES    │ U System   I Effects  O Trk L   P Trk R
+  A Entr/Sv S Bank    D Down/NO   │ H Sel Snd  J Sel Prst K Ed Snd  L Ed Trk
+```
+
+| PC key | panel key | button |
+|---|---|---|
+| Q | Left | 6 |
+| W | Right | 8 |
+| E | Up/YES | 7 |
+| U | System | 11 |
+| I | Effects | 13 |
+| O | Track L | 10 |
+| P | Track R | 12 |
+| A | Enter/Save | 9 |
+| S | Bank Select | 0 |
+| D | Down/NO | 5 |
+| H | Select Sound (Copy Effect = secondary) | 1 |
+| J | Select Preset | 2 |
+| K | Edit Sound (again = compare) | 3 |
+| L | Edit Track | 4 |
+| space, or O and P together | the Track pair's chord | 10+12, the live mute (O and P within 180 ms are the chord; alone they scroll the track cursor) |
+
+The keys between the blocks (`R T Y` above, `F G` below) are
+unbound: they fall in the gap, so the PC slab mirrors the hardware's
+spacing.
+
+Two honest caveats, carried by the window and by this table: virtual 3
+is *uncertain* (the physical Edit Track key opens `Status = LOCAL`
+while virtual 3 showed the VOICES page), so the button is labelled
+accordingly; and the live mute toggles the track under the panel's
+cursor, which the app cannot read — the window says what it sent, never
+which track moved. Copy Effect is not a key of its own — it is a
+secondary function of Select Sound, written beneath it on the panel.
 
 ## Appendix — addresses
 

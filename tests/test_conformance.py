@@ -75,6 +75,7 @@ _EXTRAS = (
     "m multi",
     "x fx",
     "p preset list",
+    "ctrl+o remote",
     "S scan device",
     "R rebuild catalog",
     "* rating",

@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from collections import deque
 import time
 from dataclasses import fields
 from typing import Any, Dict, List, Optional, Tuple
@@ -71,6 +72,7 @@ from ensqsqed.multi import (
     PresetListScreen,
     SoundPickerScreen,
 )
+from ensqsqed.remote import PANEL_KEYS as _PANEL_KEYS, RemoteScreen
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
@@ -105,6 +107,12 @@ __all__ = [
 
 _SEP = " · "
 
+#: The first label PANEL_KEYS gives for each button number, so a sentence
+#: can name the button it sent. Duplicates (5, 7, 12) keep the first.
+_REMOTE_LABELS: dict[int, str] = {}
+for _entry in _PANEL_KEYS:
+    if _entry.number is not None and _entry.number not in _REMOTE_LABELS:
+        _REMOTE_LABELS[_entry.number] = _entry.label
 #: What `v` steps through. The same three the sibling rxved and p2ked use,
 #: so the key means the same thing across these projects.
 VIEW_ALL = "all"
@@ -225,6 +233,7 @@ WRITE_HINTS: tuple[str, ...] = (
     "m multi",
     "x fx",
     "p preset list",
+    "ctrl+o remote",
     "S scan device",
     "R rebuild catalog",
     "* rating",
@@ -362,6 +371,7 @@ class EnsqsqedApp(App):
         Binding("m", "multi", "Multi"),
         Binding("x", "fx", "FX"),
         Binding("p", "preset_list", "Preset list"),
+        Binding("ctrl+o", "remote", "Remote"),
         Binding("slash", "search", "Search"),
         Binding("i", "device_info", "Device"),
         Binding("question_mark", "help", "Help"),
@@ -450,6 +460,24 @@ class EnsqsqedApp(App):
         #: belongs to.
         self._multi_screen: Optional[MultiScreen] = None
         self._fx_screen: Optional[FxScreen] = None
+        self._remote_screen: Optional[RemoteScreen] = None
+        self._active_editor: Optional[EditorScreen] = None
+        self._previous_editor: Optional[EditorScreen] = None
+        #: The remote window's press queue (the wire is paced, so bursts
+        #: are buffered rather than refused).  Items are either an int
+        #: (single button) or a tuple ("live_mute", 10, 12) for the chord.
+        self._remote_queue: "deque[int | tuple]" = deque()
+        self._remote_draining = False
+        #: Coalescing for the editors' writes.  While one send is in
+        #: flight, another press replaces the single target instead of
+        #: being refused; the worker sends the last one when it is done.
+        #: One slot, not a queue: a burst lands on one preset, and the
+        #: value that matters is the last one pressed (the sibling
+        #: p2ked's rule for a burst of +/- presses).
+        self._apply_inflight = False
+        self._apply_target: Optional[Preset] = None
+        self._apply_target_description = ""
+        self._apply_target_screen: Optional[EditorScreen] = None
         #: Why the last undo failed, when the failure had a sentence.
         self._undo_reason: Optional[str] = None
         #: Raised by a second `S` to stop a device scan between slots.
@@ -1818,6 +1846,10 @@ class EnsqsqedApp(App):
             f"untouched until a change is applied"
         )
 
+    def action_remote(self) -> None:
+        """``ctrl+o``: open the remote front-panel window."""
+        self._push_remote_screen()
+
     # --- the editors themselves ---------------------------------------------
 
     def _push_multi_screen(self) -> None:
@@ -1837,11 +1869,14 @@ class EnsqsqedApp(App):
             on_store_assist=self._store_assist,
             on_reload_preset=self._reload_preset,
             on_live_mute=self._live_mute,
+            on_open_fx=self._push_fx_screen,
             slot=self._edit_slot,
             backup_root=self._backup_root,
         )
         self._multi_screen = screen
-        self.push_screen(screen, self._editor_closed)
+        self._previous_editor = self._active_editor
+        self._active_editor = screen
+        self.push_screen(screen, self._multi_screen_dismissed)
 
     def _push_fx_screen(self) -> None:
         """Open the effect editor over the live preset."""
@@ -1857,12 +1892,34 @@ class EnsqsqedApp(App):
             gate=self._gate,
         )
         self._fx_screen = screen
-        self.push_screen(screen, self._editor_closed)
+        self._previous_editor = self._active_editor
+        self._active_editor = screen
+        self.push_screen(screen, self._fx_screen_dismissed)
 
-    def _editor_closed(self, _result: Any = None) -> None:
-        """An editor screen was closed."""
+    def _push_remote_screen(self) -> None:
+        """Open the remote front-panel window."""
+        screen = RemoteScreen(
+            on_press=self._remote_press,
+            on_live_mute=self._remote_live_mute,
+        )
+        self._remote_screen = screen
+        self.push_screen(screen, self._remote_closed)
+
+    def _remote_closed(self, _result: Any = None) -> None:
+        """The remote screen was closed."""
+        self._remote_screen = None
+
+    def _multi_screen_dismissed(self, _result: Any = None) -> None:
+        """The multi editor screen was closed."""
         self._multi_screen = None
+        self._active_editor = self._previous_editor
+        self._previous_editor = None
+
+    def _fx_screen_dismissed(self, _result: Any = None) -> None:
+        """The FX editor screen was closed."""
         self._fx_screen = None
+        self._active_editor = self._previous_editor
+        self._previous_editor = None
 
     # --- the write path -----------------------------------------------------
 
@@ -1899,6 +1956,14 @@ class EnsqsqedApp(App):
                 screen, preset, description, self._gate.refuse(description)
             )
             return
+        if self._apply_inflight:
+            # A send is on the wire: remember the latest value and let
+            # the running worker take it next -- no refusal, nothing
+            # lost, and the screen already shows the change.
+            self._apply_target = _copy_preset(preset)
+            self._apply_target_description = description
+            self._apply_target_screen = screen
+            return
         if self._busy:
             self._refuse_change(screen, preset, description, "busy")
             return
@@ -1906,7 +1971,12 @@ class EnsqsqedApp(App):
         if not self._exchange.acquire(blocking=False):
             self._refuse_change(screen, preset, description, "busy")
             return
-        self._apply_preset_worker(preset, description, screen)
+        sent_raw = preset.to_bytes()
+        self._apply_inflight = True
+        self._apply_target = None
+        self._apply_target_description = ""
+        self._apply_target_screen = None
+        self._apply_preset_worker(preset, description, screen, sent_raw)
 
     # --- the store assist --------------------------------------------------
 
@@ -2011,16 +2081,14 @@ class EnsqsqedApp(App):
         )
 
     def _live_mute(self) -> None:
-        """Toggle the live mute of the track under the panel's cursor."""
+        """Toggle the live mute of the track under the panel's cursor.
+
+        **No write gate.**  It is the panel's own gesture, not a preset
+        write; the MULTI screen gates its own ``l`` when it calls this.
+        """
         if not hasattr(self.device, "toggle_live_mute"):
             self._say_to_editor(
                 "live mute not sent: this device does not take button presses",
-                refused=True,
-            )
-            return
-        if not self._gate.armed:
-            self._say_to_editor(
-                self._gate.refuse("the live mute"),
                 refused=True,
             )
             return
@@ -2048,12 +2116,128 @@ class EnsqsqedApp(App):
     def _live_mute_done(self, failure: Optional[BaseException]) -> None:
         """Say what the live mute did.  Main thread."""
         if failure is not None:
-            self._say_to_editor(f"live mute not sent: {failure}", refused=True)
+            message = f"live mute not sent: {failure}"
+            self._say_to_editor(message, refused=True)
+            if self._remote_screen is not None:
+                self._remote_screen.live_mute_result(False, message)
             return
-        self._say_to_editor(
+        message = (
             "live mute toggled for the track under the unit's cursor — the "
             "app cannot read the panel's cursor; check the display's '-'."
         )
+        self._say_to_editor(message)
+        if self._remote_screen is not None:
+            self._remote_screen.live_mute_result(True, message)
+
+    def _remote_press(self, number: int) -> None:
+        """Queue one virtual button for the unit.
+
+        **No write gate.**  The gate guards this program's preset
+        writes; the remote window drives the unit's own panel, and the
+        program cannot tell which presses the unit treats as edits --
+        the owner is the one pressing.
+
+        **Nothing is dropped.**  The wire is paced (``SYSEX_GAP`` in the
+        bridge: the unit reboots under a flood of button frames), so a
+        burst of keypresses would otherwise be refused as "busy".  Each
+        press goes into a queue and one worker drains it in order; the
+        queue is the buffer the owner asked for.
+        """
+        if not hasattr(self.device, "tap_button"):
+            self._remote_refuse(
+                "remote not sent: this device does not take button presses",
+                refused=True,
+            )
+            return
+        self._remote_queue.append(number)
+        if not self._remote_draining:
+            self._remote_draining = True
+            self._remote_drain()
+
+    def _remote_live_mute(self) -> None:
+        """Queue the live-mute chord (buttons 10 + 12) for the unit.
+
+        The live mute is a two-button chord sent atomically.  It goes
+        through the same paced queue as single presses so it respects
+        the wire pacing.  A sentinel tuple marks the chord in the queue.
+        """
+        if not hasattr(self.device, "toggle_live_mute"):
+            self._remote_refuse(
+                "live mute not sent: this device does not take button presses",
+                refused=True,
+            )
+            # Reset the pending flag on the screen so it can be retried
+            if self._remote_screen is not None:
+                self._remote_screen._pending_live_mute = False
+            return
+        # Sentinel for the live-mute chord: (10, 12) are the Track L/R buttons
+        self._remote_queue.append(("live_mute", 10, 12))
+        if not self._remote_draining:
+            self._remote_draining = True
+            self._remote_drain()
+
+    @work(thread=True)
+    def _remote_drain(self) -> None:
+        """**MIDI only** -- send the queued presses, in order, one by one."""
+        while self._remote_queue:
+            item = self._remote_queue.popleft()
+            failure: Optional[BaseException] = None
+            try:
+                with self._busy_gate, self._lock:
+                    if isinstance(item, tuple) and item[0] == "live_mute":
+                        # Live-mute chord: buttons 10 (Track L) and 12 (Track R)
+                        self.device.toggle_live_mute()
+                    else:
+                        # Single button press
+                        number = item
+                        self.device.tap_button(number)
+            except _BRIDGE_ERRORS as exc:
+                failure = exc
+            self.call_from_thread(self._remote_press_done, item, failure)
+        self.call_from_thread(self._remote_drained)
+
+    def _remote_drained(self) -> None:
+        """The queue is empty: the next press starts a fresh drain."""
+        self._remote_draining = False
+        if self._remote_queue:
+            self._remote_draining = True
+            self._remote_drain()
+
+    def _remote_press_done(
+        self, item: int | tuple, failure: Optional[BaseException]
+    ) -> None:
+        """Say what the remote key did.  Main thread."""
+        if failure is not None:
+            if isinstance(item, tuple) and item[0] == "live_mute":
+                self._remote_report(f"live mute not sent: {failure}", refused=True)
+            else:
+                self._remote_report(f"remote not sent: {failure}", refused=True)
+            return
+        if isinstance(item, tuple) and item[0] == "live_mute":
+            self._remote_report("remote: sent live-mute chord (Track L + Track R).")
+            return
+        number = item
+        label = _REMOTE_LABELS.get(number)
+        if label is not None:
+            self._remote_report(f"remote: sent virtual button {number} ({label}).")
+        else:
+            self._remote_report(f"remote: sent virtual button {number}.")
+
+    def _remote_report(self, message: str, *, refused: bool = False) -> None:
+        """Say one sentence on the remote screen (or the app status)."""
+        screen = self._remote_screen
+        if screen is None:
+            self.notify_status(message, refused=refused)
+            return
+        screen.say(message, refused=refused)
+
+    def _remote_refuse(self, message: str, *, refused: bool = True) -> None:
+        """Refuse on the remote screen, deferred past its own line."""
+        screen = self._remote_screen
+        if screen is None:
+            self.notify_status(message, refused=refused)
+            return
+        self.call_later(lambda: screen.say(message, refused=refused))
 
     @work(thread=True)
     def _store_assist_worker(self, slot: int, preset_raw: bytes) -> None:
@@ -2153,7 +2337,11 @@ class EnsqsqedApp(App):
 
     @work(thread=True)
     def _apply_preset_worker(
-        self, preset: Preset, description: str, screen: Optional[EditorScreen]
+        self,
+        preset: Preset,
+        description: str,
+        screen: Optional[EditorScreen],
+        sent_raw: bytes,
     ) -> None:
         """**MIDI only** -- the send and its read-back are one operation.
 
@@ -2168,7 +2356,7 @@ class EnsqsqedApp(App):
             with self._busy_gate, self._lock:
                 self.device.send_preset(
                     self._edit_seq_blob or b"",
-                    preset.to_bytes(),
+                    sent_raw,
                     verify=True,
                 )
         except PresetMismatch as exc:
@@ -2177,10 +2365,16 @@ class EnsqsqedApp(App):
             mismatch = exc
         except _BRIDGE_ERRORS as exc:
             failure = exc
-        finally:
-            self._exchange.release()
+        # The exchange is released by _change_applied, not here: a
+        # coalesced burst keeps the wire between its sends.
         self.call_from_thread(
-            self._change_applied, preset, description, screen, failure, mismatch
+            self._change_applied,
+            preset,
+            description,
+            screen,
+            failure,
+            mismatch,
+            sent_raw,
         )
 
     def _change_applied(
@@ -2190,16 +2384,24 @@ class EnsqsqedApp(App):
         screen: Optional[EditorScreen],
         failure: Optional[BaseException],
         mismatch: Optional[BaseException],
+        sent_raw: bytes,
     ) -> None:
-        """What the write path did with a change.  Main thread."""
-        if failure is not None:
+        """What the write path did with a change.  Main thread.
+
+        **The burst ends here.**  A failure stops the burst and releases
+        the wire; a success records the undo and then, if a press landed
+        while this one was in flight, sends the latest target next --
+        still holding the exchange, so no other writer can slip between.
+        """
+        if failure is not None or mismatch is not None:
+            self._apply_inflight = False
+            self._apply_target = None
+            self._apply_target_description = ""
+            self._apply_target_screen = None
+            self._exchange.release()
+            problem = failure if failure is not None else mismatch
             self._refuse_change(
-                screen, preset, description, f"{description} not sent: {failure}"
-            )
-            return
-        if mismatch is not None:
-            self._refuse_change(
-                screen, preset, description, f"{description} not sent: {mismatch}"
+                screen, preset, description, f"{description} not sent: {problem}"
             )
             return
         # It landed.  The undo record carries the bytes that were there
@@ -2209,8 +2411,25 @@ class EnsqsqedApp(App):
         raw = before.to_bytes() if before is not None else self._edit_preset_raw
         if raw is not None:
             self._undo_log.push(Record(description, (self._edit_seq_blob, raw)))
-        self._edit_snapshot = _copy_preset(preset)
-        self._tell_screen(screen, True, self._store_sentence(description))
+        self._edit_snapshot = Preset.from_bytes(sent_raw)
+        self._tell_screen(
+            screen, True, self._store_sentence(description), cell=self._changed_cell()
+        )
+        # A press that landed during the send: take it now, on the same
+        # wire, and only then let go.
+        target = self._apply_target
+        target_description = self._apply_target_description
+        target_screen = self._apply_target_screen
+        self._apply_target = None
+        self._apply_target_description = ""
+        self._apply_target_screen = None
+        if target is not None and target.to_bytes() != sent_raw:
+            self._apply_preset_worker(
+                target, target_description, target_screen, target.to_bytes()
+            )
+            return
+        self._apply_inflight = False
+        self._exchange.release()
 
     def _refuse_change(
         self,
@@ -2229,7 +2448,7 @@ class EnsqsqedApp(App):
         put back, so that what is on screen is what the unit holds.
         """
         cell = self._changed_cell()
-        self._restore_model(preset)
+        self._restore_model(self._edit_preset)
         self._tell_screen(screen, False, message, cell=cell)
 
     def _restore_model(self, preset: Preset) -> None:
@@ -2328,7 +2547,7 @@ class EnsqsqedApp(App):
         the difference between news and a "no" to the screen, which
         marks it the way the rest of the family does.
         """
-        screen = self._multi_screen or self._fx_screen
+        screen = self._active_editor
         if screen is None:
             self.notify_status(message, refused=refused)
             return
@@ -2407,7 +2626,7 @@ class EnsqsqedApp(App):
             live.pile = preset.pile
             live.effect = preset.effect
         self._edit_snapshot = _copy_preset(preset)
-        self._redraw_screen(self._multi_screen or self._fx_screen)
+        self._redraw_screen(self._active_editor)
 
     # --- the sound picker ---------------------------------------------------
 
@@ -2526,6 +2745,10 @@ class EnsqsqedApp(App):
         total = sum(group.count for group in groups)
         done = 0
         stopped = False
+        self.call_from_thread(
+            self.notify_progress,
+            f"- scanning names: 0/{total} — S stops",
+        )
         try:
             with self._busy_gate, self._lock:
                 for group in groups:
@@ -2557,11 +2780,12 @@ class EnsqsqedApp(App):
                         if repeats >= STUCK_SLOT_LIMIT:
                             stuck = True
                             break
-                        if done % 5 == 0 or done == total:
-                            self.call_from_thread(
-                                self.notify_progress,
-                                f"scanning names: {done}/{total} ({slot.display})",
-                            )
+                        spinner = "-\\|/"[done % 4]
+                        self.call_from_thread(
+                            self.notify_progress,
+                            f"{spinner} scanning names: {done}/{total} "
+                            f"({slot.display}) — S stops",
+                        )
                     if stuck:
                         # The selector is not landing. Do not adopt partial
                         # names: they would all describe the same sound.
@@ -2744,6 +2968,17 @@ class EnsqsqedApp(App):
     # --- device info --------------------------------------------------------
 
     def action_device_info(self) -> None:
+        """``i``: ask the unit who it is.
+
+        **The exchange is claimed here, not in the worker.**  Every
+        other worker takes the lock before it is started and releases it
+        in its own ``finally``; the info worker was started without it,
+        so its ``finally`` released a lock nobody held -- "release
+        unlocked lock" was a crash on the first press of ``i``.
+        """
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("device info: busy", refused=True)
+            return
         self._info_worker()
 
     @work(thread=True)

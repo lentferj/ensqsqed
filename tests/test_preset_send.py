@@ -825,3 +825,69 @@ def test_a_walk_that_cannot_converge_names_the_observed_slot(
     assert isinstance(caught.value, b.PresetSelectionError)
     assert "P05" in str(caught.value)
     assert caught.value.observed_slot == 5
+
+
+def test_the_paced_output_leaves_a_gap_between_messages() -> None:
+    """Two SysEx messages never leave closer than the gap."""
+    import itertools
+    import time as clock
+
+    from sq.bridge import PacedOut
+
+    sent: List[float] = []
+
+    class _Port:
+        def send_message(self, message):
+            sent.append(clock.monotonic())
+
+    paced = PacedOut(_Port(), gap=0.02)
+    paced.send_message([0xF0, 0xF7])
+    paced.send_message([0xF0, 0xF7])
+    paced.send_message([0xF0, 0xF7])
+    gaps = [b - a for a, b in itertools.pairwise(sent)]
+    assert all(gap >= 0.02 for gap in gaps), gaps
+    assert paced.throttled_seconds >= 0.03
+
+
+def test_the_store_walks_the_dialog_and_verifies_by_reload(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Dump, then Enter/Save x3, a leave-and-return, and a verified read.
+
+    The sequence is the manual's save steps driven blind; the read after
+    the reload is the slot's stored bytes, which is what makes the
+    verification mean anything.
+    """
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=3)
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.store_current_slot(BLOB, PRESET)
+
+    assert result.verified is True
+    buttons: List[int] = []
+    for raw in exchange.sent():
+        packet = m.parse(raw)
+        if packet is None or packet.function != m.Function.COMMAND:
+            continue
+        body = m.from_nibbles(packet.payload)
+        if body and body[0] == m.CommandType.VIRTUAL_BUTTON:
+            buttons.append(body[1])
+    up = m.CommandType.BUTTON_UP_OFFSET
+    enter, prev, nxt = (
+        b.ENTER_SAVE_BUTTON,
+        b.PRESET_PREV_BUTTON,
+        b.PRESET_NEXT_BUTTON,
+    )
+    assert buttons == [
+        enter,
+        enter + up,
+        enter,
+        enter + up,
+        enter,
+        enter + up,
+        prev,
+        prev + up,
+        nxt,
+        nxt + up,
+    ]

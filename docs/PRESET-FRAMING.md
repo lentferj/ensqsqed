@@ -542,7 +542,7 @@ unit. The run log is written to `/tmp/opencode/sqrex/probe_write.log` and
 the snapshot to `/tmp/opencode/sqrex/probe_snapshot_before.bin`; the
 committed fixture is what the run must reproduce.
 
-### 9.6 The corrected account: the send is live, the blackout is temporary (2026-10-21, second session) — **superseded by §9.8 (2026-10-23)**
+### 9.6 The corrected account: the send is live, the blackout is temporary (2026-10-21, second session) — **superseded by §9.7 (2026-10-22) on stored memory**
 
 The clean test (`~/temp/tasks/h2f_deafness_test.py`, result
 `~/temp/tasks/H2f_result.json`, verdict `DEAFNESS_REFUTED`) separates the
@@ -696,47 +696,6 @@ guard, and a bounded retry wraps it
 while on slot K, move the selection away and back, and read the all-dump:
 slot K's entry keeps 99 at byte 34; its name and address bytes are the
 unit's own. The result files above are the record of that run.
-
----
-
-### 9.8 What a dump does and does not change live (2026-10-23)
-
-This section was first written the same day as "the live map ignores
-dumps", from RMS measurements taken with `arecord -D hw:3,0`. **That
-conclusion is withdrawn**: the capture rig was broken. Later that day
-the same rig reported the same saturated level (peak 32767, RMS ≈ 5350)
-for a note that was audible and one the owner could not hear at all —
-it was not measuring the unit's output. The CV/recordings from H5/H6
-and the first H10 run are void as audio evidence.
-
-What *is* evidence, and supersedes them, is the owner's ear on the same
-sends, in the preset display:
-
-- **Level changes are live.** Volume 127 → audible; 60 → "a lot lower";
-  20 → inaudible, each measured 40 s after the verified send, past the
-  blackout. So the unit plays from a state that a dump updates, at least
-  for the track levels.
-- **The track status does not gate internal voices.** With all eight
-  tracks' status bytes set to 3 (the panel's *OFF*), the preset still
-  played on every channel — before and after a panel reload (P79 → P78
-  → P79). The stored bytes read back as status 3 (`0xDA`) and the
-  display/parameter accept them; the voices play anyway.
-- **The pile does not gate either** — the owner's original report: track
-  2 removed from the layer list still plays.
-- The effect block is still untested for liveness; the commit range
-  (§9.7) still says a dump never stores it.
-
-So the honest model is: **the send reaches the playing engine for the
-sound's level-side parameters (the volume was measured), while the
-track arrangement (status, pile) is stored but not heard, and the
-on/off state the panel's Track keys change is not reachable from MIDI.**
-The earlier sentence "Feature A is front-panel only" stays true; the
-sentence "dumps change nothing that plays" does not.
-
-**How to check.** With the preset display confirmed, send a volume
-change and listen 40 s later (the owner's ear, not the saturated
-capture); then send status = OFF for all tracks and listen — the notes
-still play. Restore the statuses to LOCAL and reload.
 
 ---
 
