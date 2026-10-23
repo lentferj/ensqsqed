@@ -1092,6 +1092,11 @@ class MultiScreen(ModalScreen[None]):
         # unit's selection a full lap so the final press reloads it with
         # its stored content.  See action_reload_on_unit.
         Binding("ctrl+r", "reload_on_unit", "Reload on unit"),
+        # The live mute: the unit's own Track pair as a chord (buttons 10
+        # and 12), toggling the track under the panel's cursor.  It is
+        # the only way to change what the unit plays without touching the
+        # stored preset.  See action_live_mute.
+        Binding("l", "live_mute", "Live mute"),
     ]
 
     # The ten digits, added after the list rather than into it: the
@@ -1125,6 +1130,7 @@ class MultiScreen(ModalScreen[None]):
         on_store_assist: Optional[Callable[[int, bytes], None]] = None,
         on_reload: Optional[Callable[[int], None]] = None,
         on_reload_preset: Optional[Callable[[int], None]] = None,
+        on_live_mute: Optional[Callable[[], None]] = None,
         slot: Optional[int] = None,
         preset_slot: Optional[int] = None,
         backup_root: Optional[str] = None,
@@ -1177,6 +1183,11 @@ class MultiScreen(ModalScreen[None]):
         self._on_reload_preset = (
             on_reload_preset if on_reload_preset is not None else on_reload
         )
+        #: ``on_live_mute()`` -- the app's live-mute write path (the two
+        #: Track keys as a chord).  The screen only asks; the app owns
+        #: the gate, the exchange and the send.  ``None`` means there is
+        #: no write path, and the action says so.
+        self._on_live_mute = on_live_mute
         #: The slot this screen is editing, when it is known -- a preset
         #: picked out of the list carries one, and the unit's own current
         #: preset does not.  The reload re-selects this slot.
@@ -1499,12 +1510,12 @@ class MultiScreen(ModalScreen[None]):
         again after the confirmation, because the gate is a live key
         and can have been locked while the dialog was up.
 
-        The reload walks the unit's selection through all eighty
-        presets, so it takes about a minute and the unit audibly steps
-        through every preset's sounds along the way.  Any pending edit
-        on the unit's display is committed into the slot it names when
-        the selection steps, and at the end the unit is back on this
-        preset playing its stored content.
+        The reload leaves the preset and comes straight back -- one
+        "previous" press and one "next" press (buttons 5 and 7), two
+        selection events, about a second.  Any pending edit on the
+        unit's display is committed into the slot it names when the
+        selection steps, and at the end the unit is back on this preset
+        playing its stored content.
         """
         if not self._writes_allowed():
             self._refuse_write()
@@ -1536,12 +1547,11 @@ class MultiScreen(ModalScreen[None]):
         panel = f"P{slot:02d}"
         return (
             f"Reload {panel} on the unit?\n\n"
-            "The app will step the unit's selection through all 80 "
-            "presets (about a minute, the unit will audibly step "
-            "through every preset's sounds), any pending edit on the "
-            "unit's display is committed into the slot it names when "
-            "the selection steps, and at the end the unit is back on "
-            "this preset playing its stored content."
+            "The app leaves the preset and comes straight back (button 5 "
+            "then button 7 -- two selection events, about a second). "
+            "Any pending edit on the unit's display is committed into "
+            "the slot it names when the selection steps, and at the end "
+            "the unit is back on this preset playing its stored content."
         )
 
     def _reload_confirmed(self, confirmed: Optional[bool]) -> None:
@@ -1719,6 +1729,30 @@ class MultiScreen(ModalScreen[None]):
             )
             return
         self._apply(index, column, stepped)
+
+    def action_live_mute(self) -> None:
+        """``l``: toggle the live mute of the track under the panel's cursor.
+
+        **This is the unit's own gesture, and the app cannot see its
+        target.**  The two Track keys pressed together mute or unmute
+        the track the panel's cursor sits on -- buttons 10 and 12 as one
+        chord; the display's track number turns into "-" and the track's
+        notes go silent, while no preset byte changes (the audio gate is
+        the unit's live mask, not the preset).  There is no read-back
+        for the cursor, so this toggles whichever track the panel points
+        at; the sentence says so rather than pretending the screen's
+        cursor chooses the track.  ``space`` remains the *stored* edit.
+        """
+        if not self._writes_allowed():
+            self._refuse_write()
+            return
+        if self._on_live_mute is None:
+            self.say(
+                "live mute not sent: this screen has no write path",
+                refused=True,
+            )
+            return
+        self._on_live_mute()
 
     def action_toggle_track(self) -> None:
         """``space``: the track under the cursor, in the layer list or out.

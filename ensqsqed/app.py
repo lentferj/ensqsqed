@@ -1836,6 +1836,7 @@ class EnsqsqedApp(App):
             name_for=self.catalog.display_name,
             on_store_assist=self._store_assist,
             on_reload_preset=self._reload_preset,
+            on_live_mute=self._live_mute,
             slot=self._edit_slot,
             backup_root=self._backup_root,
         )
@@ -1984,7 +1985,7 @@ class EnsqsqedApp(App):
 
     @work(thread=True)
     def _reload_preset_worker(self, slot: int) -> None:
-        """**MIDI only** -- read the position, then walk a full lap."""
+        """**MIDI only** -- read the position, then leave and return."""
         failure: Optional[BaseException] = None
         try:
             with self._busy_gate, self._lock:
@@ -2007,6 +2008,51 @@ class EnsqsqedApp(App):
         self._say_to_editor(
             f"the unit walked around and reloaded P{slot:02d}; "
             "what it plays now is the preset's stored bytes."
+        )
+
+    def _live_mute(self) -> None:
+        """Toggle the live mute of the track under the panel's cursor."""
+        if not hasattr(self.device, "toggle_live_mute"):
+            self._say_to_editor(
+                "live mute not sent: this device does not take button presses",
+                refused=True,
+            )
+            return
+        if not self._gate.armed:
+            self._say_to_editor(
+                self._gate.refuse("the live mute"),
+                refused=True,
+            )
+            return
+        if self._busy:
+            self._say_to_editor("live mute not sent: busy", refused=True)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self._say_to_editor("live mute not sent: busy", refused=True)
+            return
+        self._live_mute_worker()
+
+    @work(thread=True)
+    def _live_mute_worker(self) -> None:
+        """**MIDI only** -- the Track pair's chord, nothing else."""
+        failure: Optional[BaseException] = None
+        try:
+            with self._busy_gate, self._lock:
+                self.device.toggle_live_mute()
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._live_mute_done, failure)
+
+    def _live_mute_done(self, failure: Optional[BaseException]) -> None:
+        """Say what the live mute did.  Main thread."""
+        if failure is not None:
+            self._say_to_editor(f"live mute not sent: {failure}", refused=True)
+            return
+        self._say_to_editor(
+            "live mute toggled for the track under the unit's cursor — the "
+            "app cannot read the panel's cursor; check the display's '-'."
         )
 
     @work(thread=True)

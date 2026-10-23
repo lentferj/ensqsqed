@@ -687,11 +687,12 @@ def test_the_sent_result_says_what_happened() -> None:
 
 
 class _WalkUnit(_FakeUnit):
-    """A unit whose preset selection moves on button 5 and reads back its slot.
+    """A unit whose preset selection moves on buttons 5 and 7.
 
-    ``drop_presses`` names the 1-based presses that are swallowed: the
-    message still arrives, but the slot does not move, which is what a
-    dropped press looks like on the wire.
+    Button 5 steps one slot down, button 7 one slot up (mod 80) -- the
+    measured behaviour of the unit.  ``drop_presses`` names the 1-based
+    presses that are swallowed: the message still arrives, but the slot
+    does not move, which is what a dropped press looks like on the wire.
     """
 
     def __init__(
@@ -706,6 +707,7 @@ class _WalkUnit(_FakeUnit):
         self.drop_presses = set(drop_presses or ())
         self.drop_all = drop_all
         self.press_count = 0
+        self.buttons: List[int] = []
 
     def answer(self, message: bytes, inbox: List[bytes]) -> None:
         packet = m.parse(message)
@@ -713,10 +715,11 @@ class _WalkUnit(_FakeUnit):
             body = m.from_nibbles(packet.payload)
             if body and body[0] == m.CommandType.VIRTUAL_BUTTON:
                 button = body[1] if len(body) > 1 else 0
-                if button == 5:
+                if button in (5, 7):
+                    self.buttons.append(button)
                     self.press_count += 1
                     if not self.drop_all and self.press_count not in self.drop_presses:
-                        self.slot = (self.slot - 1) % 80
+                        self.slot = (self.slot + (1 if button == 7 else -1)) % 80
                 return
             if body and body[0] == m.CommandType.SINGLE_SEQUENCE_REQUEST:
                 read_back = bytearray(DUMP)
@@ -750,6 +753,62 @@ def test_a_dropped_press_is_detected_and_corrected(monkeypatch: pytest.MonkeyPat
     assert result == 0
     # The first round pressed twice, the second round once more.
     assert unit.press_count == 3
+
+
+def test_the_walk_takes_the_shorter_way_with_the_next_button(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """P78 -> P02 is four "next" presses (button 7), not 76 "previous" ones."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=78)
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.select_preset_by_walk(2, known_slot=78)
+
+    assert result == 2
+    assert unit.press_count == 4
+    assert set(unit.buttons) == {b.PRESET_NEXT_BUTTON}
+
+
+def test_force_reload_leaves_and_returns_with_two_presses(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A reload of the current slot is button 5 then button 7."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=9)
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.select_preset_by_walk(9, known_slot=9, force_reload=True)
+
+    assert result == 9
+    assert unit.buttons == [b.PRESET_PREV_BUTTON, b.PRESET_NEXT_BUTTON]
+    assert unit.press_count == 2
+
+
+def test_the_live_mute_is_the_two_track_keys_together(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The chord is 10 down, 12 down, 10 up, 12 up -- and nothing else."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=3)
+    exchange = FakeExchangeBridge(unit)
+
+    exchange.bridge.toggle_live_mute()
+
+    events = []
+    for raw in exchange.sent():
+        packet = m.parse(raw)
+        assert packet is not None and packet.function == m.Function.COMMAND
+        body = m.from_nibbles(packet.payload)
+        assert body[0] == m.CommandType.VIRTUAL_BUTTON
+        events.append(body[1])
+    up = m.CommandType.BUTTON_UP_OFFSET
+    assert events == [
+        b.TRACK_LEFT_BUTTON,
+        b.TRACK_RIGHT_BUTTON,
+        b.TRACK_LEFT_BUTTON + up,
+        b.TRACK_RIGHT_BUTTON + up,
+    ]
 
 
 def test_a_walk_that_cannot_converge_names_the_observed_slot(

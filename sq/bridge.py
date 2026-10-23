@@ -253,6 +253,26 @@ PRESET_SETTLE = 0.5
 #: (specification section 3.1.7). A preset edit is a sequence.
 SEQUENCE_FLAG = 0x00
 
+#: The preset-stepping buttons: **5 = previous, 7 = next**, one slot
+#: each with mod-80 wraparound. Measured on the unit (button 5 took
+#: P79 -> P78 five times; button 7 took P79 -> P00), and the OS image
+#: names them: the main screen's action table at ``$C0AA44`` holds
+#: ``$C0B776`` for key 5 and ``$C0B770`` for key 7, the two actions
+#: that install the adjacent prev/next preset screen records
+#: (``$FFFFAD18`` / ``$FFFFAD14``). ``docs/KEY-MAP.md`` has the full
+#: firmware map.
+PRESET_PREV_BUTTON = 5
+PRESET_NEXT_BUTTON = 7
+
+#: The two Track keys. A single press moves the panel's track cursor
+#: (10 backwards, 12 forwards); both together toggle the track under
+#: the cursor — the live mute the panel does by hand. Measured on the
+#: unit 2026-10-23: the display's track number turns into "-" and the
+#: track's notes go silent, while the preset's bytes do not change (the
+#: audio gate is the RAM mask ``$FFFFD718``; ``docs/KEY-MAP.md`` §3).
+TRACK_LEFT_BUTTON = 10
+TRACK_RIGHT_BUTTON = 12
+
 #: The preset offsets a read-back may differ at without the send having
 #: failed -- the regions the unit keeps for itself on a store.
 #:
@@ -1371,38 +1391,30 @@ class SqBridge:
         check_every: int = 8,
         settle: float = 0.4,
     ) -> int:
-        """Step the unit's preset selection to ``target_slot`` with button 5.
+        """Step the unit's preset selection to ``target_slot`` with button 5/7.
 
-        Button 5 is the only selection step on the wire, one press
-        moves one slot down (mod 80), and there is no addressing and no
-        "+1": the arrows 16-19 post to the sequencer task and are
-        inert for presets, and the program-change gate
-        (``$FFFFD6BA``) has no writer in the OS. The walk is verified
-        by reading the working preset, whose seqno byte (preset
-        offset 0) is the slot the unit is on.
+        **Both directions exist.**  Virtual button 5 is "previous
+        preset" and button 7 is "next preset" -- one slot each, with
+        mod-80 wraparound (79 -> 00 and 00 -> 79).  The key map came
+        from the OS image (screen 7's action table, `$C0AA44`: key 5 ->
+        `$C0B776` which installs the preset screen record `$FFFFAD18`,
+        key 7 -> `$C0B770` which installs `$FFFFAD14`, the two adjacent
+        prev/next records) and was measured on the unit: button 5 took
+        P79 -> P78 five times in a row, button 7 took P79 -> P00 (the
+        wrap).  The walk therefore takes the shorter way round -- at
+        most 40 presses, usually one or two.
 
-        ``force_reload`` changes what happens when the target is already
-        the known slot.  A dump stores tracks and pile into the selected
-        slot's memory, but the unit's live engine ignores dumps
-        entirely -- not the track status, not the pile, not the volume
-        (measured RMS 6550 -> 6552 after a volume 127 -> 60 send, past
-        the 40 s blackout).  What plays changes only when the preset is
-        reloaded, which is a preset-select event.  So re-selecting the
-        same slot reloads it with its stored content, and that reload
-        can be forced remotely by walking the selection a full lap:
-        80 presses of button 5 (minus one times eighty is the same slot,
-        and every press is a selection event, the last one reloading the
-        target).  With ``force_reload`` true and a zero distance, the
-        walk therefore still makes 80 presses instead of returning
-        immediately, and the periodic check-reads and the end
-        verification apply as usual (after k presses the expected slot
-        is ``(start - k) mod 80``; the final read must equal the target).
+        The walk is verified by reading the working preset, whose seqno
+        byte (preset offset 0) is the slot the unit is on; a periodic
+        check-read re-synchronises if a press is dropped.
 
-        The cost is real and audible: about 45-60 s for the full lap,
-        and the unit audibly steps through every preset's sounds as the
-        selection moves, because each step selects that preset.  Callers
-        that force a reload must warn the user and get confirmation
-        before starting it.
+        ``force_reload`` re-selects the target when it is already the
+        current slot: one "previous" press and one "next" press -- two
+        selection events, the second reloading the target with its
+        stored content.  (A preset reload is a preset-select event; a
+        dump stores bytes but does not by itself make the unit re-read
+        them.)  Two presses, not the eighty the earlier one-directional
+        model required.
         """
         if not 0 <= target_slot < 80:
             raise ValueError(
@@ -1419,21 +1431,22 @@ class SqBridge:
 
         current = known_slot
         last_observed = known_slot
-        # One more round than the budget, so the budget bounds the
-        # re-synchronisations rather than the reads.
         for _ in range(6):
-            remaining = (current - target_slot) % 80
-            if remaining == 0 and force_reload:
-                remaining = 80
-            if remaining == 0:
-                observed = self._read_walk_slot()
+            down = (current - target_slot) % 80
+            up = (target_slot - current) % 80
+            if down == 0 and up == 0:
+                observed = self._on_the_target(target_slot, force_reload, settle)
                 last_observed = observed
                 if observed == target_slot:
                     return target_slot
                 current = observed
                 continue
+            if down <= up:
+                button, step, count = PRESET_PREV_BUTTON, -1, down
+            else:
+                button, step, count = PRESET_NEXT_BUTTON, 1, up
             observed = self._walk_one_round(
-                current, target_slot, remaining, check_every, settle
+                current, target_slot, button, step, count, check_every, settle
             )
             last_observed = observed
             if observed == target_slot:
@@ -1447,40 +1460,95 @@ class SqBridge:
             observed_slot=last_observed,
         )
 
+    def _on_the_target(
+        self, target_slot: int, force_reload: bool, settle: float
+    ) -> int:
+        """Already on the target slot: optionally reload, then read it back.
+
+        A reload is one "previous" press and one "next" press -- two
+        selection events, the second one re-reading the slot.
+        """
+        if force_reload:
+            self._press_release(PRESET_PREV_BUTTON)
+            self._press_release(PRESET_NEXT_BUTTON)
+            time.sleep(settle)
+        return self._read_walk_slot()
+
+    def _press_release(
+        self, button: int, *, hold: float = 0.12, gap: float = 0.4
+    ) -> None:
+        """One press and release of a virtual button."""
+        self._out.send_message(
+            list(m.virtual_button(button, down=True, channel=self.channel))
+        )
+        time.sleep(hold)
+        self._out.send_message(
+            list(m.virtual_button(button, down=False, channel=self.channel))
+        )
+        time.sleep(gap)
+
+    def toggle_live_mute(self, *, hold: float = 0.30) -> None:
+        """Toggle the live mute of the track under the panel's cursor.
+
+        **This is the panel's own gesture, not a preset edit.**  The two
+        Track keys pressed together mute or unmute the track the
+        panel's cursor sits on: the display's track number turns into
+        "-" and that track's notes fall silent, while the preset's
+        bytes do not change at all (measured 2026-10-23).  The audio
+        gate is the RAM mask ``$FFFFD718``, which a dump never writes
+        (``docs/KEY-MAP.md`` §3), so this is the only way to change what
+        the unit plays without touching the stored preset.
+
+        **The app cannot read the panel's cursor.**  There is no
+        read-back for it, so this toggles *whichever track the panel is
+        pointing at*, not a track the caller names.  A caller must say
+        so; a screen that shows eight tracks must not pretend this
+        action picks one of them.
+
+        The chord is the two presses down, a hold, then the two
+        releases -- one selection gesture, as the panel does it.
+        """
+        for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON):
+            self._out.send_message(
+                list(m.virtual_button(button, down=True, channel=self.channel))
+            )
+            time.sleep(0.02)
+        time.sleep(hold)
+        for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON):
+            self._out.send_message(
+                list(m.virtual_button(button, down=False, channel=self.channel))
+            )
+            time.sleep(0.02)
+
     def _walk_one_round(
         self,
         start: int,
         target: int,
-        remaining: int,
+        button: int,
+        step: int,
+        count: int,
         check_every: int,
         settle: float,
     ) -> int:
-        """Walk ``remaining`` presses, checking every ``check_every``.
+        """Walk ``count`` presses with ``button``, checking every ``check_every``.
 
-        Returns the target slot on success, or the observed slot on a
-        mismatch (so the caller can re-synchronise).
+        ``step`` is -1 for the previous button and +1 for the next one;
+        after k presses the expected slot is ``(start + step*k) mod 80``.
+        Returns the target on success, or the observed slot on a
+        mismatch (the caller re-synchronises).
         """
-        _PRESS_HOLD = 0.12
-        _RELEASE_GAP = 0.4
         walked = 0
-        while walked < remaining:
-            chunk = min(check_every, remaining - walked)
+        while walked < count:
+            chunk = min(check_every, count - walked)
             for _ in range(chunk):
-                self._out.send_message(
-                    list(m.virtual_button(5, down=True, channel=self.channel))
-                )
-                time.sleep(_PRESS_HOLD)
-                self._out.send_message(
-                    list(m.virtual_button(5, down=False, channel=self.channel))
-                )
-                time.sleep(_RELEASE_GAP)
+                self._press_release(button)
                 walked += 1
             time.sleep(settle)
-            expected = (start - walked) % 80
+            expected = (start + step * walked) % 80
             observed = self._read_walk_slot()
             if observed != expected:
                 return observed
-            if walked == remaining:
+            if walked == count:
                 return target
         return self._read_walk_slot()
 

@@ -503,15 +503,20 @@ The firmware image settled what probing could only guess
   this unit.
 - **The arrows 16–19 post to the sequencer task** (`$C0FE32`, message tag
   22 to `$FFFFFB66`), not the UI task — and they are inert for preset
-  selection, measured (H4).
+  selection, measured (H4). The panel's real cursors are among 0–13
+  (`docs/KEY-MAP.md`).
 - **Virtual button 5 = "previous preset" (−1), 5/5 measured**, each step
   verified by the read-back's seqno byte and address bytes
-  (P79→78→77→76→75). With mod-80 wraparound every target is ≤ 79 presses
-  away, and each press can be verified by reading the working preset.
+  (P79→78→77→76→75). **Virtual button 7 = "next preset" (+1)**, measured
+  P79→P00 with wraparound — the "+1 exists" correction of 2026-10-23:
+  the firmware's main-screen action table (`$C0AA44`) holds `$C0B776`
+  for key 5 and `$C0B770` for key 7, the two prev/next preset screen
+  records (`$FFFFAD18`/`$FFFFAD14`). Any target is at most 40 presses
+  away, and a reload (leave and return) is two presses.
   Held keys do not autorepeat over the virtual route (H4d).
-- So the store assist now walks the selection itself (button 5 × n,
-  verified reads, re-sync on a dropped press) and then sends — **the
-  panel's selection step is gone from the flow**.
+- So the store assist now walks the selection itself (button 5/7 as the
+  shorter way, verified reads, re-sync on a dropped press) and then
+  sends — **the panel's selection step is gone from the flow**.
 - The store's commit range (§12's model, sharpened): the commit copies
   only offsets 32–151 (tracks + pile, with the per-track byte-9s kept
   from the slot's own values) — the name, address bytes, tempo and the
@@ -526,9 +531,10 @@ The firmware image settled what probing could only guess
   does not gate internal voices** (all eight set to *OFF* still played,
   before and after a panel reload), and **the pile does not gate either**.
   So: level-side parameters are heard live; the track arrangement is
-  stored but not heard; the on/off remains panel-only. §9.8 in
-  `PRESET-FRAMING.md` carries the corrected record.
+  stored but not heard; the on/off remains panel-only (`$FFFFD718` is the
+  audio gate, `docs/KEY-MAP.md` §3). §9.8 in `PRESET-FRAMING.md` carries
+  the corrected record.
   The owner's flow stays: edit → store (remote, verified) → **reload
-  (remote: the 80-press walk, the app's "reload on unit" action)** → the
+  (remote: two presses, the app's "reload on unit" action)** → the
   changes take effect.
 

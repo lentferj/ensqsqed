@@ -87,10 +87,15 @@ SQ-R at all, which the specification explicitly allows: *"All messages
 which are not common to both machines will be ignored"* (SQ-1 Musician's
 Manual, p. 2).
 
-**Which button is which number is not established.** The number-to-button
-assignment is a hypothesis (`~/temp/tasks/R1_button_hunt.md` §3, hypothesis
-A), not a measurement. What is measured is the set, the hole at 14 and 15,
-and the release offset of +96.
+**Which button is which number is documented in `docs/KEY-MAP.md`.** The
+firmware's soft-key tables (`$FFFFDB1C`, installed from the screen
+records at `$C0AC04` and the tables at `$C1C466`/`$C1C552`) give the
+main screen's fourteen action words (`$C0AA44`), and presses on the unit
+validated the two that matter for navigation: **button 5 = previous
+preset, button 7 = next preset** (measured; P79→78→77→76→75 five times,
+and P79→P00 with wraparound). Button 2 = Edit Sound and button 4 =
+Select Sound were confirmed on the display. The remaining panel-key
+names are inferences, marked as such in `KEY-MAP.md`.
 
 ---
 
@@ -117,12 +122,15 @@ the read-back's name *and* its own address bytes say where the unit is:
 
 | number | what the controlled press did |
 |---|---|
-| **5** | **Select Preset — the owner watched the Preset Select display light up — and it steps the selection one slot DOWN (mod 80), 5/5 reliable: P79→78→77→76→75, verified by name and address bytes each time** |
-| 0, 1, 4, 6, 7, 9 | no selection change (4 pressed three times, 6/7 twice — mode/screen changes at most) |
+| **5** | **previous preset — steps one slot DOWN (mod 80), 5/5 reliable: P79→78→77→76→75, verified by name and address bytes each time** |
+| **7** | **next preset — steps one slot UP (mod 80): P79→P00 (measured 2026-10-23; the firmware names it too — `$C0B770` for key 7, `$C0B776` for key 5 in the main screen's action table `$C0AA44`)** |
+| 2 | **Edit Sound** — opens the `EditVoice=VOICES` sound editor (owner-observed) |
+| 4 | **Select Sound** — opens the sound-select page (owner-observed, ROM 09 "Analog Power") |
+| 0, 1, 6, 9 | no selection change (6/9 twice; screen/value changes at most) |
 | 9 held + 10 (YES) / 11 (NO) | nothing (the manual's bank-jump combo, tried over the wire — H4d) |
 | 5 held | no autorepeat (a 1.5 s hold = 0 extra steps — the repeat is the panel's key scan, not the OS handler) |
-| 16–19 | **inert over SysEx, even in Preset Select mode** (owner-observed at P79); firmware: `$C0FE32` posts message tag 22 to the *sequencer* task (`$FFFFFB66`), not the UI task — the virtual arrows cannot act as the UI's cursor keys |
-| 2, 3, 8, 10, 11, 12, 13 | not re-pressed over the wire (the Track pair, Enter/Save's dialog, YES/NO's command execution, Copy Effect — the hazards) |
+| 16–19 | **inert for preset selection** (owner-observed at P79); firmware: `$C0FE32` posts message tag 22 to the *sequencer* task (`$FFFFFB66`), not the UI task — they are not soft keys |
+| 3, 8, 10, 11, 12, 13 | not re-pressed over the wire (3 is not a Track key — see below; 8/10 are Enter/Save and YES, 11/12/13 Copy/NO/Compare — the hazards) |
 
 The H2a walk's "buttons 6, 7 and 8 moved the selection to Preset-70/72/02"
 reads as the save dialog: button 8 is Enter/Save, the dialog's slot cursor
@@ -130,12 +138,13 @@ was what moved, and the walk's later presses moved that cursor — which is
 where the contamination came from. The button-number→key identification
 is now anchored by the Select-Preset display observation (button 5).
 
-**What the map means for selection:** button 5 (−1, mod 80) is the *only*
-remote selection step; any target is ≤ 79 presses away, each step
-verifiable by reading the working preset (command 03), whose seqno byte
-(preset offset 0) is the current slot. There is no "+1" on the wire: the
-arrows are dead, and the program-change gate (`$FFFFD6BA`) has one `tstb`
-and no writer in OS 2.03 (`RE_sysex.md`) — dead code.
+**What the map means for selection:** buttons 5 and 7 step the preset one
+slot down and up (mod 80), so any target is at most 40 presses away and a
+reload is two presses; each step is verifiable by reading the working
+preset (command 03), whose seqno byte (preset offset 0) is the current
+slot. The program-change gate (`$FFFFD6BA`) has one `tstb` and no writer
+in OS 2.03 (`RE_sysex.md`) — dead code. The full map is in
+`docs/KEY-MAP.md`.
 
 **This probing contaminated the unit's memory.** See *Contamination* below.
 
@@ -154,12 +163,18 @@ status between \*OFF\* and LOCAL.*
 The plan's route was to press the two Track buttons together over the wire
 and watch a status byte move.
 
-**What happened.** The pair **(2,3)** — the two numbers the panel inventory
-puts on the two Track buttons — hit exactly **once**: the working preset's
-pile went from `01 02` to `01 00`, i.e. track 2 left the layer list, and the
-status bytes did not move at all. The undo — the same chord again — did not
-put it back: after it the pile still read `01 00` and the preset hash still
-differed from the baseline.
+**What happened.** The pair **(2,3)** hit exactly **once**: the working
+preset's pile went from `01 02` to `01 00`, i.e. track 2 left the layer
+list, and the status bytes did not move at all. The undo — the same chord
+again — did not put it back: after it the pile still read `01 00` and the
+preset hash still differed from the baseline.
+
+**Superseded (2026-10-23).** The firmware map shows what the (2,3) press
+really was: **button 2 = Edit Sound** (pressing it opens the
+`EditVoice=VOICES` sound editor, measured) and button 3 is not a Track
+key. The chord never touched the Track keys. Its one "hit" was a side
+effect of entering the sound editor, not a track toggle. The Track keys'
+numbers are not yet established (`docs/KEY-MAP.md` §2–3).
 
 **How often.** Across the three sessions that tried it — H2a's sweep over
 the adjacent pairs, H2c's bare chord plus its sixteen screen hunts, H2d's

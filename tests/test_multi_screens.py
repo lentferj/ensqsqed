@@ -1817,3 +1817,45 @@ class TestThePresetListEdges:
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
             assert "no name" in table.get_cell("t1", "name")
+
+
+class TestTheLiveMute:
+    """``l`` is the unit's own Track pair as a chord -- the live mute."""
+
+    async def test_the_gate_closed_refuses_before_anything_is_sent(self):
+        called = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_live_mute=lambda: called.append(True),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert called == []
+            said = str(screen.query_one(".status", Static).content)
+            assert "refused" in said
+
+    async def test_an_armed_gate_hands_the_chord_to_the_app(self):
+        called = []
+        gate = EditGate(armed=True)
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_live_mute=lambda: called.append(True),
+                gate=gate,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert called == [True]
