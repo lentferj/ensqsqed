@@ -934,6 +934,8 @@ COMMANDS: Dict[str, Callable] = {
     "ports": _cmd_ports,
     "banks": _cmd_banks,
     "groups": _cmd_banks,
+    "regions": _cmd_banks,
+    "roms": _cmd_banks,
     "list": _cmd_list,
     "find": _cmd_find,
     "search": _cmd_find,

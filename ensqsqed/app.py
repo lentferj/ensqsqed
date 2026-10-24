@@ -63,8 +63,11 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Input, Static
 
 from ensqsqed.choices import ChoicePicker
+from ensqsqed.file_picker import FilePickerScreen, start_folder
 from ensqsqed.fx import FxScreen
 from ensqsqed.gate import EditGate
+from ensqsqed.import_bank import BankImportScreen
+from ensqsqed.import_single import SingleImportScreen
 from ensqsqed.multi import (
     COLUMN_VIEWS,
     ON_COLUMN,
@@ -76,6 +79,7 @@ from ensqsqed.remote import PANEL_KEYS as _PANEL_KEYS, RemoteScreen
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
+from sq import importer
 from sq import messages as msg
 from sq.bridge import AllPresetsDump, DeviceError, PresetMismatch
 from sq.favorites import Favorites, Favorite
@@ -88,6 +92,7 @@ from vinsynlib.ui.confirm import ConfirmScreen
 from vinsynlib.ui.hints import KeyHints
 from vinsynlib.ui.modals import (
     CategoryScreen,
+    ChoiceScreen,
     RatingFilter,
     RatingFilterScreen,
     SearchScreen,
@@ -123,6 +128,19 @@ VIEW_LABELS = {
     VIEW_ALL: "all slots",
     VIEW_BANK_FAVOURITES: "favourites in this bank",
     VIEW_ALL_FAVOURITES: "every favourite, all banks",
+}
+
+#: The writable sound groups an import can target, in the order the target
+#: choice lists them. ``ROM`` and ``DRUM`` are not writable, so they are
+#: never offered.
+_IMPORT_BANKS = ("INT", "CARDA", "CARDB")
+
+#: The panel's words for each writable group.  The wire takes the group id;
+#: every sentence a person reads uses these.
+_IMPORT_LABELS = {
+    "INT": "Internal (RAM)",
+    "CARDA": "Card A",
+    "CARDB": "Card B",
 }
 
 #: How long to let the unit load a selected sound before reading its name
@@ -214,22 +232,62 @@ class PromptScreen(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+class WaitScreen(ModalScreen[None]):
+    """A modal that says a long read or write is running.
+
+    It has no bindings on purpose: the operation it covers owns the
+    exchange, and dismissing it would leave a worker with nowhere to
+    report.  The caller pops it when the worker is done.
+    """
+
+    DEFAULT_CSS = """
+    WaitScreen { align: center middle; }
+    WaitScreen > Vertical {
+        width: 60; height: auto; border: thick $accent;
+        background: $surface; padding: 1 2;
+    }
+    WaitScreen .message { height: auto; text-style: bold; }
+    WaitScreen .note { height: auto; color: $text-muted; }
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+        from textual.widgets import Label, Static
+
+        with Vertical():
+            yield Label(self._message, classes="message")
+            yield Static(
+                "please wait — the unit is being read or written",
+                classes="note",
+                markup=False,
+            )
+
+
 #: The legend. Every binding the app has, in the order somebody meets them.
 #: Built from the family's shared legend rather than hand-written: it used
 #: to be a tuple of its own, in its own order. ``keys.legend`` puts this
 #: tool's own hints in the one place the family leaves for them -- after
-#: `n note`, before `i device` -- and this tool's are the preset editors
-#: (``m``, ``x``, ``p``), the scan key, the two rating keys, and the ones
-#: the write path adds (edit program, mix, global, mode select, gate,
-#: undo, undo all). ``w``/``z``/``Z`` are the family's canonical editor
-#: keys, spelled the family's way; this browser legend has no editor
-#: tier, so they are carried here as this tool's hints. `v` apart, every
-#: other key it binds is a shared one, which `_view_key` renames.
+#: `n note`, before `i device` -- and this tool's are the import key, the
+#: preset editors (``m``, ``x``, ``p``), the scan key, the two rating keys,
+#: and the ones the write path adds (edit program, mix, global, mode
+#: select, gate, undo, undo all). ``w``/``z``/``Z`` are the family's
+#: canonical editor keys, spelled the family's way; this browser legend has
+#: no editor tier, so they are carried here as this tool's hints. `v`
+#: apart, every other key it binds is a shared one, which `_view_key`
+#: renames.
 #:
-#: The three editor keys come first, the way the sibling nanosyned puts
-#: its own edit keys first: they are this tool's headline, and the
-#: family leaves the one place for a tool's own hints for exactly that.
+#: ``I import`` leads the list because it is the newest and most
+#: destructive surface: it replaces whole banks, so the eye should find it
+#: before the editors. The three editor keys follow, the way the sibling
+#: nanosyned puts its own edit keys first: they are this tool's headline,
+#: and the family leaves the one place for a tool's own hints for exactly
+#: that.
 WRITE_HINTS: tuple[str, ...] = (
+    "I import",
     "m multi",
     "x fx",
     "p preset list",
@@ -371,6 +429,10 @@ class EnsqsqedApp(App):
         Binding("m", "multi", "Multi"),
         Binding("x", "fx", "FX"),
         Binding("p", "preset_list", "Preset list"),
+        # `I` is the import: whole banks and single sounds from a `.syx` or
+        # `.mid`. It is destructive, so it is the browser's only capital
+        # `I` and its whole flow asks twice behind the write gate.
+        Binding("I", "import", "Import"),
         Binding("ctrl+o", "remote", "Remote"),
         Binding("slash", "search", "Search"),
         Binding("i", "device_info", "Device"),
@@ -461,6 +523,10 @@ class EnsqsqedApp(App):
         self._multi_screen: Optional[MultiScreen] = None
         self._fx_screen: Optional[FxScreen] = None
         self._remote_screen: Optional[RemoteScreen] = None
+        #: The single-sound import screen, while one is open.  A worker
+        #: that rereads the bank after a write reports back through this,
+        #: and a screen that has already closed is ``None``.
+        self._single_import_screen: Optional[SingleImportScreen] = None
         self._active_editor: Optional[EditorScreen] = None
         self._previous_editor: Optional[EditorScreen] = None
         #: The remote window's press queue (the wire is paced, so bursts
@@ -521,8 +587,15 @@ class EnsqsqedApp(App):
         #: would mean filling twice. An injected path only -- ``None``
         #: means a test that asked for silence and gets it.
         self._saved_slot_cursor: Optional[int] = None
+        #: The folder the last import file came from.  The picker opens
+        #: here next time; the *file* is never remembered.
+        self._import_folder: Optional[str] = None
+        #: The modal that covers a long bank read or write.
+        self._wait_screen: Optional["WaitScreen"] = None
         if self._config_path is not None:
             ui_state = cfg.load_ui_state(self._config_path)
+            if "import_folder" in ui_state:
+                self._import_folder = ui_state["import_folder"]
             if "bank_index" in ui_state:
                 idx = ui_state["bank_index"]
                 if 0 <= idx < len(self._bank_ids):
@@ -1151,7 +1224,7 @@ class EnsqsqedApp(App):
         if self._current:
             table.move_cursor(row=min(row, len(self._current) - 1))
 
-    def _save_ui_state(
+    def _save_ui_state(  # noqa: C901
         self,
         *,
         bank_index: Optional[int] = None,
@@ -1160,6 +1233,7 @@ class EnsqsqedApp(App):
         categories: Optional[list] = None,
         rating_stars: Optional[int] = None,
         rating_at_least: Optional[bool] = None,
+        import_folder: Optional[str] = None,
     ) -> None:
         """Persist UI state (bank position, slot cursor, view mode, categories).
 
@@ -1184,6 +1258,8 @@ class EnsqsqedApp(App):
                 changes["rating_stars"] = rating_stars
             if rating_at_least is not None:
                 changes["rating_at_least"] = rating_at_least
+            if import_folder is not None:
+                changes["import_folder"] = import_folder
             if changes:
                 cfg.save_ui_state(self._config_path, **changes)
         except OSError:
@@ -2751,6 +2827,13 @@ class EnsqsqedApp(App):
         )
         try:
             with self._busy_gate, self._lock:
+                # The scan is the moment the user expects every bank to be
+                # current.  INT is one fast dump, so read it here as well:
+                # a stale INT (from before an import) would otherwise look
+                # exactly like the factory ROM set and be mistaken for it.
+                internal = self._read_internal_for_scan()
+                if internal:
+                    self.call_from_thread(self._adopt_scanned, "INT", internal)
                 for group in groups:
                     names: Dict[int, str] = {}
                     last_name: Optional[str] = None
@@ -2812,6 +2895,18 @@ class EnsqsqedApp(App):
         else:
             self.notify_status(f"scan finished: {done} names read from the unit")
 
+    def _read_internal_for_scan(self) -> Optional[Dict[int, str]]:
+        """The fast Internal dump the scan reads beside the slow groups.
+
+        Returns names keyed 1-based, the way the catalog keys them, or
+        ``None`` when the dump failed (the scan itself still runs).
+        """
+        try:
+            internal = self.device.read_names()
+        except _BRIDGE_ERRORS:
+            return None
+        return {number + 1: text for number, text in internal.items()}
+
     def _adopt_scanned(self, group_id: str, names: Dict[int, str]) -> None:
         """Take a scanned group's names, persist them, redraw if showing."""
         for number, text in names.items():
@@ -2870,6 +2965,536 @@ class EnsqsqedApp(App):
             ),
             warn,
         )
+
+    # --- importing ----------------------------------------------------------
+
+    def action_import(self) -> None:
+        """``I``: import a whole bank or single sounds from a file.
+
+        The screen that follows is the only thing this key opens; the file
+        is not read until the user has typed a path, and nothing reaches
+        the wire until the write gate is armed and two confirmations have
+        been answered.  The two flows share the gate, the exchange and the
+        worker shape; they differ in what is sent.
+        """
+        self.push_screen(
+            ChoicePicker("Import", ["Whole bank", "Single sounds"], 0),
+            self._import_kind_chosen,
+        )
+
+    def _import_kind_chosen(self, kind: Optional[int]) -> None:
+        """The first choice list answered: open the file browser."""
+        if kind is None:
+            return
+        self.push_screen(
+            FilePickerScreen(start=self._import_folder or ""),
+            lambda path: self._import_path_chosen(kind, path),
+        )
+
+    def _import_path_chosen(self, kind: int, path: Optional[str]) -> None:
+        """Read the file the user picked, or say why it cannot be read."""
+        if not path:
+            return
+        # Remember the folder, never the file.
+        self._import_folder = start_folder(path)
+        self._save_ui_state(import_folder=self._import_folder)
+        try:
+            source = importer.read_import(path)
+        except (OSError, ValueError) as exc:
+            self.notify_status(f"import: {exc}", refused=True)
+            return
+        if kind == 1:
+            self._import_single_start(source)
+        else:
+            self._import_bank_start(source)
+
+    # --- whole-bank import --------------------------------------------------
+
+    def _import_bank_start(self, source: importer.ImportSource) -> None:
+        """Preview the file and ask which bank it replaces."""
+        if not source.is_full_bank:
+            self.notify_status(
+                f"import: {source.summary()}; the whole-bank flow needs all "
+                f"{banks.SOUNDS_PER_GROUP} sounds -- use the single-sound flow "
+                f"for a shorter file",
+                refused=True,
+            )
+            return
+        self.push_screen(
+            BankImportScreen(
+                path=source.path,
+                summary=source.summary(),
+                names=[sound.name for sound in source.sounds],
+                gate=self._gate,
+            ),
+            lambda target: self._bank_target_chosen(source, target),
+        )
+
+    def _bank_target_chosen(
+        self, source: importer.ImportSource, target: Optional[str]
+    ) -> None:
+        """The preview answered: ask the first confirmation, gate first."""
+        if target is None:
+            return
+        if not self._gate.armed:
+            self.notify_status(self._gate.refuse("the import"), refused=True)
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Send {len(source.sounds)} sounds into "
+                f"{_IMPORT_LABELS[target]} as one All-Sounds dump?",
+                confirm="Send",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok: self._bank_confirm(source, target, ok),
+        )
+
+    def _bank_confirm(
+        self, source: importer.ImportSource, target: str, ok: Optional[bool]
+    ) -> None:
+        """The first yes: ask the one that names what is destroyed."""
+        if not ok:
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Send {len(source.sounds)} sounds to "
+                f"{_IMPORT_LABELS[target]} now? Measured on this unit, a "
+                f"dump loads the edit buffer and does not store the bank — "
+                f"the panel's SAVE SOUND is still needed.",
+                confirm="Send anyway",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok2: self._bank_go(source, target, ok2),
+        )
+
+    def _bank_go(
+        self, source: importer.ImportSource, target: str, ok: Optional[bool]
+    ) -> None:
+        """The second yes: gate, exchange, worker."""
+        if not ok or not self._write_allowed_for_import():
+            return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("import: busy", refused=True)
+            return
+        self._wait_screen = WaitScreen(
+            f"Sending {len(source.sounds)} sounds to {_IMPORT_LABELS[target]}…"
+        )
+        self.push_screen(self._wait_screen)
+        sounds = {sound.index: sound.raw for sound in source.sounds}
+        self._import_worker("bank", target, sounds, source)
+
+    def _write_allowed_for_import(self) -> bool:
+        """The checks between the second confirmation and the wire.
+
+        Re-asking the gate here is the point: the confirmations can be
+        answered slowly, and ``w`` is a browser key that can lock the gate
+        while a modal is open.  The device check names the absence of a
+        write path rather than failing later inside a worker.
+        """
+        if not self._gate.armed:
+            self.notify_status(self._gate.refuse("the import"), refused=True)
+            return False
+        if not hasattr(self.device, "send_sound_bank"):
+            self.notify_status(
+                "import not sent: this device has no sound-write path",
+                refused=True,
+            )
+            return False
+        return True
+
+    # --- single-sound import ------------------------------------------------
+
+    def _import_single_start(self, source: importer.ImportSource) -> None:
+        """Ask which bank the single sounds go into, then read it.
+
+        ``ChoicePicker`` and not the raw shared ``ChoiceScreen``: the
+        latter's marker lags the focus and made the answer look wrong.
+        """
+        self.push_screen(
+            ChoicePicker(
+                "Target bank",
+                [_IMPORT_LABELS[group] for group in _IMPORT_BANKS],
+                0,
+            ),
+            lambda index: self._single_bank_chosen(source, index),
+        )
+
+    def _single_bank_chosen(
+        self, source: importer.ImportSource, index: Optional[int]
+    ) -> None:
+        """The bank choice answered: read its names, then open the map."""
+        if index is None:
+            return
+        target = _IMPORT_BANKS[index]
+        if not hasattr(self.device, "read_bank_names"):
+            self.notify_status("import: this device cannot read banks", refused=True)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("import: busy", refused=True)
+            return
+        # The card read is a per-slot scan and can take a minute.  Cover
+        # the wait; the worker pops it when the map is ready.
+        self._wait_screen = WaitScreen(
+            f"Reading {_IMPORT_LABELS[target]}… this can take a minute"
+        )
+        self.push_screen(self._wait_screen)
+        self._open_single_worker(source, target)
+
+    def _pop_wait(self) -> None:
+        """Dismiss the wait modal, if one is up."""
+        screen = self._wait_screen
+        self._wait_screen = None
+        if screen is None:
+            return
+        try:
+            self.pop_screen()
+        except Exception:  # pragma: no cover - already gone
+            return
+
+    @work(thread=True)
+    def _open_single_worker(self, source: importer.ImportSource, target: str) -> None:
+        """**MIDI only** -- read the target bank's names for the right pane."""
+        failure: Optional[BaseException] = None
+        names: Optional[Dict[int, str]] = None
+        try:
+            with self._busy_gate, self._lock:
+                names = self.device.read_bank_names(target)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._open_single_done, source, target, names, failure)
+
+    def _open_single_done(
+        self,
+        source: importer.ImportSource,
+        target: str,
+        names: Optional[Dict[int, str]],
+        failure: Optional[BaseException],
+    ) -> None:
+        """The bank has been read: open the two-pane map.  Main thread."""
+        self._pop_wait()
+        if failure is not None:
+            self.notify_status(f"import: {failure}", refused=True)
+            return
+        screen = SingleImportScreen(
+            path=source.path,
+            summary=source.summary(),
+            sounds=[(sound.index, sound.name) for sound in source.sounds],
+            target=target,
+            listing=sorted((names or {}).items()),
+            on_bank_change=self._single_bank_change,
+            gate=self._gate,
+        )
+        self._single_import_screen = screen
+        self.push_screen(screen, lambda result: self._single_start(source, result))
+
+    def _single_bank_change(self, target: str) -> None:
+        """The screen's ``b``: read the newly chosen bank in a worker."""
+        if not self._exchange.acquire(blocking=False):
+            screen = self._single_import_screen
+            if screen is not None:
+                screen.say("import: busy; the bank was not reread", refused=True)
+            return
+        self._reload_single_worker(target)
+
+    @work(thread=True)
+    def _reload_single_worker(self, target: str) -> None:
+        """**MIDI only** -- the right pane's fresh read after ``b``."""
+        failure: Optional[BaseException] = None
+        names: Optional[Dict[int, str]] = None
+        try:
+            with self._busy_gate, self._lock:
+                names = self.device.read_bank_names(target)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._reload_single_done, target, names, failure)
+
+    def _reload_single_done(
+        self,
+        target: str,
+        names: Optional[Dict[int, str]],
+        failure: Optional[BaseException],
+    ) -> None:
+        """Hand the fresh listing back to the open map.  Main thread."""
+        screen = self._single_import_screen
+        if screen is None:
+            return
+        if failure is not None:
+            screen.say(f"read {target}: {failure}", refused=True)
+            return
+        screen.set_bank(target, sorted((names or {}).items()))
+
+    def _single_start(
+        self,
+        source: importer.ImportSource,
+        result: Optional[Tuple[str, Dict[int, int]]],
+    ) -> None:
+        """The map answered: turn it into a slot map and ask to write."""
+        self._single_import_screen = None
+        if result is None:
+            return
+        target, assignments = result
+        if not assignments:
+            return
+        by_index = {sound.index: sound.raw for sound in source.sounds}
+        writes = {slot: by_index[index] for index, slot in assignments.items()}
+        if not self._gate.armed:
+            self.notify_status(self._gate.refuse("the import"), refused=True)
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Write {len(writes)} sound(s) into {_IMPORT_LABELS[target]} at "
+                f"slots {', '.join(f'{slot:02d}' for slot in sorted(writes))}?",
+                confirm="Write",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok: self._single_confirm(source, target, writes, ok),
+        )
+
+    def _single_confirm(
+        self,
+        source: importer.ImportSource,
+        target: str,
+        writes: Dict[int, bytes],
+        ok: Optional[bool],
+    ) -> None:
+        """The first yes: ask again, naming the slots that are overwritten."""
+        if not ok:
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Really overwrite those {len(writes)} slot(s) in "
+                f"{_IMPORT_LABELS[target]}? This cannot be undone.",
+                confirm="Overwrite",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok2: self._single_go(source, target, writes, ok2),
+        )
+
+    def _single_go(
+        self,
+        source: importer.ImportSource,
+        target: str,
+        writes: Dict[int, bytes],
+        ok: Optional[bool],
+    ) -> None:
+        """The second yes: gate, exchange, worker."""
+        if not ok or not self._write_allowed_for_import():
+            return
+        if not hasattr(self.device, "send_sound_slots"):
+            self.notify_status(
+                "import not sent: this device has no sound-write path",
+                refused=True,
+            )
+            return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("import: busy", refused=True)
+            return
+        self._wait_screen = WaitScreen(
+            f"Sending {len(writes)} sound(s) to {_IMPORT_LABELS[target]}…"
+        )
+        self.push_screen(self._wait_screen)
+        self._import_worker("single", target, writes, source)
+
+    # --- the one import worker ----------------------------------------------
+
+    @work(thread=True)
+    def _import_worker(
+        self,
+        mode: str,
+        target: str,
+        writes: Dict[int, bytes],
+        source: importer.ImportSource,
+    ) -> None:
+        """**MIDI only** -- the write, verified where the unit allows it."""
+        failure: Optional[BaseException] = None
+        result: Any = None
+        try:
+            with self._busy_gate, self._lock:
+                if mode == "bank":
+                    result = self.device.send_sound_bank(target, writes)
+                else:
+                    result = self.device.send_sound_slots(target, writes)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(
+            self._import_done, mode, target, writes, source, result, failure
+        )
+
+    def _import_done(
+        self,
+        mode: str,
+        target: str,
+        writes: Dict[int, bytes],
+        source: importer.ImportSource,
+        result: Any,
+        failure: Optional[BaseException],
+    ) -> None:
+        """Say what the import did, and reread a single-sound target.
+
+        A bank write is the whole answer: the unit's read-back is the
+        verification, and INT is the only bank that can be dumped.  A
+        single-sound write reopens the map over a fresh read, because the
+        point of that flow is to keep assigning into the same bank.
+        """
+        if failure is not None:
+            self._pop_wait()
+            self.notify_status(f"import not sent: {failure}", refused=True)
+            return
+        verified = getattr(result, "verified", False)
+        diffs = getattr(result, "diff_slots", ())
+        if mode == "bank":
+            self._pop_wait()
+            if verified:
+                message = (
+                    f"imported {len(writes)} sound(s) into "
+                    f"{_IMPORT_LABELS[target]} (verified)"
+                )
+            else:
+                message = (
+                    f"sent {len(writes)} sound(s) to {_IMPORT_LABELS[target]}; "
+                    f"the read-back did not change — the unit did not store "
+                    f"the bank (SAVE SOUND is still a panel act)"
+                )
+            if diffs:
+                message += f"; {len(diffs)} slot(s) differ"
+            self.notify_status(message)
+            self._start_bank_refresh(target)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self._pop_wait()
+            self.notify_status(
+                f"imported into {_IMPORT_LABELS[target]}; bank busy, not reread",
+                refused=True,
+            )
+            return
+        self._reopen_after_import_worker(source, target, verified)
+
+    def _start_bank_refresh(self, target: str) -> None:
+        """Reread an imported bank so the browser shows what is there now.
+
+        RAM is one dump; a card is a per-slot scan, so the wait screen is
+        pushed before the worker rather than after.
+        """
+        if not hasattr(self.device, "read_bank_names"):
+            return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status(
+                "import done; the bank is busy, not reread", refused=True
+            )
+            return
+        self._wait_screen = WaitScreen(f"Reading back {_IMPORT_LABELS[target]}…")
+        self.push_screen(self._wait_screen)
+        self._refresh_bank_worker(target)
+
+    @work(thread=True)
+    def _refresh_bank_worker(self, target: str) -> None:
+        """**MIDI only** -- the read behind the imported bank's refresh."""
+        failure: Optional[BaseException] = None
+        names: Optional[Dict[int, str]] = None
+        try:
+            with self._busy_gate, self._lock:
+                names = self.device.read_bank_names(target)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(self._refresh_bank_done, target, names, failure)
+
+    def _refresh_bank_done(
+        self,
+        target: str,
+        names: Optional[Dict[int, str]],
+        failure: Optional[BaseException],
+    ) -> None:
+        """Adopt the freshly read bank into the browser.  Main thread."""
+        self._pop_wait()
+        if failure is not None:
+            self.notify_status(f"import done; reread failed: {failure}", refused=True)
+            return
+        self._adopt_bank_names(target, names)
+        self.notify_status(f"{_IMPORT_LABELS[target]} reread — the browser is current")
+
+    def _adopt_bank_names(self, target: str, names: Optional[Dict[int, str]]) -> None:
+        """Make one bank's names the catalog's live names, and redraw.
+
+        ``names`` comes from :meth:`read_bank_names`, whose keys are the
+        zero-based slots the dump uses; the catalog keys on the panel's
+        one-based number, so the slot is shifted here.
+        """
+        for number, name in (names or {}).items():
+            self.catalog.set_live_name(target, number + 1, name)
+        if self.favorites is not None:
+            self.favorites.refresh_names(
+                lambda bank, number: self.catalog.live_name(bank, number)
+            )
+        if self._current_bank == target:
+            self._refill_keeping_place()
+        self._update_subtitle()
+
+    @work(thread=True)
+    def _reopen_after_import_worker(
+        self, source: importer.ImportSource, target: str, verified: bool
+    ) -> None:
+        """**MIDI only** -- the fresh read behind the reopened map."""
+        failure: Optional[BaseException] = None
+        names: Optional[Dict[int, str]] = None
+        try:
+            with self._busy_gate, self._lock:
+                names = self.device.read_bank_names(target)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self.call_from_thread(
+            self._reopen_after_import_done, source, target, names, failure, verified
+        )
+
+    def _reopen_after_import_done(
+        self,
+        source: importer.ImportSource,
+        target: str,
+        names: Optional[Dict[int, str]],
+        failure: Optional[BaseException],
+        verified: bool,
+    ) -> None:
+        """Open the map again over the bank as it now is.  Main thread."""
+        self._pop_wait()
+        if failure is not None:
+            self.notify_status(
+                f"imported into {_IMPORT_LABELS[target]}; reread failed: {failure}",
+                refused=True,
+            )
+            return
+        self._adopt_bank_names(target, names)
+        screen = SingleImportScreen(
+            path=source.path,
+            summary=source.summary(),
+            sounds=[(sound.index, sound.name) for sound in source.sounds],
+            target=target,
+            listing=sorted((names or {}).items()),
+            on_bank_change=self._single_bank_change,
+            gate=self._gate,
+        )
+        self._single_import_screen = screen
+        self.push_screen(screen, lambda result: self._single_start(source, result))
+        if verified:
+            where = f"stored and verified in {_IMPORT_LABELS[target]}"
+        else:
+            where = (
+                f"loaded into the edit buffer, not stored in "
+                f"{_IMPORT_LABELS[target]}; the unit's SAVE SOUND is still needed"
+            )
+        self.notify_status(f"{where}; the pane was reread")
 
     # --- search -------------------------------------------------------------
 
@@ -3081,6 +3706,7 @@ Keys
   m         the eight tracks of the preset (Multi editor)
   x         the preset's effect (FX editor)
   p         the list of the eighty presets
+  I         import a bank or single sounds from a .syx / .mid
   z Z       undo, undo all
   w         toggle write gate (armed by --allow-write)
   S         learn ROM/Card/Drum names (selects each sound; asks first)
@@ -3107,6 +3733,20 @@ The preset editor
 
   `z` puts the previous preset back, the whole of it. The editors are
   behind the write gate, so arm it with `w` before editing.
+
+Importing sounds
+
+  `I` reads an All-Sounds dump -- a .syx or the .mid that carries the
+  same SysEx -- and writes it into a writable bank. "Whole bank" previews
+  all eighty sounds and replaces one of Internal (RAM), Card A or Card B
+  after two confirmations. "Single sounds" opens a two-pane map: assign a
+  target slot (00-79) to any number of the file's sounds, then ctrl+s.
+
+  Every write needs the write gate armed (`w`), and both flows ask twice.
+  The sound-write path is new and best-effort, not measured like the
+  preset path: Internal RAM is read back and verified, but Card A and
+  Card B cannot be dumped, so after a card write the pane is rebuilt from
+  a per-slot scan and the write itself is unverified.
 """
 
 

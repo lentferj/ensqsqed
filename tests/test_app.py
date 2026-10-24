@@ -300,3 +300,32 @@ class TestDeviceInfo:
             # unbalanced release would have raised inside the worker and
             # the lock would still be held.
             assert app._exchange.locked() is False
+
+
+class TestTheScanRefreshesInternalToo:
+    """``S`` must not leave INT stale behind the groups it scans.
+
+    A stale INT and the factory ROM bank carry the same names, so an
+    unrefreshed INT makes ROM look as though it were reading INT.  The
+    scan reads INT by its fast dump and adopts it beside the slow groups.
+    """
+
+    async def test_a_scan_adopts_the_internal_names(self, app, monkeypatch):
+        from ensqsqed import app as app_module
+        from ensqsqed.demo import demo_name
+
+        monkeypatch.setattr(app_module, "SCAN_SETTLE", 0.0)
+        app.catalog.set_live_name("INT", 1, "stale before the scan")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_scan_device()
+            await pilot.pause()
+            await pilot.press("y")  # the scan confirmation
+            for _ in range(4000):
+                if not app._scanning:
+                    break
+                await pilot.pause()
+
+            assert not app._scanning
+            assert app.catalog.live_name("INT", 1) == demo_name("INT", 0)

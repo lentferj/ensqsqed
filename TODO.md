@@ -118,12 +118,22 @@ interface rather than global.
 unit's SysEx device byte uses, and on this single-timbral instrument that
 is the same number as the send channel.
 
-What remains open: a sound-write path. Ensoniq's specification v1.43
-documents only dump *requests* (commands 01-05) — nothing that stores a
-sound — so `tests/test_hardware.py` still skips its sound-write test with
-that reason. A preset write path exists now (RESOLUTION_NOTES §11): it
-sends a whole preset to the unit's **Edit Preset** buffer, and stores
-nothing without the unit's ENTER.
+The sound-write path is implemented — `send_sound_bank` (one All-Sounds
+dump, fallback to per-slot sends) and `send_sound_slots` (Single Sound
+dumps, slot by slot) — behind the write gate and two confirmations in the
+browser's `I` import. **Measured on the bench 2026-10-24:** a type-02 Single
+Sound Dump sent to a selected Internal slot is accepted and lands in the
+**edit buffer**, but the **stored bank is unchanged**; the type-03 All-Sounds
+message (32647 bytes) is **rejected by the ALSA port** on this rig, so the
+whole-bank send falls back to per-slot sends. A sound import therefore
+*loads* the sounds (the edit buffer holds them) and **still needs the panel's
+SAVE SOUND to store them**. The hardware suite pins this behind
+`ENSQSQED_HW_BANK_WRITE=1` (`TestHardwareSoundBankWrite`): the edit-buffer
+write passes, the stored-bank write is a strict xfail, and the large message
+is recorded as rejected. `tools/probe_sound_write.py` reproduces the
+measurement. **Open:** find a store path (the panel's SAVE SOUND over virtual
+buttons, or a different inbound message) so the import can persist; **Card
+A/B remain unverified** and their reread is a per-slot scan.
 
 
 ## 2. The four captured command messages — RESOLVED

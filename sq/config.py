@@ -123,7 +123,8 @@ def load_backup_root(path: Optional[str] = None) -> str:
 
 
 def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load UI state: bank index, slot cursor, view mode, categories, rating filter."""
+    """Load UI state: bank index, slot cursor, view mode, categories,
+    rating filter and the remembered import folder."""
     data = _settings.read(path)[0]
     result: Dict[str, Any] = {}
     if "bank_index" in data and isinstance(data["bank_index"], int):
@@ -151,6 +152,12 @@ def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:
     dismissed = data.get("scan_offer_dismissed")
     if type(dismissed) is bool:
         result["scan_offer_dismissed"] = dismissed
+    # The import folder is a path, so only a string is accepted;
+    # `import_folder = true` is a hand edit, not a folder, and is
+    # ignored rather than joined onto as if it were a directory.
+    import_folder = data.get("import_folder")
+    if isinstance(import_folder, str):
+        result["import_folder"] = import_folder
     return result
 
 
@@ -164,6 +171,7 @@ def save_ui_state(
     rating_stars: Any = UNSET,
     rating_at_least: Any = UNSET,
     scan_offer_dismissed: Any = UNSET,
+    import_folder: Any = UNSET,
 ) -> None:
     """Save UI state (bank position, slot cursor, view mode, categories).
 
@@ -182,6 +190,7 @@ def save_ui_state(
         ("rating_stars", rating_stars),
         ("rating_at_least", rating_at_least),
         ("scan_offer_dismissed", scan_offer_dismissed),
+        ("import_folder", import_folder),
     ):
         if value is not UNSET:
             changes[key] = value

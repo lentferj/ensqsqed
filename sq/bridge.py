@@ -89,6 +89,11 @@ here on purpose.
 
 from __future__ import annotations
 
+import os
+import re
+import struct
+import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -123,6 +128,9 @@ __all__ = [
     "ACK_WINDOW",
     "PRESET_SETTLE",
     "BUTTON_GAP",
+    "SCAN_SETTLE",
+    "SoundBankWrite",
+    "WRITABLE_SOUND_GROUPS",
 ]
 
 
@@ -249,6 +257,11 @@ ACK_WINDOW = 1.0
 #: (``tools/probe_preset_write.py``) waited half a second for it, and
 #: this is that half second: no more, and no less.
 PRESET_SETTLE = 0.5
+
+#: How long to let a sound slot settle after selecting it, before asking
+#: the unit to dump the sound now current. The per-slot card scan needs
+#: this; the INT bank dump does not select anything.
+SCAN_SETTLE = 0.08
 
 #: The alert's sequence/song flag: 0 is a sequence and 255 is a song
 #: (specification section 3.1.7). A preset edit is a sequence.
@@ -504,6 +517,38 @@ class PresetSent:
     diff_offsets: Tuple[int, ...]
     #: What the unit held after the send, when it was read back.
     read_back: Optional[CurrentPreset] = None
+
+
+@dataclass(frozen=True)
+class SoundBankWrite:
+    """What one sound-bank write did.
+
+    ``slots_written`` is the target slots that were addressed, in
+    ascending order. ``verified`` is true only for INT, where the bank
+    can be read back cheaply; cards are not dumpable, so their writes
+    are unverified. ``diff_slots`` names the slots that differed on the
+    read-back (INT only). ``read_back`` carries the re-read bank when
+    verification ran.
+
+    **Measured 2026-10-24 on an SQ-R Plus (base channel 11):** a type-02
+    Single Sound Dump sent to a selected slot is accepted and lands in
+    the **edit buffer** -- ``read_current_sound`` returns the sent bytes
+    -- but the **stored** bank is unchanged. ``send_sound_slots`` reads
+    the stored bank for verification and therefore reports
+    ``verified=False`` with the slot in ``diff_slots``. Storing still
+    needs the panel's SAVE SOUND. The type-03 All Sounds Dump (32647
+    bytes) is rejected by the ALSA port on this rig, which is why
+    :meth:`SqBridge.send_sound_bank` falls back to per-slot sends.
+    """
+
+    group: str
+    slots_written: Tuple[int, ...]
+    verified: bool
+    diff_slots: Tuple[int, ...]
+    read_back: Optional[Dict[int, bytes]] = None
+
+
+WRITABLE_SOUND_GROUPS = ("INT", "CARDA", "CARDB")
 
 
 @dataclass(frozen=True)
@@ -1112,6 +1157,37 @@ class SqBridge:
 
     # --- reading, all of it silent -----------------------------------------
 
+    def read_bank(
+        self, group_id: str, *, timeout: Optional[float] = None
+    ) -> Dict[int, bytes]:
+        if group_id not in WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+        if group_id == "INT":
+            return self.read_internal_bank(timeout=timeout)
+        # Cards are not dumpable, so a bank read is a per-slot scan.
+        out: Dict[int, bytes] = {}
+        for slot_number in range(banks.SOUNDS_PER_GROUP):
+            self.select(banks.slot(group_id, slot_number + 1))
+            time.sleep(SCAN_SETTLE)
+            out[slot_number] = self.read_current_sound(timeout=timeout)
+        return out
+
+    def read_bank_names(
+        self, group_id: str, *, timeout: Optional[float] = None
+    ) -> Dict[int, str]:
+        if group_id not in WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+        return {
+            number: m.sound_name(record).rstrip()
+            for number, record in self.read_bank(group_id, timeout=timeout).items()
+        }
+
     def read_internal_bank(
         self, *, timeout: Optional[float] = None
     ) -> Dict[int, bytes]:
@@ -1219,6 +1295,193 @@ class SqBridge:
             timeout=ALL_PRESETS_TIMEOUT if timeout is None else timeout,
         )
         return AllPresetsDump._from_reply(data, alert)
+
+    # --- sound bank writes ---------------------------------------------------
+
+    def _sound_at(self, sounds: Any, index: int) -> bytes:
+        if isinstance(sounds, dict):
+            return sounds[index]
+        return sounds[index]
+
+    def send_sound_slots(
+        self,
+        group_id: str,
+        assignments: Any,
+        *,
+        verify: bool = True,
+        timeout: Optional[float] = None,
+    ) -> "SoundBankWrite":
+        if group_id not in WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+        if not isinstance(assignments, dict):
+            assignments = {
+                index: assignments[index] for index in range(len(assignments))
+            }
+        slots_written = tuple(sorted(assignments))
+        for slot_number in slots_written:
+            self.select(banks.slot(group_id, slot_number + 1))
+            raw = assignments[slot_number]
+            self._out.send_message(
+                list(
+                    m.frame(
+                        m.Function.SINGLE_SOUND_DUMP,
+                        m.to_nibbles(raw),
+                        device=self.channel,
+                    )
+                )
+            )
+        if group_id == "INT" and verify:
+            read_back = self.read_bank(group_id, timeout=timeout)
+            diff_slots = tuple(
+                slot_number
+                for slot_number in slots_written
+                if read_back.get(slot_number) != assignments[slot_number]
+            )
+            verified = len(diff_slots) == 0
+            return SoundBankWrite(
+                group=group_id,
+                slots_written=slots_written,
+                verified=verified,
+                diff_slots=diff_slots,
+                read_back=read_back,
+            )
+        return SoundBankWrite(
+            group=group_id,
+            slots_written=slots_written,
+            verified=False,
+            diff_slots=(),
+            read_back=None,
+        )
+
+    def _send_all_sounds_frame(self, frame: bytes) -> str:
+        """Send one All Sounds frame; return which transport carried it.
+
+        The 32647-byte frame is one ALSA SysEx event, and this rig's
+        sequencer output buffer refuses it through ``send_message``.  The
+        normal path is still tried first; when it raises, the frame is
+        wrapped in a one-event Standard MIDI File and handed to
+        ``aplaymidi``, which chunks the SysEx for us -- the path that
+        works here (measured 2026-10-24).  Raises :class:`DeviceError`
+        when neither transport could carry it.
+        """
+        try:
+            self._out.send_message(list(frame))
+            return "midi"
+        except Exception as exc:  # the port refused the large event
+            weak = exc
+        if self._send_frame_as_smf(frame):
+            return "aplaymidi"
+        raise DeviceError(
+            "the port cannot carry the 32647-byte All Sounds message, and "
+            "the aplaymidi fallback is unavailable or failed; the "
+            "whole-bank import was not sent"
+        ) from weak
+
+    def _send_frame_as_smf(self, frame: bytes) -> bool:
+        """Deliver a large SysEx through ``aplaymidi``, if it is installed."""
+        match = re.search(r"(\d+):(\d+)\s*$", self.port or "")
+        if match is None:
+            return False
+        destination = f"{match.group(1)}:{match.group(2)}"
+        payload = frame[1:]  # everything after F0, the terminating F7 included
+
+        def vlq(number: int) -> bytes:
+            out = bytearray([number & 0x7F])
+            number >>= 7
+            while number:
+                out.insert(0, 0x80 | (number & 0x7F))
+                number >>= 7
+            return bytes(out)
+
+        track = b"\x00\xf0" + vlq(len(payload)) + payload + b"\x00\xff\x2f\x00"
+        smf = (
+            b"MThd"
+            + struct.pack(">IHHH", 6, 0, 1, 96)
+            + b"MTrk"
+            + struct.pack(">I", len(track))
+            + track
+        )
+        path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as handle:
+                handle.write(smf)
+                path = handle.name
+            result = subprocess.run(  # noqa: S603
+                ["aplaymidi", "-p", destination, path],  # noqa: S607
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+        finally:
+            if path is not None:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def send_sound_bank(
+        self,
+        group_id: str,
+        sounds: Any,
+        *,
+        verify: bool = True,
+        timeout: Optional[float] = None,
+    ) -> "SoundBankWrite":
+        """Send the whole bank as **one** All Sounds dump.
+
+        This is what ``amidi -s`` sends: one 32647-byte frame, no
+        preceding program change (measured 2026-10-24).  It deliberately
+        does **not** fall back to per-slot Single Sound dumps: those land
+        in the edit buffer only, and a bank of them leaves the unit
+        showing "Press ENTER to save" with nothing stored.  The read-back
+        still decides what happened, and the caller must report it
+        honestly.
+        """
+        if group_id not in WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+        if group_id != "INT":
+            # The all-sounds dump has no bank field; the group selector is
+            # the only way to name a card, and it is sent before the dump.
+            selector = banks.group(group_id).selector
+            self._out.send_message([0xC0 | self.channel, selector])
+        payload = b"".join(
+            m.to_nibbles(self._sound_at(sounds, index))
+            for index in range(banks.SOUNDS_PER_GROUP)
+        )
+        frame = m.frame(m.Function.ALL_SOUNDS_DUMP, payload, device=self.channel)
+        slots_written = tuple(range(banks.SOUNDS_PER_GROUP))
+        self._send_all_sounds_frame(frame)
+        if group_id == "INT" and verify:
+            read_back = self.read_bank(group_id, timeout=timeout)
+            diff_slots = tuple(
+                index
+                for index in range(banks.SOUNDS_PER_GROUP)
+                if read_back.get(index) != self._sound_at(sounds, index)
+            )
+            verified = len(diff_slots) == 0
+            return SoundBankWrite(
+                group=group_id,
+                slots_written=slots_written,
+                verified=verified,
+                diff_slots=diff_slots,
+                read_back=read_back,
+            )
+        return SoundBankWrite(
+            group=group_id,
+            slots_written=slots_written,
+            verified=False,
+            diff_slots=(),
+            read_back=None,
+        )
 
     # --- writing, which stores into the unit's selected slot ----------------
 

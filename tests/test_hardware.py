@@ -46,6 +46,7 @@ makes a sound, and nothing in this file needs the unit to play anything.
 """
 
 import os
+import time
 
 import pytest
 
@@ -374,3 +375,166 @@ class TestHardwareWrite:
         #         f"write: the original bytes of internal sound "
         #         f"{self.WRITE_SOUND} are restored and verified by read-back"
         #     )
+
+
+class TestHardwareSoundBankWrite:
+    """The RAM sound write, measured. **Destructive: heavy gate.**
+
+    **The gate.** ``--hardware`` gets here, the unit answering gets the
+    fixture past its probe, and ``ENSQSQED_HW_BANK_WRITE=1`` gets this class
+    past its own skip. That last one is separate from the ordinary
+    ``ENSQSQED_HW_WRITE`` because this class writes sound memory. Back the
+    unit up first: the class snapshots the bank and restores it in a
+    ``finally``, but a restore that cannot be verified is still a restore
+    that did not happen.
+
+    **What was measured on 2026-10-24** (one SQ-R Plus, base channel 11,
+    crosswise on an ESI M4U eX):
+
+    * A type-02 Single Sound Dump sent to a selected Internal slot is
+      **accepted** and lands in the **edit buffer** -- ``read_current_sound``
+      returns the bytes that were sent.
+    * It does **not** reach the **stored** bank: the all-sounds dump (stored
+      memory) is unchanged, so ``send_sound_slots(..., verify=True)`` reports
+      ``verified=False`` and ``diff_slots=(slot,)``.
+    * The type-03 All Sounds Dump (32647 bytes) is **rejected by the ALSA
+      port** (``MidiOutAlsa::sendMessage`` ``SystemError``), so the
+      whole-bank single-message path is not transportable here -- the same
+      finding as the bulk All-Sequences write.
+
+    So a sound import currently loads the edit buffer and **still needs the
+    panel's SAVE SOUND to store it**. The tests below pin exactly that:
+    the edit-buffer write passes, the stored-bank write is a strict
+    ``xfail`` that will flag the day the unit starts storing, and the large
+    message is recorded as not transportable.
+
+    **No name is printed.** The slot's name is the owner's data; the tests
+    print which byte moved and whether the read-back matched, never the text.
+    """
+
+    #: The slot this class writes. Never asserted on by name.
+    SLOT = 0
+
+    #: The byte that is moved: the first byte of the packed seven-bit name
+    #: (``messages.NAME_OFFSET``). One bit is enough to be a different byte
+    #: and is still a valid name byte.
+    NAME_BYTE = m.NAME_OFFSET
+
+    @staticmethod
+    def _require_gate() -> None:
+        if not os.environ.get("ENSQSQED_HW_BANK_WRITE"):
+            pytest.skip(
+                "the sound-bank write tests need ENSQSQED_HW_BANK_WRITE=1: "
+                "they write Internal sound memory, which every other "
+                "hardware test leaves alone. Back the unit up first."
+            )
+
+    @staticmethod
+    def _changed(record: bytes) -> bytes:
+        """``record`` with one name byte moved, and the same length."""
+        changed = bytearray(record)
+        changed[TestHardwareSoundBankWrite.NAME_BYTE] ^= 0x01
+        return bytes(changed)
+
+    @staticmethod
+    def _restore(device, slot: int, original: bytes, snapshot) -> None:
+        """Put the edit buffer and the stored bank back, and say so."""
+        device.send_sound_slots("INT", {slot: original}, verify=False)
+        restored = device.read_bank("INT")
+        assert restored == snapshot, (
+            "internal bank: the restore did not read back as the snapshot "
+            "-- the unit may still hold the test name; restore from the "
+            "backup"
+        )
+
+    def test_read_bank_is_the_internal_bank(self, device) -> None:
+        """``read_bank("INT")`` and ``read_internal_bank`` are one bank."""
+        self._require_gate()
+        assert device.read_bank("INT") == device.read_internal_bank()
+
+    def test_a_single_sound_dump_reaches_the_edit_buffer(self, device) -> None:
+        """The dump is accepted: ``read_current_sound`` sees the new bytes.
+
+        This is the half that works. The stored bank is asserted unchanged
+        afterwards, because that is the measured behaviour (see the class
+        docstring); the byte is put back through the edit buffer and the bank
+        is checked against the snapshot in the ``finally``.
+        """
+        self._require_gate()
+        snapshot = device.read_internal_bank()
+        original = snapshot[self.SLOT]
+        changed = self._changed(original)
+        try:
+            device.send_sound_slots("INT", {self.SLOT: changed}, verify=False)
+            current = device.read_current_sound()
+            print(
+                f"\nsound-bank edit buffer slot {self.SLOT}: "
+                f"byte {self.NAME_BYTE} moved; "
+                f"edit buffer changed={current == changed}"
+            )
+            assert current == changed, (
+                f"internal slot {self.SLOT}: the single-sound dump was not "
+                f"loaded into the edit buffer"
+            )
+        finally:
+            self._restore(device, self.SLOT, original, snapshot)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "measured 2026-10-24: a type-02 single-sound dump reaches the "
+            "edit buffer but does not store into the Internal bank; the "
+            "panel's SAVE SOUND is still needed"
+        ),
+    )
+    def test_a_single_sound_dump_is_stored_in_the_bank(self, device) -> None:
+        """The stored bank changes after the dump. **Currently does not.**
+
+        Strict ``xfail`` on purpose: this is the day the unit starts storing,
+        and the assertion is the whole point of the import feature. If it
+        ever passes, XPASS fails and says so rather than quietly going green.
+        """
+        self._require_gate()
+        snapshot = device.read_internal_bank()
+        original = snapshot[self.SLOT]
+        changed = self._changed(original)
+        try:
+            result = device.send_sound_slots("INT", {self.SLOT: changed}, verify=True)
+            stored = result.read_back or device.read_bank("INT")
+            print(
+                f"\nsound-bank stored slot {self.SLOT}: "
+                f"changed={stored[self.SLOT] == changed}, "
+                f"verified={result.verified}, diff_slots={result.diff_slots}"
+            )
+            assert stored[self.SLOT] == changed, (
+                f"internal slot {self.SLOT}: the changed byte is not in the "
+                f"stored bank after the write; the unit did not store the "
+                f"single-sound dump (diff_slots={result.diff_slots})"
+            )
+        finally:
+            self._restore(device, self.SLOT, original, snapshot)
+
+    def test_the_whole_bank_message_is_not_transportable(self, device) -> None:
+        """The 32647-byte type-03 message: record whether the port takes it.
+
+        The honest check the feature needs: if the port rejects it (measured
+        2026-10-24 on this rig), ``send_sound_bank`` falls back to per-slot
+        single dumps, and those do not store. Whatever happens, the bank must
+        be unchanged -- a bank message is not allowed to half-land.
+        """
+        self._require_gate()
+        snapshot = device.read_internal_bank()
+        payload = b"".join(m.to_nibbles(snapshot[i]) for i in range(80))
+        frame = m.frame(m.Function.ALL_SOUNDS_DUMP, payload, device=device.channel)
+        device._out.send_message([0xC0 | device.channel, 124])
+        time.sleep(0.3)
+        try:
+            device._out.send_message(list(frame))
+            outcome = "accepted by the port"
+        except Exception as exc:
+            outcome = f"rejected by the port ({type(exc).__name__})"
+        time.sleep(0.5)
+        print(f"\nsound-bank whole message ({len(frame)} bytes): {outcome}")
+        assert device.read_bank("INT") == snapshot, (
+            "the whole-bank message changed a bank it was re-sending"
+        )

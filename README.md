@@ -230,6 +230,7 @@ database with ratings, tags and notes.
   m multi tracks
   x effect
   p preset list
+  I import
   t tags
   n note
   z undo
@@ -441,6 +442,61 @@ bytes, and the unit's selection was left on Preset-02. The owner's own
 `.sqs` / `.syx` files are the restore source; the run's backup of the memory
 as it was at 20:35 that evening is in `~/temp/sqr_backup/20261021-203542/`.
 The details are in `docs/BUTTON-MAP.md` §8.
+
+## Importing banks and sounds
+
+`I` opens a **file browser** (it remembers the folder you last loaded from,
+never the file) and reads an **All-Sounds dump** — the 32647-byte `.syx`,
+or the `.mid` that carries the same SysEx. It offers two flows over the
+three writable groups: Internal (RAM), Card A or Card B. **`ctrl+s` starts
+either flow**; the preview screens show a progress line, and a long bank
+read or write is covered by a "please wait" screen.
+
+- **Whole bank** previews every sound in the file by number and name, then
+  sends the chosen bank.
+- **Single sounds** opens a two-pane map. The left pane lists the file's
+  sounds with a `target` slot beside each; `⏎` on a row (or typing a digit)
+  asks for a target slot from `00` to `79`, and target slots must be unique —
+  a duplicate or out-of-range slot is refused with a sentence and nothing is
+  written. `b` switches the target bank and the right pane is read again;
+  `ctrl+s` starts the import. Slots you do not assign are left alone.
+
+**Nothing is sent without the write gate and two confirmations.** Arm the
+gate with `w` (or launch with `--allow-write`). **`w` also works inside both
+import windows**, so a locked gate says so on the window's own status line and
+your file, bank and target assignments are kept; arm it there and press
+`ctrl+s` again. The first confirmation names the bank and the number of
+sounds; the second names what is overwritten. The gate is checked again
+between the second answer and the wire.
+
+**Measured limit (2026-10-24): a dump does not store into the bank.** On this
+unit a type-02 Single Sound Dump sent to a selected Internal slot is accepted
+and changes the **edit buffer** — the sound is live — but the stored bank is
+unchanged; the panel's SAVE SOUND is still what stores it. The 32647-byte
+type-03 All Sounds Dump is rejected by the ALSA port here, so the whole-bank
+flow falls back to per-slot sends. The import therefore reports "loaded into
+the edit buffer, not stored" rather than claiming the bank changed.
+
+**After a whole-bank send the target bank is reread** — RAM by its one dump,
+a card by the per-slot scan — so the browser shows what is now on the unit
+without a restart.
+
+**Only Internal RAM is readable**, so an INT write is compared byte for byte
+and reports the difference; Card A and Card B are not dumpable, and their
+reread is a slow per-slot scan (select each sound, read it back) that changes
+what the unit is playing while it runs. Take a backup before importing over a
+bank you care about.
+
+The hardware suite pins the measured behaviour behind a second, destructive
+gate:
+
+```
+ENSQSQED_HW_BANK_WRITE=1 .venv/bin/python -m pytest tests/test_hardware.py \
+    -k SoundBankWrite --hardware
+```
+
+The edit-buffer write passes; "stored in the bank" is a **strict xfail** that
+will flag the day the unit starts storing.
 
 ## What it knows
 

@@ -62,16 +62,20 @@ def test_keys_match_the_family() -> None:
 # contains exactly the shared blocks plus these declared extras, in the
 # correct order.
 #
-# The three preset-editor keys come first, the way the sibling nanosyned
-# puts its own edit keys first: they are this tool's headline, and the
-# family leaves the one place for a tool's own hints -- after `n note`,
-# before `i device` -- for exactly that. `m` opens the eight-track
-# editor, `x` the effect editor over the same preset, and `p` the list
-# of the eighty presets the unit holds. None of the three is a family
-# key, so none of them can be mistaken for one; the family asks for a
-# tool that renames a shared key to say why in its own test, and none of
-# these renames one.
+# `I import` leads the list: it is the newest and most destructive
+# surface -- it replaces whole banks -- so the eye should find it before
+# the editors. It is capital `I`, which the family does not use, so it
+# cannot be mistaken for the shared `i device` key. The three preset-editor
+# keys follow, the way the sibling nanosyned puts its own edit keys first:
+# they are this tool's headline, and the family leaves the one place for a
+# tool's own hints -- after `n note`, before `i device` -- for exactly
+# that. `m` opens the eight-track editor, `x` the effect editor over the
+# same preset, and `p` the list of the eighty presets the unit holds. None
+# of the three is a family key, so none of them can be mistaken for one;
+# the family asks for a tool that renames a shared key to say why in its
+# own test, and none of these renames one.
 _EXTRAS = (
+    "I import",
     "m multi",
     "x fx",
     "p preset list",

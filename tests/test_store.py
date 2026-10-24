@@ -198,6 +198,19 @@ class TestTheConfigIsWrittenSafely:
         config.save_last_recv_port("some input port", path)
         assert config.load_last_recv_port(path) == "some input port"
 
+    def test_the_import_folder_round_trips(self, tmp_path):
+        """The picker remembers where the last import file came from."""
+        path = str(tmp_path / "config.toml")
+        config.save_ui_state(path, import_folder="/music/syx")
+        assert config.load_ui_state(path)["import_folder"] == "/music/syx"
+
+    def test_an_import_folder_that_is_not_a_string_is_ignored(self, tmp_path):
+        """`import_folder = true` is a hand edit, not a directory."""
+        path = str(tmp_path / "config.toml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("import_folder = true\n")
+        assert "import_folder" not in config.load_ui_state(path)
+
 
 class TestTheCatalogKeysOnGroupNumbers:
     def test_a_name_is_found_by_region_and_number(self):

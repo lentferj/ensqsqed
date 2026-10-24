@@ -24,9 +24,10 @@ bridge, so it is safe beside a session driving hardware.
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sq import banks
+from sq import bridge as b
 from sq import messages as m
 
 __all__ = ["DemoDevice", "demo_name"]
@@ -94,6 +95,10 @@ class DemoDevice:
         #: ``(slot, channel)`` for every selection, in order.
         self.selected_log: List[Tuple[banks.Slot, int]] = []
         self._closed = False
+        self._banks: Dict[str, Dict[int, bytes]] = {
+            group_id: {n: _record(group_id, n) for n in range(banks.SOUNDS_PER_GROUP)}
+            for group_id in ("INT", "CARDA", "CARDB")
+        }
 
     def close(self) -> None:
         self._closed = True
@@ -113,7 +118,7 @@ class DemoDevice:
         self, *, timeout: Optional[float] = None
     ) -> Dict[int, bytes]:
         self._tick()
-        return {n: _record("INT", n) for n in range(banks.SOUNDS_PER_GROUP)}
+        return dict(self._banks["INT"])
 
     def read_names(self, *, timeout: Optional[float] = None) -> Dict[int, str]:
         return {
@@ -126,8 +131,120 @@ class DemoDevice:
         self._tick()
         slot = self.selected
         if slot is None:
-            return _record("INT", 0)
-        return _record(slot.group_id, slot.number - 1)
+            return self._banks["INT"][0]
+        group_id = slot.group_id
+        if group_id not in self._banks:
+            return _record(group_id, slot.number - 1)
+        return self._banks[group_id][slot.number - 1]
+
+    def _sound_at(self, sounds, index: int) -> bytes:
+        if isinstance(sounds, dict):
+            return sounds[index]
+        return sounds[index]
+
+    def read_bank(
+        self, group_id: str, *, timeout: Optional[float] = None
+    ) -> Dict[int, bytes]:
+        if group_id not in b.WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(b.WRITABLE_SOUND_GROUPS)}."
+            )
+        self._tick()
+        if group_id == "INT":
+            return dict(self._banks["INT"])
+        out: Dict[int, bytes] = {}
+        for slot_number in range(banks.SOUNDS_PER_GROUP):
+            self.select(banks.slot(group_id, slot_number + 1))
+            time.sleep(b.SCAN_SETTLE)
+            out[slot_number] = self.read_current_sound(timeout=timeout)
+        return out
+
+    def read_bank_names(
+        self, group_id: str, *, timeout: Optional[float] = None
+    ) -> Dict[int, str]:
+        if group_id not in b.WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(b.WRITABLE_SOUND_GROUPS)}."
+            )
+        return {
+            number: m.sound_name(record).rstrip()
+            for number, record in self.read_bank(group_id, timeout=timeout).items()
+        }
+
+    def send_sound_slots(
+        self,
+        group_id: str,
+        assignments: Any,
+        *,
+        verify: bool = True,
+        timeout: Optional[float] = None,
+    ) -> b.SoundBankWrite:
+        if group_id not in b.WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(b.WRITABLE_SOUND_GROUPS)}."
+            )
+        self._tick()
+        if not isinstance(assignments, dict):
+            assignments = {
+                index: assignments[index] for index in range(len(assignments))
+            }
+        for slot_number in sorted(assignments):
+            self.select(banks.slot(group_id, slot_number + 1))
+            self._banks[group_id][slot_number] = assignments[slot_number]
+        slots_written = tuple(sorted(assignments))
+        if group_id == "INT":
+            read_back = self.read_bank(group_id, timeout=timeout) if verify else None
+            return b.SoundBankWrite(
+                group=group_id,
+                slots_written=slots_written,
+                verified=bool(verify),
+                diff_slots=(),
+                read_back=read_back,
+            )
+        return b.SoundBankWrite(
+            group=group_id,
+            slots_written=slots_written,
+            verified=False,
+            diff_slots=(),
+            read_back=None,
+        )
+
+    def send_sound_bank(
+        self,
+        group_id: str,
+        sounds: Any,
+        *,
+        verify: bool = True,
+        timeout: Optional[float] = None,
+    ) -> b.SoundBankWrite:
+        if group_id not in b.WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(b.WRITABLE_SOUND_GROUPS)}."
+            )
+        self._tick()
+        for index in range(banks.SOUNDS_PER_GROUP):
+            self._banks[group_id][index] = self._sound_at(sounds, index)
+        slots_written = tuple(range(banks.SOUNDS_PER_GROUP))
+        if group_id == "INT":
+            read_back = self.read_bank(group_id, timeout=timeout) if verify else None
+            return b.SoundBankWrite(
+                group=group_id,
+                slots_written=slots_written,
+                verified=bool(verify),
+                diff_slots=(),
+                read_back=read_back,
+            )
+        return b.SoundBankWrite(
+            group=group_id,
+            slots_written=slots_written,
+            verified=False,
+            diff_slots=(),
+            read_back=None,
+        )
 
     # --- the one thing that makes a sound ----------------------------------
 
