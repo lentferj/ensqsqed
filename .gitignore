@@ -14,9 +14,11 @@ htmlcov/
 *.egg-info/
 .audit-runtime-req.txt
 
-# The generated name catalog. Ensoniq's sound names are not ours to
-# redistribute: regenerate it locally with tools/extract_catalog.py.
+# The generated name catalog and the names read from the unit. Ensoniq's
+# sound names are not ours to redistribute: regenerate the catalog locally
+# with tools/extract_catalog.py; the sidecar is the user's own unit data.
 sq/data/catalog.json
+sq/data/*.livenames
 
 # A disposable cache of which port answered last.
 config.toml

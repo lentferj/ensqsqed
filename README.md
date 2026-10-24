@@ -116,8 +116,10 @@ selector said — which may have been sent by somebody else, or by nobody.
 `sqcli select INT 42 --dry-run` prints exactly what has to go out to land
 on one sound, and the browser always sends the selector first.
 
-The unit shows sounds as 001–080 and MIDI sends 000–079. Those are
-separate attributes and nothing converts between them silently.
+The unit shows sounds as **00–79**, two digits and counted from zero —
+measured on the unit, not taken from the manual's 001–128 wording. That is
+also the program change it sends, so the display number and the wire number
+are the same; nothing converts between them silently.
 
 ## Install
 
@@ -168,10 +170,11 @@ database with ratings, tags and notes.
   The SQ-R has no Bank Select. The group is chosen with a program change
   (124=Internal, 125=ROM, 126=Card A, 127=Card B), and every later program
   change means whatever that one said until the next. The browser always
-  sends the selector first, and the slot pane shows both numbers the unit
-  displays (001-080) and MIDI sends (000-079). A `sel` column carries the
-  group selector — this instrument's replacement for the siblings' LSB/MSB
-  columns — and shows `—` for a drum kit, whose program change is absolute.
+  sends the selector first, and the slot pane's `#` is the number the unit
+  displays — **00–79, two digits, counted from zero** — which is also the
+  MIDI program change. A `sel` column carries the group selector — this
+  instrument's replacement for the siblings' LSB/MSB columns — and shows
+  `—` for a drum kit, whose program change is absolute.
 
 - **Only Internal can be read.** `r` reads all eighty internal sounds in one
   silent message and takes their names out of it. The same read runs quietly
@@ -231,6 +234,7 @@ database with ratings, tags and notes.
   x effect
   p preset list
   I import
+  M mode (sound / preset)
   t tags
   n note
   z undo
@@ -253,7 +257,9 @@ channel, and a track that is off does not receive at all. Three keys reach it.
 
 - **`p` — the eighty presets.** Reads them all in one message (about twelve
   seconds, and it says so), lists them by the unit's own number and name, and
-  hands the chosen one to the editors.
+  hands the chosen one to the editors. **The same bank is read once in the
+  background after launch** (non-blocking, on a worker), so `p` usually opens
+  on a warm list; a read older than a minute is taken again.
 - **`m` — the eight-track editor.** The preset's eight tracks as a table.
   `⏎` on a track's sound opens a browser with **all five groups** — Internal,
   ROM, Card A, Card B and the drum kits — so a multi setup can mix sounds
@@ -362,8 +368,11 @@ keys are buttons 1-4 in panel order (Select Sound, Select Preset, Edit
 Sound, Edit Track); Bank Select is 0, System is 11, Effects is 13, and
 YES/NO are the Up/Down keys (7 and 5). Copy
 Effect and Compare are secondary functions (of Select Sound and Edit
-Sound), not keys of their own. The key map and
-the caveats are in `docs/KEY-MAP.md` §5.
+Sound), not keys of their own. **`m` (or the browser's `M`) toggles the unit
+between SELECT SOUND and SELECT PRESET** — buttons 1 and 2 on one key. The
+unit does not report which mode it is in, so the app remembers the last one it
+sent, shows it in the header, and keeps it when the window is reopened. The
+key map and the caveats are in `docs/KEY-MAP.md` §5.
 
 `w` works **inside both editors** as well as in the browser — a modal screen
 cuts the browser's key chain, so the editors serve it themselves and toggle

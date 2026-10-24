@@ -157,6 +157,12 @@ SCAN_SETTLE = 0.08
 #: playing whatever it already had.
 STUCK_SLOT_LIMIT = 4
 
+#: How long the preset bank read at startup is trusted by ``p``.  The
+#: bank changes only when somebody stores a preset on the panel, and a
+#: twelve-second re-read on every press is what this cache exists to
+#: avoid; a stale entry is re-read after this many seconds.
+PRESET_CACHE_TTL = 60.0
+
 #: How many times the store assist asks the unit to take the backed-up
 #: bytes.  The receiver measured on 2026-10-22 accepted byte-identical
 #: dumps 2/2 before panel navigation and 1/10 after it, with no cause
@@ -288,6 +294,7 @@ class WaitScreen(ModalScreen[None]):
 #: that.
 WRITE_HINTS: tuple[str, ...] = (
     "I import",
+    "M mode",
     "m multi",
     "x fx",
     "p preset list",
@@ -433,6 +440,9 @@ class EnsqsqedApp(App):
         # `.mid`. It is destructive, so it is the browser's only capital
         # `I` and its whole flow asks twice behind the write gate.
         Binding("I", "import", "Import"),
+        # `M` toggles the unit's panel between Select Sound and Select
+        # Preset -- the two mode keys, on one key.  `m` is the editor.
+        Binding("M", "toggle_mode", "Mode"),
         Binding("ctrl+o", "remote", "Remote"),
         Binding("slash", "search", "Search"),
         Binding("i", "device_info", "Device"),
@@ -516,6 +526,9 @@ class EnsqsqedApp(App):
         #: slot picked out of the list can be loaded without reading
         #: again.
         self._all_dump: Optional[AllPresetsDump] = None
+        #: When the preset bank was last read, for the warm cache.  The
+        #: bank changes only on the panel, so a short-lived cache is safe.
+        self._all_dump_at: float = 0.0
         #: The editor screens that are open, so that a worker that
         #: finishes after its screen closed still has somewhere to
         #: report -- and so that the app knows which screen an undo
@@ -523,6 +536,9 @@ class EnsqsqedApp(App):
         self._multi_screen: Optional[MultiScreen] = None
         self._fx_screen: Optional[FxScreen] = None
         self._remote_screen: Optional[RemoteScreen] = None
+        #: The panel mode the last ``M`` left the unit in.  The unit does
+        #: not report it, so this is the app's memory of what it sent.
+        self._remote_mode: str = "SOUND"
         #: The single-sound import screen, while one is open.  A worker
         #: that rereads the bank after a write reports back through this,
         #: and a screen that has already closed is ``None``.
@@ -692,18 +708,19 @@ class EnsqsqedApp(App):
         # depending on data that has nothing to do with it -- and the row
         # you just rated would jump sideways as it appeared.
         #
+        # ``#`` is the number the unit's own display prints: two digits,
+        # counted from zero, which is also the program change it sends
+        # (measured 2026-10-24: "00 - Dynamic Grand" for the first sound).
         # ``sel`` is this instrument's answer to the siblings' LSB/MSB
-        # columns: the SQ-R has no Bank Select, so the two numbers that
-        # actually select a sound are the group selector (124-127) and the
-        # program change. A drum kit has no selector -- its program change
-        # is absolute -- and shows "—".
+        # columns: the SQ-R has no Bank Select, so the other number that
+        # selects a sound is the group selector (124-127). A drum kit has
+        # no selector -- its program change is absolute -- and shows "—".
         for label, key, width in (
             ("♥", "fav", None),
             ("#", "num", None),
             ("name", "name", None),
             ("★", "rating", 5),
             ("sel", "sel", None),
-            ("PC", "pc", None),
         ):
             slots.add_column(label, key=key, width=width)
 
@@ -719,16 +736,20 @@ class EnsqsqedApp(App):
 
         self._fill(self._current_bank)
         table.focus()
-        if (
-            self._read_names_at_startup
-            and applied == 0
-            and hasattr(self.device, "read_names")
-        ):
-            # Only when there are no names yet. A cached sidecar is good
-            # enough to paint the first frame; re-reading the whole 10 s
-            # bank on every launch would hold the busy gate and refuse the
-            # first selection for ten seconds. `r` refreshes on demand.
+        if self._read_names_at_startup and hasattr(self.device, "read_names"):
+            # The sidecar above paints the first frame, but it can be
+            # stale: the panel, or an import, changes the bank without
+            # this program knowing.  Read the Internal bank once in the
+            # background on every launch.  It holds the exchange for about
+            # ten seconds, never the UI, and rewrites the sidecar when it
+            # lands.  `r` still refreshes on demand.
             self.set_timer(0.3, self._startup_read_names)
+
+        if self._read_names_at_startup and hasattr(self.device, "read_all_presets"):
+            # The preset bank is a twelve-second read.  Warm the cache in
+            # the background so `p` opens at once; the worker waits for any
+            # other exchange (the names read) to finish before it starts.
+            self.set_timer(1.0, self._startup_read_presets)
 
         printed = len(self.catalog)
         if printed:
@@ -920,7 +941,10 @@ class EnsqsqedApp(App):
             # that the browser says which preset an edit would change.
             name = self._edit_preset.name.strip() or "(no name)"
             editing = f"   ·   editing “{_plain(name)}”"
-        self.sub_title = f"{filters}{what}   ·   ch {self._channel() + 1}{editing}"
+        self.sub_title = (
+            f"{filters}{what}   ·   ch {self._channel() + 1}"
+            f"   ·   mode {self._remote_mode.title()}{editing}"
+        )
 
     # --- navigation ---------------------------------------------------------
 
@@ -1154,14 +1178,13 @@ class EnsqsqedApp(App):
                 )
                 table.add_row(
                     "[b]♥[/b]" if entry.number in here else "",
-                    f"{entry.number:03d}",
+                    f"{entry.program_change:02d}",
                     shown,
                     rating_cell(ratings.get(entry.key, 0)),
                     # This instrument's answer to LSB/MSB: the group
                     # selector is the only other number a program change
                     # needs, and a drum kit has none.
                     "—" if entry.group.selector is None else str(entry.group.selector),
-                    str(entry.program_change),
                     key=entry.key,
                 )
         finally:
@@ -1769,14 +1792,62 @@ class EnsqsqedApp(App):
             return
         self._read_preset(open_fx=True)
 
+    def _startup_read_presets(self, attempt: int = 0) -> None:
+        """Warm the preset cache once, quietly, after the first frame.
+
+        The all-presets dump is about twelve seconds; it runs on a worker,
+        waits for any other exchange (the names read) to finish, and fills
+        ``_all_dump`` so ``p`` opens immediately.  Failure is silent -- the
+        user did not press anything -- and ``p`` still reads the bank
+        itself when the cache is missing or stale.
+        """
+        if self._all_dump is not None:
+            return
+        if not hasattr(self.device, "read_all_presets"):
+            return
+        if self._busy or not self._exchange.acquire(blocking=False):
+            if attempt < 30:
+                self.set_timer(1.0, lambda: self._startup_read_presets(attempt + 1))
+            return
+        self._startup_presets_worker()
+
+    @work(thread=True)
+    def _startup_presets_worker(self) -> None:
+        """**MIDI only** -- the background all-presets read."""
+        failure: Optional[BaseException] = None
+        dump: Optional[AllPresetsDump] = None
+        try:
+            with self._busy_gate, self._lock:
+                dump = self.device.read_all_presets()
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        if failure is not None or dump is None:
+            return
+        self.call_from_thread(self._startup_presets_done, dump)
+
+    def _startup_presets_done(self, dump: AllPresetsDump) -> None:
+        """Keep the background read for ``p``.  Main thread."""
+        self._all_dump = dump
+        self._all_dump_at = time.monotonic()
+
     def action_preset_list(self) -> None:
         """``p``: the eighty presets the unit holds.
 
         Reading them all is one message and about twelve seconds, so the
         status line says what is happening before it starts rather than
         after: a screen that appears twelve seconds later with no
-        explanation is a screen that looks like a hang.
+        explanation is a screen that looks like a hang.  A read taken at
+        startup (or by a previous press) is shown at once while it is
+        still fresh.
         """
+        if (
+            self._all_dump is not None
+            and (time.monotonic() - self._all_dump_at) < PRESET_CACHE_TTL
+        ):
+            self._show_preset_list(self._all_dump)
+            return
         if self._busy:
             self.notify_status("busy", refused=True)
             return
@@ -1881,6 +1952,7 @@ class EnsqsqedApp(App):
             self.notify_status(f"presets: {exc}", refused=True)
             return
         self._all_dump = dump
+        self._all_dump_at = time.monotonic()
         screen = PresetListScreen(rows, current=self._edit_slot, progress_note=None)
         self.push_screen(screen, self._preset_picked)
 
@@ -1925,6 +1997,35 @@ class EnsqsqedApp(App):
     def action_remote(self) -> None:
         """``ctrl+o``: open the remote front-panel window."""
         self._push_remote_screen()
+
+    def action_toggle_mode(self) -> None:
+        """``M``: toggle the unit between Select Sound and Select Preset.
+
+        The unit does not report its mode, so the app remembers the last
+        one it sent.  The press goes through the remote queue, so it is
+        paced like every other panel key and the press is not dropped.
+        """
+        new = "PRESET" if self._remote_mode == "SOUND" else "SOUND"
+        number = 1 if new == "SOUND" else 2
+        label = "SELECT SOUND" if new == "SOUND" else "SELECT PRESET"
+        if not hasattr(self.device, "tap_button"):
+            self.notify_status(
+                "mode not sent: this device does not take button presses",
+                refused=True,
+            )
+            return
+        self._remote_mode = new
+        if self._remote_screen is not None:
+            self._remote_screen.set_mode(new)
+        self._remote_press(number)
+        self.notify_status(f"mode: {label} (button {number} sent)")
+        self._update_subtitle()
+
+    def _set_remote_mode(self, mode: str) -> None:
+        """The remote window toggled the mode: keep the app's copy."""
+        if mode in ("SOUND", "PRESET"):
+            self._remote_mode = mode
+            self._update_subtitle()
 
     # --- the editors themselves ---------------------------------------------
 
@@ -1977,6 +2078,8 @@ class EnsqsqedApp(App):
         screen = RemoteScreen(
             on_press=self._remote_press,
             on_live_mute=self._remote_live_mute,
+            mode=self._remote_mode,
+            on_mode=self._set_remote_mode,
         )
         self._remote_screen = screen
         self.push_screen(screen, self._remote_closed)
@@ -3431,8 +3534,12 @@ class EnsqsqedApp(App):
         zero-based slots the dump uses; the catalog keys on the panel's
         one-based number, so the slot is shifted here.
         """
-        for number, name in (names or {}).items():
-            self.catalog.set_live_name(target, number + 1, name)
+        shifted = {number + 1: name for number, name in (names or {}).items()}
+        for number, name in shifted.items():
+            self.catalog.set_live_name(target, number, name)
+        # Persist what was just adopted: without this the sidecar keeps the
+        # pre-import names, and the next launch paints the old bank again.
+        self._save_live_names(target, shifted)
         if self.favorites is not None:
             self.favorites.refresh_names(
                 lambda bank, number: self.catalog.live_name(bank, number)
@@ -3677,9 +3784,10 @@ later program change means whatever that one said, until the next. So
 Enter sends the selector first, every time, and says both numbers. A
 drum kit takes no selector: its program change is absolute.
 
-The unit shows sounds as 001-080 and MIDI sends 000-079. The slot pane
-shows both, plus the group selector in `sel` -- the SQ-R's replacement
-for the siblings' LSB/MSB columns. A drum kit shows `—` there.
+The unit shows sounds as 00-79: two digits, counted from zero, which is
+also the program change it sends. The slot pane's `#` is that number, and
+`sel` is the group selector -- the SQ-R's replacement for the siblings'
+LSB/MSB columns. A drum kit shows `—` there.
 
 Names
 
@@ -3707,6 +3815,7 @@ Keys
   x         the preset's effect (FX editor)
   p         the list of the eighty presets
   I         import a bank or single sounds from a .syx / .mid
+  M         toggle the unit: Select Sound / Select Preset
   z Z       undo, undo all
   w         toggle write gate (armed by --allow-write)
   S         learn ROM/Card/Drum names (selects each sound; asks first)

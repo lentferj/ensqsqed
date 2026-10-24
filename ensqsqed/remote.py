@@ -58,7 +58,15 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-__all__ = ["PANEL_KEYS", "PanelKey", "RemoteScreen"]
+__all__ = [
+    "MODE_BUTTONS",
+    "MODE_LABELS",
+    "PANEL_KEYS",
+    "SELECT_PRESET",
+    "SELECT_SOUND",
+    "PanelKey",
+    "RemoteScreen",
+]
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,18 @@ TRACK_PC_KEYS = tuple(
 #: panel scan, so the two messages have to go out together.
 TRACK_CHORD_WINDOW = 0.18
 
+#: The two panel modes ``M`` toggles between, and the button each one is.
+SELECT_SOUND = 1
+SELECT_PRESET = 2
+MODE_LABELS: dict[str, str] = {
+    "SOUND": "SELECT SOUND",
+    "PRESET": "SELECT PRESET",
+}
+MODE_BUTTONS: dict[str, int] = {
+    "SOUND": SELECT_SOUND,
+    "PRESET": SELECT_PRESET,
+}
+
 
 class RemoteScreen(ModalScreen[None]):
     """A modal screen mirroring the SQ-R's front panel.
@@ -139,6 +159,7 @@ class RemoteScreen(ModalScreen[None]):
         background: $panel; color: $text;
     }
     RemoteScreen .gap { width: 4; }
+    RemoteScreen .mode { width: auto; height: auto; padding: 0 1; text-style: bold; }
     RemoteScreen .hint {
         width: auto; color: $text-muted; padding: 0 1; height: auto;
     }
@@ -151,6 +172,11 @@ class RemoteScreen(ModalScreen[None]):
     BINDINGS: ClassVar[List[Any]] = (
         [
             Binding("escape", "close", "Close", priority=True),
+            # One key for the panel's two mode keys: press it again to
+            # go back.  Bound in both cases, so it works whether Shift is
+            # held; neither letter is a panel key here.
+            Binding("m", "toggle_mode", "Mode", show=False, priority=True),
+            Binding("M", "toggle_mode", "Mode", show=False, priority=True),
         ]
         + [
             Binding(
@@ -176,17 +202,27 @@ class RemoteScreen(ModalScreen[None]):
         ]
     )
 
+    #: The line that names the panel mode.
+    MODE_ID = "remote-mode"
+
     def __init__(
         self,
         *,
         on_press: Optional[Callable[[int], None]] = None,
         on_live_mute: Optional[Callable[[], None]] = None,
         say_: Optional[Callable[..., None]] = None,
+        mode: str = "SOUND",
+        on_mode: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__()
         self._on_press = on_press
         self._on_live_mute = on_live_mute
         self._say = say_
+        #: The panel mode the last ``M`` left the unit in.  The unit does
+        #: not report it, so this is the app's memory of what it sent.
+        self._mode = mode if mode in MODE_LABELS else "SOUND"
+        #: ``on_mode(mode)`` -- the app keeps the state across openings.
+        self._on_mode = on_mode
         #: The Track key waiting for its partner, and its timer.
         self._pending_track: Optional[str] = None
         self._pending_timer: Optional[Any] = None
@@ -211,7 +247,13 @@ class RemoteScreen(ModalScreen[None]):
                                 id=f"key-{entry.pc_key}",
                             )
             yield Static(
-                "esc — close · arrows also work · space or o+p — live mute",
+                self._mode_line(),
+                id=self.MODE_ID,
+                classes="mode",
+                markup=False,
+            )
+            yield Static(
+                "esc — close · arrows also work · m — mode · space or o+p — live mute",
                 classes="hint",
                 markup=False,
             )
@@ -239,6 +281,41 @@ class RemoteScreen(ModalScreen[None]):
             self._say(message, refused=refused)
 
     # --- actions --------------------------------------------------------
+
+    def _mode_line(self) -> str:
+        """The panel mode, in the panel's own words."""
+        return f"Mode: {MODE_LABELS[self._mode]}  ·  m toggles"
+
+    def set_mode(self, mode: str) -> None:
+        """Adopt a mode the app toggled from the browser."""
+        if mode not in MODE_LABELS:
+            return
+        self._mode = mode
+        try:
+            self.query_one(f"#{self.MODE_ID}", Static).update(self._mode_line())
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+
+    def action_toggle_mode(self) -> None:
+        """``m``: Select Sound <-> Select Preset, with the same key.
+
+        The unit does not report its mode, so the screen remembers the
+        last one it sent; the app is told so the choice survives closing
+        and reopening the window.  The panel key itself is sent through
+        the same queue as every other press.
+        """
+        self._flush_pending_track()
+        if self._on_press is None:
+            self.say("mode not sent: this screen has no write path", refused=True)
+            return
+        new = "PRESET" if self._mode == "SOUND" else "SOUND"
+        self._mode = new
+        self.set_mode(new)
+        number = MODE_BUTTONS[new]
+        if self._on_mode is not None:
+            self._on_mode(new)
+        self._send_tap("m", number)
+        self.say(f"mode: {MODE_LABELS[new]} (button {number} sent)")
 
     def action_close(self) -> None:
         """Close the screen."""

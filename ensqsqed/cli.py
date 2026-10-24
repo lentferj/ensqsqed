@@ -104,14 +104,15 @@ def _cmd_list(_device, args) -> None:
     for item in banks.slots(entry.id):
         rows.append(
             [
-                f"{item.number:03d}",
-                str(item.program_change),
+                # The unit's display is two digits, counted from zero,
+                # and the same number is the program change it sends.
+                f"{item.program_change:02d}",
                 str(item.bank),
-                catalog.display_name(item.bank_id, item.program_change),
+                catalog.display_name(item.bank_id, item.number),
             ]
         )
     print(f"{entry.label} — {entry.count} sounds\n")
-    print(_table(rows, ["shown", "PC", "bank", "name"]))
+    print(_table(rows, ["#", "bank", "name"]))
     print(f"\n{entry.note}")
 
 
@@ -263,11 +264,9 @@ def _cmd_tags(_device, args) -> None:
 def _cmd_names(device, _args) -> None:
     """Read a bank's names off the unit (silent)."""
     names = device.read_names()
-    rows = [
-        [f"{n + 1:03d}", str(n), text.rstrip()] for n, text in sorted(names.items())
-    ]
+    rows = [[f"{n:02d}", text.rstrip()] for n, text in sorted(names.items())]
     print(f"Internal — {len(names)} sounds\n")
-    print(_table(rows, ["shown", "PC", "name"]))
+    print(_table(rows, ["#", "name"]))
 
 
 def _cmd_current(device, _args) -> None:
@@ -307,7 +306,7 @@ def _cmd_select(device, args) -> None:
                 f"   program change {pc:3}   {what}"
             )
         print(
-            f"\nThe unit shows this sound as {target.number:03d}; "
+            f"\nThe unit shows this sound as {target.program_change:02d}; "
             f"MIDI calls it {target.program_change}. Send the messages in "
             f"this order, with no Bank Select (CC0/CC32)."
         )
@@ -586,8 +585,10 @@ def pile_mask(preset: p.Preset) -> str:
 def sound_cell(track: p.Track, catalog: Optional[cat.Catalog] = None) -> str:
     """The sound a track plays, as the panel shows it.
 
-    The group's label, the sound's number as the panel counts it (from
-    1), and the name the catalog has for it when the catalog knows it.
+    The group's label, the sound's number as the panel's display counts
+    it (two digits, from zero), and the name the catalog has for it when
+    the catalog knows it.  The catalog keys on the one-based number the
+    ``Track.slot`` property reports, which is not the displayed number.
     The name is the catalog's, not the unit's: this is a read-only
     command and the unit's own names are read by ``names``.
     """
@@ -597,13 +598,13 @@ def sound_cell(track: p.Track, catalog: Optional[cat.Catalog] = None) -> str:
     except LookupError:
         label = group_id
     number = track.slot
-    cell = f"{label} {number:03d}"
-    if catalog is None:
-        return cell
     program_change = (
         banks.DRUM_FIRST_PC + number - 1 if group_id == "DRUM" else number - 1
     )
-    name = catalog.display_name(group_id, program_change)
+    cell = f"{label} {program_change:02d}"
+    if catalog is None:
+        return cell
+    name = catalog.display_name(group_id, number)
     return f"{cell} {name}" if name else cell
 
 

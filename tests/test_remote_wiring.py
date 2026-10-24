@@ -114,3 +114,57 @@ async def test_a_burst_of_presses_is_buffered_not_dropped(
             11,
             11 + m.CommandType.BUTTON_UP_OFFSET,
         ]
+
+
+async def test_m_in_the_browser_toggles_the_panel_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The browser's M sends Select Preset, then Select Sound."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _FakeUnit()
+    app = EnsqsqedApp(_device(unit), catalog=cat.empty())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._remote_mode == "SOUND"
+
+        await pilot.press("M")
+        assert await _wait(lambda: len(unit.button_messages) >= 2, pilot)
+        assert _events(unit) == [2, 2 + m.CommandType.BUTTON_UP_OFFSET]
+        assert app._remote_mode == "PRESET"
+
+        await pilot.press("M")
+        assert await _wait(lambda: len(unit.button_messages) >= 4, pilot)
+        assert _events(unit) == [
+            2,
+            2 + m.CommandType.BUTTON_UP_OFFSET,
+            1,
+            1 + m.CommandType.BUTTON_UP_OFFSET,
+        ]
+        assert app._remote_mode == "SOUND"
+
+
+async def test_m_in_the_remote_toggles_and_survives_reopening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window's m sends the key and the app keeps the mode on reopen."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _FakeUnit()
+    app = EnsqsqedApp(_device(unit), catalog=cat.empty())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert isinstance(app.screen, RemoteScreen)
+
+        await pilot.press("m")
+        assert await _wait(lambda: len(unit.button_messages) >= 2, pilot)
+        assert _events(unit) == [2, 2 + m.CommandType.BUTTON_UP_OFFSET]
+        assert app._remote_mode == "PRESET"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RemoteScreen)
+        assert "SELECT PRESET" in str(screen.query_one("#remote-mode", Static).content)

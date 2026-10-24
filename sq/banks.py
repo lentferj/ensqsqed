@@ -210,7 +210,14 @@ class Slot:
 
     @property
     def display(self) -> str:
-        return f"{self.group.label} {self.number:03d}"
+        """What the unit's own display prints: two digits, zero-based.
+
+        The manual's worked examples number sounds 001-128, but the unit
+        measured on 2026-10-24 shows ``00 - Dynamic Grand`` for the first
+        Internal sound: two digits, counted from zero, the same number the
+        program change carries.  The display wins, as it did for presets.
+        """
+        return f"{self.group.label} {self.program_change:02d}"
 
     @property
     def bank(self) -> int:

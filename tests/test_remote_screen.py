@@ -266,3 +266,41 @@ async def test_the_keyboard_arrows_drive_the_panel_arrows() -> None:
             await pilot.press(key)
         await pilot.pause()
         assert pressed == [6, 8, 7, 5]
+
+
+async def test_m_toggles_between_select_sound_and_select_preset() -> None:
+    """One key walks the panel's two mode keys: buttons 2 then 1."""
+    pressed: List[int] = []
+    modes: List[str] = []
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = RemoteScreen(on_press=pressed.append, on_mode=modes.append)
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        mode_line = screen.query_one("#remote-mode", Static)
+        assert "SELECT SOUND" in str(mode_line.content)
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert pressed == [2], "the first toggle selects preset"
+        assert modes == ["PRESET"]
+        assert "SELECT PRESET" in str(mode_line.content)
+
+        await pilot.press("M")
+        await pilot.pause()
+        assert pressed == [2, 1], "the second toggle selects sound"
+        assert modes == ["PRESET", "SOUND"]
+        assert "SELECT SOUND" in str(mode_line.content)
+
+
+async def test_set_mode_redraws_the_line() -> None:
+    """The browser's M can move the window's line without a keypress."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = RemoteScreen()
+        await app.push_screen(screen)
+        await pilot.pause()
+        screen.set_mode("PRESET")
+        await pilot.pause()
+        assert "SELECT PRESET" in str(screen.query_one("#remote-mode", Static).content)

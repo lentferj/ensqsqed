@@ -76,6 +76,7 @@ def test_keys_match_the_family() -> None:
 # own test, and none of these renames one.
 _EXTRAS = (
     "I import",
+    "M mode",
     "m multi",
     "x fx",
     "p preset list",

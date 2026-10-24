@@ -329,3 +329,54 @@ class TestTheScanRefreshesInternalToo:
 
             assert not app._scanning
             assert app.catalog.live_name("INT", 1) == demo_name("INT", 0)
+
+
+class _PresetStub:
+    """A device that only answers the all-presets read."""
+
+    channel = 0
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.payload = object()
+
+    def read_all_presets(self, *, timeout=None):
+        self.calls += 1
+        return self.payload
+
+
+class TestThePresetBankIsReadInTheBackground:
+    """Startup warms the preset cache on a worker, not the UI thread."""
+
+    async def test_the_cache_is_filled_after_startup(self):
+        stub = _PresetStub()
+        app = EnsqsqedApp(stub, catalog=cat.empty(), read_names_at_startup=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._startup_read_presets()
+            for _ in range(300):
+                if app._all_dump is stub.payload:
+                    break
+                await pilot.pause()
+
+            assert app._all_dump is stub.payload
+            assert stub.calls == 1
+
+
+class TestAnImportedBankIsPersisted:
+    """The sidecar must not keep the pre-import names for the next launch."""
+
+    async def test_the_sidecar_is_rewritten(self, app, tmp_path):
+        import json
+        from pathlib import Path
+
+        app._live_names_path = str(tmp_path / "catalog.livenames")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._adopt_bank_names("INT", {0: "Ascension", 1: "Waterspace"})
+            await pilot.pause()
+
+        saved = json.loads(Path(app._live_names_path).read_text(encoding="utf-8"))
+        assert saved["INT:001"] == "Ascension"
+        assert saved["INT:002"] == "Waterspace"
+        assert app.catalog.live_name("INT", 1) == "Ascension"
