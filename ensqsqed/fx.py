@@ -17,18 +17,15 @@
 
 **What a write reaches, and what it does not.**  The application's
 write path is a whole-preset dump, and the unit's OS (v2.03, read from
-the ROM) commits a received dump by copying only the live engine's
-120-byte track-and-pile snapshot into the preset's stored bytes --
-offsets 32 through 151.  **The effect block (offsets 152 through 163)
-is never written by a dump.**  An effect edit made here is real: it is
-decoded into the unit's edit buffer, it applies to what the unit is
-playing, and the send's read-back verifies it byte for byte.  But the
-preset's *stored* effect block keeps its own values, so selecting the
-preset again loads the stored effect and this edit is gone.  What
-persists an effect change is the unit's panel gesture -- ENTER/SAVE,
-which stores the whole edit buffer, effect block included -- and the
-screen's note says so rather than letting the verification imply more
-than the instrument does.
+the ROM) commits a received dump by copying the live engine's snapshot
+into the preset's stored bytes -- the tracks and pile, and the effect
+**parameters** (offsets 152-161).  Measured 2026-10-24: a sent effect
+parameter was live, and **re-selecting the preset committed it** to
+stored memory; the panel's ENTER/SAVE dialog did not store it and, in the
+test, reverted it.  The unit keeps its own preset name and effect
+**number** (the type), so those two cannot be changed over MIDI.  The
+screen's note and the `ctrl+s` store action say this rather than
+letting the verification imply more than the instrument does.
 
 **The rows are the model's, not this screen's.**  The effect is not one
 parameter but a whole family of them: the specification prints six
@@ -223,6 +220,10 @@ class FxScreen(ModalScreen[None]):
     FxScreen .status.refused {
         background: $error; color: $text; text-style: bold;
     }
+    /* A verified store's confirmation: green, never another grey line. */
+    FxScreen .status.ok {
+        background: $success; color: $text; text-style: bold;
+    }
     FxScreen .hint { color: $text-muted; }
     """
 
@@ -260,6 +261,7 @@ class FxScreen(ModalScreen[None]):
         *,
         on_apply: Callable[[Preset, str], None],
         on_undo: Optional[Callable[[Optional[int]], None]] = None,
+        on_commit: Optional[Callable[[], None]] = None,
         say_: Optional[Callable[..., None]] = None,
         result_cb: Optional[Callable[[bool, str], None]] = None,
         allow_write: bool = False,
@@ -273,6 +275,9 @@ class FxScreen(ModalScreen[None]):
         self._preset = preset
         self._on_apply = on_apply
         self._on_undo = on_undo
+        #: ``on_commit()`` -- store the working preset by re-selecting its
+        #: slot.  The app owns the walk and the verification.
+        self._on_commit = on_commit
         self._say_hook = say_
         self._result_hook = result_cb
         self._allow_write = allow_write
@@ -298,6 +303,13 @@ class FxScreen(ModalScreen[None]):
         with Vertical():
             yield Label(self._title_text(), id="fx-title")
             yield Static(self._note_text(), classes="note")
+            yield Static(
+                "Effect changes are live. Store the preset by re-selecting "
+                "its slot from the multi window (ctrl+s). The unit keeps its "
+                "own preset name; everything else is expected to stick.",
+                classes="note",
+                id="fx-store-note",
+            )
             yield DataTable(id="fx-table", cursor_type="row", zebra_stripes=True)
             yield Static("", classes="status", id="fx-status")
             yield Static(wrap_blocks(FX_HINTS, HINT_WIDTH), classes="hint")
@@ -327,10 +339,10 @@ class FxScreen(ModalScreen[None]):
         if not self._writes_allowed():
             state += " — edits are refused; w arms it"
         return (
-            f"parameter set: {set_name} · {state} — an effect edit lives "
-            "in the unit's edit buffer and reverts when the preset is "
-            "reselected; the unit's ENTER/SAVE is what stores an effect "
-            "change"
+            f"parameter set: {set_name} · {state} — an effect edit is live; "
+            "store the preset from the multi window (ctrl+s) to commit "
+            "the effect and verify the read-back. The unit keeps its own "
+            "preset name"
         )
 
     def _gate_description(self) -> str:
@@ -777,17 +789,18 @@ class FxScreen(ModalScreen[None]):
 
     # --- the seams the application looks for --------------------------------
 
-    def say(self, message: str, refused: bool = False) -> None:
+    def say(self, message: str, refused: bool = False, ok: bool = False) -> None:
         """One sentence on this screen's own status line.
 
         The application's status line is the dimmed backdrop behind
         this modal, so a refusal written there is written where nobody
         is looking.  ``[b]refused[/b] · `` in front of a refusal,
         because the difference between a "no" and news is carried by
-        the words and the weight, not by the colour alone.
+        the words and the weight, not by the colour alone.  ``ok`` marks
+        a verified store green.
         """
         prefix = "[b]refused[/b] · " if refused else ""
-        self._write_status(prefix + message, refused=refused)
+        self._write_status(prefix + message, refused=refused, ok=ok)
         if self._say_hook is not None:
             self._say_hook(message, refused=refused)
 
@@ -822,12 +835,14 @@ class FxScreen(ModalScreen[None]):
         if self._result_hook is not None:
             self._result_hook(ok, message)
 
-    def _write_status(self, text: str, *, refused: bool = False) -> None:
+    def _write_status(
+        self, text: str, *, refused: bool = False, ok: bool = False
+    ) -> None:
         """Put a sentence on the status line, if there still is one.
 
-        ``refused`` turns the line into the browser's red alarm; a
-        success clears it again, so the colour always describes the
-        sentence that is there now.
+        ``refused`` turns the line into the browser's red alarm; ``ok``
+        turns it green for a verified store; a plain sentence clears
+        both, so the colour always describes the sentence that is there.
         """
         try:
             status = self.query_one(".status", Static)
@@ -835,6 +850,7 @@ class FxScreen(ModalScreen[None]):
             return
         status.update(text)
         status.set_class(refused, "refused")
+        status.set_class(ok and not refused, "ok")
 
     def _refuse_write(self) -> None:
         """Say that this screen may not write, and change nothing.
@@ -873,6 +889,13 @@ class FxScreen(ModalScreen[None]):
         self._gate.toggle()
         self._refresh_note()
         self.say(self._gate.describe())
+
+    def action_commit_to_unit(self) -> None:
+        """Store the working preset by re-selecting it."""
+        if self._on_commit is None:
+            self.say("store is not wired", refused=True)
+            return
+        self._on_commit()
 
     def action_undo(self) -> None:
         """``z``: one change back."""

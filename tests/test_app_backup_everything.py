@@ -15,6 +15,7 @@ import pytest
 
 from ensqsqed.app import EnsqsqedApp
 from sq import catalog as cat
+from sq import preset_labels
 
 
 class _BridgeWithEverything:
@@ -104,3 +105,22 @@ async def test_store_assist_done_skipped_says_nothing_sent() -> None:
     assert recorded
     assert "nothing sent" in recorded[0]
     assert "P00" in recorded[0]
+
+
+async def test_full_dump_also_writes_the_local_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The app's labels are user data, not part of the unit dump."""
+    source = tmp_path / "preset_labels.json"
+    preset_labels.save({3: "BASS", 20: "LEAD"}, str(source))
+    monkeypatch.setattr(preset_labels, "default_path", lambda: str(source))
+    bridge = _BridgeWithEverything(b"EVERYTHING")
+    app = EnsqsqedApp(bridge, catalog=cat.empty())
+    backup_root = tmp_path / "backup"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._do_backup({"INT"}, "all", str(backup_root))
+        await pilot.pause()
+    files = list(backup_root.glob("preset_labels_*.json"))
+    assert len(files) == 1
+    assert preset_labels.load(str(files[0])) == {3: "BASS", 20: "LEAD"}

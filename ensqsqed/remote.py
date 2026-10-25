@@ -397,8 +397,10 @@ class RemoteScreen(ModalScreen[None]):
 
     def action_live_mute(self) -> None:
         """The space-bar chord: the unit's live mute.  No write gate --
-        the panel gesture, not a preset write.  Queued through the remote
-        drain so it respects the pacing gate.
+        the panel gesture, not a preset write.  The two downs travel
+        together through ``PacedOut.send_chord``; the bridge's ordinary
+        pace is longer than the panel's key scan and would split the
+        chord into two cursor moves.
         """
         self._flush_pending_track()
         if self._on_live_mute is None:

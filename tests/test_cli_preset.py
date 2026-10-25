@@ -612,11 +612,11 @@ def test_send_reports_a_mismatch_with_its_offsets(
 def test_send_says_that_the_preset_is_not_stored(
     tmp_path: Path, device: FakeDevice, capsys: pytest.CaptureFixture
 ) -> None:
-    """What it wrote is the Edit Preset, and storing it is the unit's act."""
+    """The dump stores the track/pile range; the effect needs ENTER/SAVE."""
     path = _dump_file(tmp_path)
 
     assert cli.main(["send", "--yes", str(path)]) == 0
     out = capsys.readouterr().out
 
-    assert "Edit Preset" in out
-    assert "ENTER" in out
+    assert "track/pile" in out
+    assert "ENTER/SAVE" in out

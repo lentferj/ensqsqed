@@ -166,6 +166,15 @@ So `internal_banks_request()` is nine bytes:
 sounds in one 32647-byte reply. `sq/bridge.py` was written once this was
 known.
 
+Command 05 (Dump Everything Request) was finally exercised on 2026-10-24
+(base channel 11, ports ESI M4U eX): request
+`F0 0F 06 00 0A 00 00 05 F7`; reply in order, ~23 s total: type 0x03
+All Sounds Dump (32647 B on the wire), an alert-07 command (19 B, size
+4308, count 80), and type 0x05 All Sequences Dump (35961 B on the wire,
+17977 decoded, matching the known all-presets layout). So 05 is the union
+of 02 and 04; it does not include cards or ROM/drum kits. It is read-only.
+See `docs/PRESET-FRAMING.md` §9.8.
+
 ## 9. The one check available without the instrument
 
 Page 4 prints a worked example — the Left Arrow, logical button 25,
@@ -287,6 +296,15 @@ the layer list and leaves every status byte exactly as it was; on adds the
 track back and repairs a stored *EXT* to LOCAL, because *EXT* is the status
 that stops the internal voices. The status byte is repaired, never written
 to switch a track off (commit `2b390aa`).
+
+> **Corrected 2026-10-23 (`docs/KEY-MAP.md` §3).** The ear test with the
+> repaired rig found that *EXT* does **not** gate internal voices either:
+> all eight status bytes set to 3 still played, before and after a reload.
+> The audio gate is the RAM mask `$FFFFD718`, which only the panel's Track
+> pair (buttons 10 and 12, pressed together) changes. `space` stays the
+> stored pile edit; the live switch is the chord, sent by the app as `l`
+> and by the remote window's space bar. The chord has to leave as one
+> gesture — the ordinary 300 ms pace splits it into two cursor moves.
 
 **The Edit Preset mode is deaf to incoming MIDI — for a few seconds, not for
 good. (Corrected 2026-10-21, second session.)** The original claim, from
@@ -459,9 +477,21 @@ Today's H3 session with the owner at the panel changed the record that
 **stored in the unit's currently selected slot's memory** — the panel's
 ENTER/SAVE is not needed for a dump, there is no per-slot addressing
 (address bytes 00/01 are rewritten to the selected slot's own values), the
-name is never taken from a dump (the unit keeps its own name), and preset
-byte 30 plus tracks 2–8 channel bytes are rewritten by the unit. The full
-record is in `docs/PRESET-FRAMING.md` §9.7, including the display evidence
+name is never taken from a dump (the unit keeps its own name). The
+2026-10-24 note that the effect number and track sound/channel bytes
+were kept did **not** reproduce on 2026-10-25: a controlled send +
+reselect stored the track sound word, the track channel byte, the
+effect number and the effect parameters. Only the name and the
+address/sequence bytes have never been seen to change; see
+`docs/PRESET-FRAMING.md` §9.7. The
+P10 measurement (2026-10-24) confirms the name is ignored — a slot's
+own bytes sent back with the name changed to `TEST-10` read back as the
+original `Preset-10` — and shows the side effect: the send zeroed the
+per-track byte 9 of tracks 2–8 (`81 82 83 84 85 86 87` →
+`80 80 80 80 80 80 80`; track 1's stayed `80`), because the firmware
+recomputes those eight bytes from the live engine; see
+`docs/PRESET-FRAMING.md` §9.7. The full record is in the same section,
+including the display evidence
 (*Edited Preset* right after the send; no asterisk after a Preset-01 round
 trip, with the sentinel volume 99 at preset byte 34 still present), the
 rewrites, and the acceptance flakiness (replica 1/10 post-navigation vs
@@ -477,8 +507,12 @@ What this means:
   slot's backed-up bytes — the pile with the track removed or restored —
   and the unit stores them into the selected slot. The send is verified
   byte for byte (`verify=True`) and a bounded retry wraps it; on success
-  the slot holds the backed-up bytes, the unit keeps its own name, and
-  re-sending a slot's own bytes is idempotent-safe.
+  the slot holds the backed-up bytes, the unit keeps its own name, and a send + reselect stored the track
+  sound, the track channel, the effect number and the effect parameters
+  in the 2026-10-25 test. Flaky sends can still leave the inactive
+  tracks' byte-9s at the engine's value (2026-10-24); the commit's
+  verification compares the intended preset with stored memory and names
+  any offset that did not stick.
 - **Feature A (live on/off) remains front-panel only.** The live MIDI
   switch for a track is Select Sound, then the Track buttons; no SysEx
   gesture reaches it (`docs/BUTTON-MAP.md`). The app's `space` is a preset
@@ -517,11 +551,22 @@ The firmware image settled what probing could only guess
 - So the store assist now walks the selection itself (button 5/7 as the
   shorter way, verified reads, re-sync on a dropped press) and then
   sends — **the panel's selection step is gone from the flow**.
-- The store's commit range (§12's model, sharpened): the commit copies
-  only offsets 32–151 (tracks + pile, with the per-track byte-9s kept
-  from the slot's own values) — the name, address bytes, tempo and the
-  **effect block** are never written by a dump; effect edits persist only
-  through the panel's ENTER/SAVE.
+- The store's commit range (§12's model, corrected 2026-10-25): the
+  commit copies offsets 32–151, and the selection-change path also
+  commits the effect parameters (152–161). The name and the
+  address/sequence bytes are the only fields never seen to change. The
+  earlier claim that track sound words, track byte 8 and the effect
+  number at 162 were kept did not reproduce; see
+  `docs/PRESET-FRAMING.md` §9.7. The panel's ENTER/SAVE dialog did not
+  store a sent effect parameter in the 2026-10-24 test (four virtual
+  button-9 taps reverted `3a` to `38`).
+- **Save dialog is not a reliable remote store (2026-10-24).** Four
+  virtual button-9 (Enter/Save) taps at 1.2 s closed the dialog (a
+  subsequent preset walk worked) but the stored P10 effect read back as
+  the old `38` instead of the sent `3a`. The app therefore commits by
+  re-selecting the slot, not by driving the save dialog. See
+  `docs/BUTTON-MAP.md` and `docs/PRESET-FRAMING.md` §9.7.
+
 - **Liveness (ear-verified, 2026-10-23, H10/H11/H12)**: the audio capture
   rig (`arecord -D hw:3,0`) turned out to be broken — it reported the same
   saturated level for audible and inaudible notes — so all RMS conclusions
@@ -532,8 +577,9 @@ The firmware image settled what probing could only guess
   before and after a panel reload), and **the pile does not gate either**.
   So: level-side parameters are heard live; the track arrangement is
   stored but not heard; the on/off remains panel-only (`$FFFFD718` is the
-  audio gate, `docs/KEY-MAP.md` §3). §9.8 in `PRESET-FRAMING.md` carries
-  the corrected record.
+  audio gate, `docs/KEY-MAP.md` §3). The corrected liveness record is the
+  §9.5–§9.7 material in `PRESET-FRAMING.md` (§9.8 there is now the Dump
+  Everything Request, command 05).
   The owner's flow stays: edit → store (remote, verified) → **reload
   (remote: two presses, the app's "reload on unit" action)** → the
   changes take effect.

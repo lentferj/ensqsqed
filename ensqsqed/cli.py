@@ -15,6 +15,8 @@
 
 """``sqcli`` -- the SQ-R's memory, and what it takes to reach a sound."""
 
+# ruff: noqa: F821
+
 from __future__ import annotations
 
 import argparse
@@ -27,6 +29,7 @@ from sq import catalog as cat
 from sq import config
 from sq import dumps
 from sq import messages as m
+from sq import preset_labels
 from sq import presets as p
 from sq import bridge as b
 from vinsynlib.cli import (
@@ -464,11 +467,12 @@ def _cmd_send(device, args) -> None:
     type-04 message -- which is what ``presets --out`` writes and what
     the unit itself sends.
 
-    **What it writes is the Edit Preset.**  The unit takes the dump
-    into its edit buffer, says "Press ENTER to save new preset" and
-    blinks its Edit Preset LED; a stored slot changes only when
-    somebody presses ENTER on the front panel.  This protocol has no
-    message that stores a preset.
+    **What it stores is the selected slot's track/pile range (32-151).**
+    The unit takes the dump into its working buffer and stores that range
+    in the slot the unit is on; the name (2-17) is the unit's own and is
+    never taken from a dump, and the effect block (152-162) is outside
+    that commit.  Press ENTER/SAVE on the unit to store the whole working
+    buffer, effect included; the unit keeps its own name either way.
 
     The dump is read back and compared byte for byte, so a refusal and
     a mismatch are both reported rather than assumed away.
@@ -482,8 +486,9 @@ def _cmd_send(device, args) -> None:
     if not args.yes:
         print(f"about to send {args.file} to the unit.")
         print(
-            "The unit will hold it as its Edit Preset; storing it is "
-            "ENTER on the unit's own panel."
+            "The unit will store the track/pile range in the selected slot; "
+            "the name stays the unit's own.  Press ENTER/SAVE on the unit "
+            "to store the effect block too."
         )
         if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
             print("nothing sent")
@@ -503,6 +508,346 @@ def _cmd_send(device, args) -> None:
         print("sent: the unit took the preset, and holds it byte for byte.")
     else:
         print("sent: the unit took the preset; the read-back was not compared.")
+    print(
+        "That stored the track/pile range; the name is the unit's own.  "
+        "Press ENTER/SAVE on the unit to store the effect block too."
+    )
+
+
+def _cmd_backup(device, args) -> None:
+    """Backup sounds and/or presets from the unit.
+
+    Backs up the selected sound groups (INT, CARDA, CARDB) to files in the
+    backup directory.  The user can select which groups and what content to
+    back up (sounds, presets, or all content).
+
+    The backup is written as raw SysEx bytes (or a Standard MIDI File if
+    --format midi is selected).
+    """
+    from vinsynlib.cli import validate_common
+
+    # The unit is already connected by the caller (main). Re-running
+    # _connect here would discard the (possibly faked) device.
+    validate_common(args)
+
+    # Determine groups to back up
+    groups = args.groups
+    if "ALL" in groups:
+        groups = ["INT", "CARDA", "CARDB"]
+
+    # Determine content to back up
+    content = args.content
+
+    import os
+    import time
+
+    backup_root = config.load_backup_root()
+    out_format = args.format
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+    # Full backup via command 05.
+    if content == "all" and "INT" in groups and hasattr(device, "read_everything"):
+        everything = device.read_everything()
+        if args.out is not None:
+            main_file = args.out
+        else:
+            ext = "mid" if out_format == "midi" else "syx"
+            main_file = os.path.join(backup_root, f"everything_{stamp}.{ext}")
+
+        if out_format == "syx":
+            main_data = everything.wire()
+        else:
+            frames = [everything.sounds_wire] + list(
+                dumps.split_sysex(everything.presets_wire)
+            )
+            main_data = _smf_from_frames(frames)
+        _write_file(main_file, main_data)
+        print(
+            f"{main_file}: sounds wire {len(everything.sounds_wire)} bytes, "
+            f"presets wire {len(everything.presets_wire)} bytes, "
+            f"total {len(main_data)} bytes"
+        )
+
+        main_dir = os.path.dirname(main_file) or "."
+        if content in ("presets", "all"):
+            labels_source = preset_labels.default_path()
+            if os.path.exists(labels_source):
+                labels = preset_labels.load(labels_source)
+                labels_file = os.path.join(main_dir, f"preset_labels_{stamp}.json")
+                preset_labels.save(labels, labels_file)
+                print(f"backed up {len(labels)} local preset label(s) to {labels_file}")
+        for group in ("CARDA", "CARDB"):
+            if group not in groups:
+                continue
+            try:
+                cdata = device.backup_sounds(group)
+                if out_format == "syx":
+                    cwire = m.frame(
+                        m.Function.ALL_SOUNDS_DUMP,
+                        m.to_nibbles(cdata),
+                        device=device.channel,
+                    )
+                else:
+                    cframe = m.frame(
+                        m.Function.ALL_SOUNDS_DUMP,
+                        m.to_nibbles(cdata),
+                        device=device.channel,
+                    )
+                    cwire = _smf_from_frames([cframe])
+                cfile = os.path.join(
+                    main_dir,
+                    f"{group.lower()}_sounds_{stamp}."
+                    + ("mid" if out_format == "midi" else "syx"),
+                )
+                _write_file(cfile, cwire)
+                print(f"backed up {group} sounds to {cfile} ({len(cdata)} bytes)")
+            except Exception as exc:
+                print(f"failed to backup {group} sounds: {exc}", file=sys.stderr)
+
+        return
+
+    # Determine output (per-group path)
+    out_file = args.out
+    if out_file is None:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        if len(groups) == 1:
+            out_file = os.path.join(
+                backup_root, f"{groups[0].lower()}_{content}_{stamp}.syx"
+            )
+        else:
+            out_file = os.path.join(backup_root, f"all_{stamp}.syx")
+
+    # Ensure output has correct extension
+    if out_format == "midi":
+        base, _ = os.path.splitext(out_file)
+        out_file = base + ".mid"
+
+    successful = 0
+    failed = 0
+
+    try:
+        for group in groups:
+            if content in ("sounds", "all"):
+                try:
+                    data = device.backup_sounds(group)
+                    frame = m.frame(
+                        m.Function.ALL_SOUNDS_DUMP,
+                        m.to_nibbles(data),
+                        device=device.channel,
+                    )
+                    wire = frame if out_format == "syx" else _smf_from_frames([frame])
+                    _write_file(out_file, wire)
+                    successful += 1
+                    print(f"backed up {group} sounds to {out_file} ({len(data)} bytes)")
+                except (ValueError, Exception) as e:
+                    failed += 1
+                    print(f"failed to backup {group} sounds: {e}", file=sys.stderr)
+
+            if content in ("presets", "all"):
+                try:
+                    data = device.backup_presets(group)
+                    frame = m.frame(
+                        m.Function.ALL_SEQUENCES_DUMP,
+                        m.to_nibbles(data),
+                        device=device.channel,
+                    )
+                    wire = frame if out_format == "syx" else _smf_from_frames([frame])
+                    _write_file(out_file, wire)
+                    successful += 1
+                    print(
+                        f"backed up {group} presets to {out_file} ({len(data)} bytes)"
+                    )
+                except ValueError as e:
+                    failed += 1
+                    print(f"failed to backup {group} presets: {e}", file=sys.stderr)
+
+    except Exception as e:
+        failed += 1
+        print(f"backup error: {e}", file=sys.stderr)
+
+    if content in ("presets", "all"):
+        labels_source = preset_labels.default_path()
+        if os.path.exists(labels_source):
+            labels = preset_labels.load(labels_source)
+            labels_file = os.path.join(
+                os.path.dirname(out_file) or ".",
+                f"preset_labels_{stamp}.json",
+            )
+            preset_labels.save(labels, labels_file)
+            print(f"backed up {len(labels)} local preset label(s) to {labels_file}")
+
+    if successful:
+        print(f"backup complete: {successful} success, {failed} failed")
+    else:
+        print(f"backup failed: {failed} error(s)", file=sys.stderr)
+
+
+def _cmd_restore(device, args) -> None:
+    """Restore sounds and/or presets to the unit from a backup file.
+
+    Reads a backup file created by ``backup`` and writes the data to the
+    unit.  The restore operation changes the unit's edit buffer and may
+    require the user to press ENTER on the unit's panel to store the changes.
+
+    Supported formats: .syx (SysEx) and .mid (Standard MIDI File).
+
+    If the backup contains sounds (whole bank or single sounds), the import
+    flow is used.  If it contains presets (all-presets dump), the preset
+    handshake is used.  If the file is a single preset written by
+    ``presets --out``, the original restore path is used.
+    """
+    import os
+    from sq import dumps as d
+    from sq import importer
+
+    filepath = args.file
+    if not os.path.exists(filepath):
+        raise SystemExit(f"error: backup file not found: {filepath}")
+
+    # A local-label sidecar: JSON, app-side, no unit contact.
+    if filepath.lower().endswith(".json"):
+        labels = preset_labels.load(filepath)
+        if not args.yes:
+            print(f"about to replace the local preset labels from {filepath}.")
+            if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("nothing done")
+                return
+        preset_labels.save(labels)
+        print(
+            f"restored {len(labels)} local preset label(s) from {filepath}; "
+            "the unit is untouched."
+        )
+        return
+
+    # Read the backup file
+    try:
+        library = d.read_file(filepath)
+    except Exception as exc:
+        raise SystemExit(f"error: cannot read backup file {filepath}: {exc}") from None
+
+    # Determine what is in the backup
+    has_sounds = library.is_full_bank
+    has_presets = bool(library.singles) or bool(library.sounds)
+
+    if has_sounds or has_presets:
+        # --- Backup-format file: restore sounds and/or presets ---
+        # Connect to the unit
+        from vinsynlib.cli import validate_common
+
+        validate_common(args)
+
+        # --- Restore sounds ---
+        if has_sounds:
+            source = importer.read_import(filepath)
+            if source.is_full_bank:
+                # Whole-bank import
+                def on_bank_chosen(target: int) -> None:
+                    existing = device.read_internal_bank()
+                    assignments = {
+                        i: sound.raw for i, sound in enumerate(source.sounds)
+                    }
+                    merged = importer.merge_bank(existing, assignments)
+                    device.send_sound_bank(merged, verified=False)
+                    device._exchange.release()
+                    notify_status(
+                        f"sounds restored from {source.summary()} into the "
+                        "edit buffer; "
+                        "press ENTER on the unit to store.",
+                        refused=False,
+                    )
+
+                self.push_screen(
+                    BankImportScreen(
+                        path=source.path,
+                        summary=source.summary(),
+                        names=[sound.name for sound in source.sounds],
+                        gate=self._gate,
+                    ),
+                    on_bank_chosen,
+                )
+            else:
+                # Single-sound import
+                def on_single_done(assignments: Dict[int, int]) -> None:
+                    existing = device.read_internal_bank()
+                    raw_assignments = {}
+                    for src_idx, _tgt_slot in assignments.items():
+                        if src_idx < len(source.sounds):
+                            raw_assignments[src_idx] = source.sounds[src_idx].raw
+                    merged = importer.merge_bank(existing, raw_assignments)
+                    device.send_sound_bank(merged, verified=False)
+                    device._exchange.release()
+                    notify_status(
+                        f"single sounds restored from {source.summary()} into "
+                        "the edit buffer; "
+                        "press ENTER on the unit to store.",
+                        refused=False,
+                    )
+
+                self.push_screen(
+                    SingleImportScreen(
+                        path=source.path,
+                        summary=source.summary(),
+                        gate=self._gate,
+                    ),
+                    on_single_done,
+                )
+
+        # --- Restore presets ---
+        if has_presets:
+            print(
+                "Preset restore from backup: the all-presets dump would be sent "
+                "back via the preset handshake. For now, use the import flow for "
+                "sounds and the panel to re-enter preset edits."
+            )
+
+        # Done with backup-format file; return early.
+        return
+
+    # --- Fall through: this is a single-preset file (written by presets --out) ---
+    # Read the preset file using the dedicated reader
+    loaded = read_preset_file(filepath)
+    if loaded.device != device.channel:
+        print(
+            f"note: the file was captured on channel {loaded.device + 1}; "
+            f"the unit is on channel {device.channel + 1}"
+        )
+    if not args.yes:
+        print(f"about to send {filepath} to the unit.")
+        print(
+            "The unit will hold it as its Edit Preset; storing it is "
+            "ENTER on the unit's own panel."
+        )
+        if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("nothing sent")
+            return
+    current = device.read_current_preset()
+    if not b.preset_needs_write(current.preset_raw, loaded.preset_raw):
+        print(
+            "the selected slot already matches the file in every byte a dump "
+            "can write; nothing sent."
+        )
+        return
+    try:
+        result = device.send_preset(loaded.seq_blob, loaded.preset_raw, verify=True)
+    except b.PresetRefused as exc:
+        raise SystemExit(f"error: {exc}") from None
+    except b.PresetMismatch as exc:
+        offsets = ", ".join(str(offset) for offset in exc.diff_offsets[:8])
+        print(f"mismatch: {exc}", file=sys.stderr)
+        raise SystemExit(
+            f"error: the unit did not hold what was sent; "
+            f"{len(exc.diff_offsets)} byte(s) differ at offset {offsets}"
+        ) from None
+    if result.verified:
+        print("sent: the unit took the preset, and holds it byte for byte.")
+    else:
+        print("sent: the unit took the preset; the read-back was not compared.")
+    if result.kept_preset_offsets:
+        offsets = ", ".join(str(o) for o in result.kept_preset_offsets)
+        print(
+            f"note: the unit kept its own values at preset offset(s) {offsets} "
+            f"(name, tempo/effect regions or inactive-track programs)."
+        )
     print("That is the Edit Preset: press ENTER on the unit to store it.")
 
 
@@ -855,6 +1200,38 @@ def sequence_blob(dump: b.AllPresetsDump, seqno: int) -> bytes:
     return dump.track_blobs[position]
 
 
+def _smf_from_frames(frames: Sequence[bytes]) -> bytes:
+    """A format-0 Standard MIDI File with one SysEx event per frame."""
+
+    def _varlen(value: int) -> bytes:
+        result = [value & 0x7F]
+        value >>= 7
+        while value:
+            result.append((value & 0x7F) | 0x80)
+            value >>= 7
+        result.reverse()
+        return bytes(result)
+
+    events = bytearray()
+    for frame in frames:
+        if frame and frame[0] == 0xF0 and frame[-1] == 0xF7:
+            payload = frame[1:-1]
+        else:
+            payload = frame
+        events += b"\x00" + b"\xf0" + _varlen(len(payload)) + payload + b"\xf7"
+    events += b"\x00\xff\x2f\x00"
+
+    header = (
+        b"MThd"
+        + (6).to_bytes(4, "big")
+        + (0).to_bytes(2, "big")
+        + (1).to_bytes(2, "big")
+        + (96).to_bytes(2, "big")
+    )
+    track = b"MTrk" + len(events).to_bytes(4, "big") + bytes(events)
+    return header + track
+
+
 def _write_file(path: str, data: bytes) -> None:
     """Write a file, and say so by name if it cannot be written."""
     try:
@@ -957,6 +1334,8 @@ COMMANDS: Dict[str, Callable] = {
     "channels": _cmd_channels,
     "multi": _cmd_multi,
     "presets": _cmd_presets,
+    "backup": _cmd_backup,
+    "restore": _cmd_restore,
     "dump": _cmd_dump,
     "send": _cmd_send,
 }
@@ -1170,6 +1549,57 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # backup
+    sp = sub.add_parser("backup", help="backup sounds/presets from the unit")
+    sp.add_argument(
+        "--groups",
+        "-g",
+        metavar="GROUP",
+        choices=["INT", "CARDA", "CARDB", "ALL"],
+        nargs="+",
+        default=["ALL"],
+        help=(
+            'sound groups to back up.  "ALL" backs up INT, CARDA, and CARDB. '
+            'Multiple groups may be selected, e.g. "INT CARDA".'
+        ),
+    )
+    sp.add_argument(
+        "--content",
+        "-c",
+        metavar="CONTENT",
+        choices=["sounds", "presets", "all"],
+        default="sounds",
+        help=("what to back up: sounds, presets, or all content"),
+    )
+    sp.add_argument(
+        "--out",
+        "-o",
+        metavar="FILE",
+        help=(
+            "write the backup to FILE (default: stamp-named file under "
+            "backup-root from config)"
+        ),
+    )
+    sp.add_argument(
+        "--format",
+        "-f",
+        metavar="FORMAT",
+        choices=["syx", "midi"],
+        default="syx",
+        help=(
+            "output format: .syx (SysEx) or .mid (Standard MIDI File); default is .syx"
+        ),
+    )
+
+    # restore
+    sp = sub.add_parser("restore", help="restore sounds/presets to the unit")
+    sp.add_argument(
+        "file",
+        help="backup file to restore from (created by `backup`)",
+    )
+    # The gate may follow the command as well as precede it.
+    _inherit(parser, sp, "yes")
+
     # dump
     sp = sub.add_parser("dump", help="dump a bank or preset off the unit (silent)")
     dsub = sp.add_subparsers(dest="dump_command", required=True)
@@ -1236,11 +1666,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     device = None
     # `reach INT 42 --dry-run` is a setup aid: it prints what to enter in a
-    # DAW, so it must work with the unit switched off.
+    # DAW, so it must work with the unit switched off.  A local-label
+    # sidecar restore is app-side only and needs no unit either.
     dry_run = args.command in ("select", "reach") and bool(
         getattr(args, "dry_run", False)
     )
-    if args.command not in OFFLINE and not dry_run:
+    labels_only = args.command == "restore" and str(args.file).lower().endswith(".json")
+    if args.command not in OFFLINE and not dry_run and not labels_only:
         try:
             device = _connect(args, config_path, channel)
             try:

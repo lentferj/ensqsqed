@@ -275,7 +275,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "x fx",
     "ctrl+r reload",
     "w write gate",
-    "r rename",
+    "r label",
     "esc close",
 )
 
@@ -950,7 +950,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("q", "cancel", "Cancel"),
-        Binding("r", "rename", "Rename"),
+        Binding("r", "rename", "Label"),
         Binding("ctrl+r", "reload", "Reload"),
     ]
 
@@ -1006,7 +1006,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
             yield DataTable(id=self.TABLE_ID, cursor_type="row", zebra_stripes=True)
             yield Static("", classes="status", id="preset-status")
             yield Static(
-                "[dim]⏎ picks a preset · r rename · ctrl+r reload · "
+                "[dim]⏎ picks a preset · r label · ctrl+r reload · "
                 "esc / q to close[/dim]",
                 classes="hint",
             )
@@ -1076,14 +1076,14 @@ class PresetListScreen(ModalScreen[Optional[int]]):
         return self._presets[row][0]
 
     def action_rename(self) -> None:
-        """``r``: rename the preset under the cursor.
+        """``r``: set the app's local label for the preset under the cursor.
 
-        The screen asks for the new name and hands it to the app through
-        ``on_rename``; it sends nothing itself.  The app selects the slot,
-        sends the preset and reports whether the unit kept the name.
+        **The unit's name cannot be written over MIDI.**  The text is
+        handed to the app through ``on_rename`` and kept in the sidecar;
+        it never leaves this program.
         """
         if self._on_rename is None:
-            self.app.notify("rename is not wired", severity="warning")
+            self.app.notify("label is not wired", severity="warning")
             return
         table = self.query_one(f"#{self.TABLE_ID}", DataTable)
         row = table.cursor_row
@@ -1107,7 +1107,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
 
         self.app.push_screen(
             TextPrompt(
-                f"Rename preset P{slot:02d} (current: {current_name}):",
+                f"Local label for P{slot:02d} (unit name: {current_name}):",
                 current_name.strip(),
                 select_all=True,
             ),
@@ -1219,7 +1219,7 @@ class MultiScreen(ModalScreen[None]):
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("q", "close", "Close"),
-        Binding("r", "rename", "Rename"),
+        Binding("r", "rename", "Label"),
         # Enter is NOT bound here.  A focused DataTable consumes it for
         # its own cell selection, so it arrives as CellSelected instead;
         # see on_data_table_cell_selected.
@@ -1678,7 +1678,7 @@ class MultiScreen(ModalScreen[None]):
         current = (self._local_label or self._preset.name).strip()
         if self._on_rename is None:
             if self._say is not None:
-                self._say("rename is not wired", refused=True)
+                self._say("label is not wired", refused=True)
             return
 
         def on_name(new_name: Optional[str]) -> None:

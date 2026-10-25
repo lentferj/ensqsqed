@@ -156,19 +156,38 @@ anything, even after a reload.
 
 ### 3.2 How the live state is kept — the pile
 
-The live on/off is materialised as the **pile**, an eight-byte list of
-live/layered track numbers at `$FFFFD6E6` (pointer `$FFFFD6EA`), packed
-into masks by `$C11BA2`. `$C11AEA`/`$C11B7A` add a track to the pile —
-the panel's "layer a track live" operation — and the mask `$FFFFD718`
-follows through `$C11A96`/`$C11A9C`. The store commit `$C12910` writes
-the pile into preset bytes 144–151, which is why the pile *looks*
-stored; but the live mask is RAM state the commit never writes back
-into, so a dump cannot change it.
+The **live** on/off is the RAM mask `$FFFFD718`.  The **stored** on/off
+is the pile, an eight-byte list of ON track numbers at `$FFFFD6E6`
+(pointer `$FFFFD6EA`), which the store commit writes into preset bytes
+144–151.  The firmware packs a pile into masks by `$C11BA2` when a track
+is layered (`$C11AEA`/`$C11B7A`), and the mask follows through
+`$C11A96`/`$C11A9C`.  **The Track-pair chord toggles the live mask
+without rewriting the pile bytes**: measured 2026-10-25, the owner turned
+every track off on the panel and the working preset's pile still read
+`01 00 00 00 00 00 00 00` with every status LOCAL.
+
+**The stored ON/OFF is pressure 3, not the pile.**  The owner's P20–P23
+matrix (2026-10-25) has pile `01 00…` in all four, while track byte 8's
+pressure bits carry the state: pressure 1 (KEY) = the panel's track
+number, pressure 3 = `-`.  Example: P20 byte 8 is
+`70 51 72 53 74 55 76 57`, pressure `3,1,3,1,…`, and the panel shows
+`-2-4-6-8`.  Editing the track in Edit Track toggles those bits.  So a
+dump *can* store the on/off; the pile is only the layer/selection list.
+The live mask is still separate.
 
 Known entry points that call the pile-add (firmware fact): the
 Select Sound action (key 4 → `$C0BC74` → `$C11962` → `$C11AEA`), the
 sound-audition confirm `$C0F404`, and the YES/NO confirm path
 (`$C0BDA8` → `$C11B7A`, `$C0BDD6` → `$C11AEA`).
+
+**The chord has to leave as one gesture.** The panel scans its own keys,
+so buttons 10 and 12 must reach the unit inside one scan. The bridge's
+ordinary pace is 300 ms between SysEx messages — seven scans — and a
+chord sent through it is two single presses: the cursor steps back, then
+forward, and nothing is muted. `PacedOut.send_chord` sends the pair 2 ms
+apart (the specification's floor) and keeps the 300 ms pace before and
+after the gesture. This is why the first version of `l`/the remote
+space bar appeared to do nothing.
 
 ### 3.3 What is not the gate
 

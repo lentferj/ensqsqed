@@ -195,7 +195,7 @@ Offsets within a preset:
 |---|---|---|---|
 | 0 | 1 | Sequence Number | 0..99; which sequence blob this preset uses |
 | 1 | 1 | Sequence Flags | |
-| 2 | 16 | Name | ASCII, bit 7 = mute status (Note 3); display = byte & 0x7F |
+| 2 | 16 | Name | ASCII, low 7 bits; bit 7 is the unit's fixed decoration (first 8 set, rest clear), **not** a mute flag; display = byte & 0x7F |
 | 18 | 2 | Bar Length | big-endian 16-bit, 0..999 |
 | 20 | 2 | Time Signature | 16-bit |
 | 22 | 4 | Edit Start Point 1 | preserve verbatim |
@@ -203,16 +203,18 @@ Offsets within a preset:
 | 30 | 1 | Tempo | 25..250 (0 observed on 10 empty presets) |
 | 31 | 1 | Number of Song Steps | 0..255 |
 | 32 | 112 | Tracks 1..8 | 8 × 14 bytes (§4.8.1) |
-| 144 | 8 | Track Pile | Note 6: byte 0 = primary track; bytes 1..7 = non-zero layered track numbers |
+| 144 | 8 | Track Pile | Note 6: ordered layer/selection list (byte 0 = first entry). **Not the track ON/OFF**; pressure 3 in track byte 8 is OFF. |
 | 152 | 11 | Preset Effect | 10 bytes + effect number byte (§5.1) |
 | 163 | 3 | Size of Sequence | 24-bit; preserve |
 | 166 | 2 | Reserved | preserve |
 
 Total 168. **verified** (single fixture and all 80 presets decode without error).
 
-Name field: bit 7 carries mute status (Note 3). Display decode is `bytes & 0x7F`.
-Never strip or alter bit 7 on round-trip. Verified: all 80 presets have the first
-8 name bytes with bit 7 set and the rest clear (`Preset-NN       `).
+Name field: bit 7 is the unit's fixed decoration — all 80 presets have the first
+8 name bytes with bit 7 set and the rest clear (`Preset-NN       `). It is **not**
+a track mute flag; low 7 bits are the name (`bytes & 0x7F`). Never strip or alter
+bit 7 on round-trip. A dump never stores this field (the commit copies 32-151);
+renaming on the unit is a panel/name-page act, not a SysEx dump.
 
 How to check (single fixture):
 ```
@@ -261,29 +263,30 @@ print('status',dict(st),'pressure',dict(pr),'channel',dict(ch))
 ### Track OFF resolution (UI-critical)
 
 The fixture does **not** exercise BOTH/MIDI/*EXT* or NONE/CHANNEL — every track has
-status=LOCAL and pressure=KEY. Therefore the fixture cannot confirm the meaning of
-status value 3 (*EXT*). However, the fixture does settle where the OFF state lives:
+status=LOCAL and pressure=KEY. The owner's **P20–P23 matrix (2026-10-25)** does
+settle where the OFF state lives:
 
-- Tracks 2..8 of every preset have full parameter data (sound, volume, channel, …)
-  yet their status byte is still LOCAL (1) — identical to the sounding track 1.
-  So OFF is **not** encoded in the status byte.
-- The pile byte for tracks 2..8 is 0 in all 80 presets, while track 1's pile byte
-  is 1. Tracks with pile byte 0 are the panel's "—" (off) tracks.
+| Preset | Byte 8 (t1…t8) | Pressure | Device |
+|---|---|---|---|
+| P20 | `70 51 72 53 74 55 76 57` | 3,1,3,1,3,1,3,1 | `-2-4-6-8` |
+| P21 | `50 71 52 73 54 75 56 77` | 1,3,1,3,1,3,1,3 | `1-3-5-7-` |
+| P22 | `70 71 72 73 54 55 56 57` | 3,3,3,3,1,1,1,1 | `----5678` |
+| P23 | `50 51 52 53 74 75 76 77` | 1,1,1,1,3,3,3,3 | `1234----` |
 
-**Conclusion (supported by the fixture): the panel's selected/layered state
-lives in the pile byte — 0 = not selected or layered, n = track n selected or
-layered. The primary track (pile byte 0) is always selected.** The fixture
-cannot settle *EXT* (3) because it never exercises it.
+The pile is `01 00 00 00 00 00 00 00` in **all four**. So:
 
-**But the pile is not the MIDI off switch.** On the bench (2026-10-21) a track
-removed from the pile, with the preset read back exactly, still received on its
-MIDI channel and played: the pile is the layer/selection state, not the
-receiver's gate. The manual is explicit that *EXT* is the status to use "for
-turning off certain tracks when using the SQ as a multitimbral receiver in
-MULTI Mode": incoming MIDI does not play internal voices, and the panel shows
-the track as `-`. So the editor's on/off is **both** changes — leave the pile
-and set status *EXT* — and switching on restores the status. See
-`ensqsqed/multi.py::MultiScreen.action_toggle_track`.
+- **Pressure 3 is the stored OFF marker** (the panel's `-`); pressure 1
+  (KEY) is the printed track number.
+- The pile is the separate layer/selection list, not the on/off state.
+- The status byte is LOCAL throughout; `*EXT` is MIDI routing, not the audio
+  gate.
+- The live audio gate is the RAM mask `$FFFFD718` (`docs/KEY-MAP.md` §3).
+  The stored marker is what a preset carries; the mask is what plays now.
+
+The editor's `space` toggles pressure 1 ↔ 3, and `ctrl+s` stores the buffer
+with the unit's Enter/Save ×3. The Track-pair chord (`l`) is the separate live
+mask control. See `ensqsqed/multi.py::MultiScreen.action_toggle_track` and
+`action_live_mute`.
 
 **The layered list is compact (bench, 2026-10-21).** Bytes 1..7 are an *ordered
 list* of the layered track numbers, packed to the left — not one slot per track
@@ -597,7 +600,7 @@ dead ends, all with a byte-for-byte read-back behind them):
 
 | what | what the unit did |
 |---|---|
-| the name bytes' mute bit (bit 7) | rewritten by the unit — the bit comes back set |
+| the name bytes' bit 7 | the unit's fixed decoration (first 8 set, rest clear), **not** a mute; a whole-preset dump keeps the unit's own name (the name field is never taken from a dump) |
 | track byte 6 (the reserved byte, always `0x80`) | write-protected — `0x00` reads back changed |
 | the pile | a compact ordered list: the primary track first, and the unit compacts holes (a sent `01 00 03` reads back `01 03 00`) |
 | preset names | left-aligned and space-padded (the app strips the padding for display) |
@@ -641,8 +644,10 @@ dump type 04, `SqBridge.send_preset`). Its address bytes were `46 0b`
   (`H3e_result.json`, `name_took: false`).
 - **Preset byte 30 and tracks 2–8 channel bytes (`0x80|n`) are rewritten**
   to the unit's current values; the probe's values there did not stick.
-  Sending a slot's own backed-up bytes back is therefore idempotent-safe:
-  the restore send passed `verify=True` and read back byte-identical
+  Sending a slot's own backed-up bytes back is therefore idempotent for
+  offsets 32–151 except the eight per-track byte-9s; the unit recomputes
+  those from the live engine: the restore send passed `verify=True` and
+  read back byte-identical
   (`H3b_result.json`, final `slot0_eq_backup: true`, pile `0102`, track 2
   ON).
 - **The all-dump reflects the selected slot's current content.** Slot 0's
@@ -659,19 +664,47 @@ track records, `$C12910` appends the pile). The per-track byte 9
 (`sustain<<7 | program`) is saved before the copy and restored after
 (`$C128FA`), and recomputed from the engine's own field (`$C127A8`) --
 so **all eight** track byte-9s (offsets 41, 55, 69, 83, 97, 111, 125,
-139) keep the slot's own values. Everything else in the 168 bytes is
-**never written by a dump**: the name, the address bytes, byte 30,
-tempo and time signature, and -- with teeth for the app -- **the
-effect block (offsets 152 through 163)**. An effect edit sent via
-SysEx is real (it decodes into the edit buffer, it plays, and the
-send's read-back verifies it), but the preset's stored effect block is
-untouched, so reselecting the preset reverts to the stored effect;
-only the panel's ENTER/SAVE -- which stores the whole buffer --
-persists an effect change. This corrects the wording above and in
-`UNIT_KEPT_OFFSETS`: the name and friends are *kept because they are
-never written*, not "rewritten to the unit's current values", and the
-per-track channel bytes are the byte-9 save/restore, measured as the
-seven offsets above and confirmed on a restore the unit had landed.
+139) keep the slot's own values. **What a reselect actually stores (measured 2026-10-25).** The earlier
+"kept" list for the track sound words, the track channel byte (8) and the
+effect number was **not reproducible**. A controlled test on P10 sent one
+change at a time and read the slot back while it was **unselected**
+(command 04 mirrors the working preset while the slot is selected):
+
+| field | sent | working | stored (unselected) |
+|---|---|---|---|
+| track 1 sound word (32–33) | `00 00` → `00 04` | `00 04` | `00 04` |
+| track 1 channel (byte 8 at 40) | `5a` → `5b` (channel 10 → 11) | `5b` | `5b` |
+| effect number (162) | `04` → `05` | `05` | `05` |
+| effect param 0 (152) | `38` → `39` | `39` | `39` |
+
+Each was restored by sending the original bytes and re-selecting, and
+each came back in stored memory. So a send + reselect **does** store the
+track sound, the track channel and the effect number on this unit. The
+earlier result was a receiver-state anomaly of the kind already recorded
+in §9.7's flakiness note, not a write-protection rule.
+
+The only fields this project has **not** seen change from a send are the
+**name** (offsets 2–17) and the **address/sequence bytes** (0–1). The
+name is the unit's own; the address bytes are rewritten to the selected
+slot. Everything else in 0–167 is expected to stick, and the app's
+commit verifier compares the whole preset except those two regions and
+names any offset that did not — no field is predeclared as "panel-only".
+
+The 2026-10-24 byte-9 observation still stands as a warning: a flaky
+send can leave the inactive tracks' byte-9s at the engine's value. The
+verification is what catches it; `preset_needs_write` now treats every
+byte in 32–151 as writable, so a no-op skip cannot hide such a change.
+
+
+The panel's Enter/Save dialog is **not** that commit path. With effect
+param `3a` live, four taps of button 9 (Enter/Save) at 1.2 s closed
+the dialog (a subsequent preset walk worked), but the stored P10 effect
+read back as the old `38`. In this test the save dialog reverted the
+sent effect; it did not store it.
+
+Stored-read caveat: `read_all_presets()` mirrors the *working* preset
+for the selected slot, so a stored read must be taken while the slot is
+unselected (select another slot, then dump).
 
 **What stays.** The panel's ENTER/SAVE is still what stores *panel* edits;
 for a dump no ENTER is needed. The display's *Edited Preset* clears by
@@ -696,6 +729,34 @@ guard, and a bounded retry wraps it
 while on slot K, move the selection away and back, and read the all-dump:
 slot K's entry keeps 99 at byte 34; its name and address bytes are the
 unit's own. The result files above are the record of that run.
+
+### 9.8 The Dump Everything Request (command 05), verified 2026-10-24
+
+Measured on the unit 2026-10-24, base channel 11 (0x0a), ports ESI M4U eX
+MIDI 2 out / MIDI 1 in, with `tools/probe_dump_everything.py`. A dump
+request is read-only: it changes no unit state.
+
+Request: `F0 0F 06 00 0A 00 00 05 F7` (9 bytes; the command byte is
+nibble-ised; `m.command_message(0x05)` produces exactly this).
+
+Reply, in order, ~23 s total:
+
+| time | type | frame on wire | decoded | contents |
+|---|---|---|---|---|
+| +10.45 s | 0x03 All Sounds Dump | 32647 B | 32640 payload (80 × 204) | all 80 internal sounds |
+| +10.46 s | 0x00 command (alert 07) | 19 B | — | size 4308, count 80 |
+| +22.96 s | 0x05 All Sequences Dump | 35961 B | 35954 payload (17977 decoded) | all presets/sequences |
+
+The type-05 decoded bytes match the known all-presets layout:
+`preset_area_start` 4516, 80 slots, cyclic shift by 10, slot 0 → preset
+index 10 (§1, §4). The 21-byte global block is included in the type-05
+half (§7).
+
+So command 05 is the union of command 02 (all sounds) and command 04 (alert
++ all presets/sequences): it returns the sounds, then the alert, then the
+sequences. It does not include cards or ROM/drum kits. Captured frames:
+type-03 32647 B, alert 19 B, type-05 35961 B. Probe:
+`tools/probe_dump_everything.py`.
 
 ---
 

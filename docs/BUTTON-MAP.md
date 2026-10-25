@@ -19,6 +19,14 @@ reliably switches a MULTI track on and off was found, so **the live MIDI
 switch for a track stays on the unit's front panel** (Select Sound, then the
 Track buttons) and this project does not drive the panel.
 
+> **Superseded 2026-10-23 by `docs/KEY-MAP.md` §3.** The Track keys are
+> buttons **10** (left) and **12** (right), and pressed **together** they
+> toggle the track under the panel's cursor — the live mute. The failures
+> recorded below came from probing the wrong buttons (2/3 and other pairs).
+> `SqBridge.toggle_live_mute()` sends the chord, and the app exposes it as
+> `l` in the MULTI editor and the space bar in the remote window. The chord
+> must leave as one gesture; see `PacedOut.send_chord`.
+
 ---
 
 ## 1. The mechanism
@@ -278,6 +286,14 @@ the protocol does not expose it.
   ENTER/SAVE needed for a dump; the unit keeps its own name). Panel edits
   still need ENTER/SAVE, and the virtual ENTER/SAVE candidate (button 28)
   is still refused by this firmware.
+- **2026-10-24 correction — the save dialog is not a reliable remote
+  store.** Four virtual button-9 (Enter/Save) taps at 1.2 s closed the
+  save dialog (a subsequent preset walk worked) but did **not** store a
+  sent effect parameter: stored P10 kept the old `38` instead of the sent
+  `3a`. The selection change is what committed the effect (param 0 went
+  `38` → `39` → `3c` and back). The app therefore commits by
+  re-selecting the slot rather than by driving the save dialog. See
+  `docs/PRESET-FRAMING.md` §9.7.
 - **The app says where the live switch is** after every track change, in the
   same words as this document: *the live MIDI switch for a track is on the
   unit's front panel (Select Sound, then the Track buttons)*.

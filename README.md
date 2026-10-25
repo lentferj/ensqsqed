@@ -257,9 +257,13 @@ channel, and a track that is off does not receive at all. Three keys reach it.
 
 - **`p` — the eighty presets.** Reads them all in one message (about twelve
   seconds, and it says so), lists them by the unit's own number and name, and
-  hands the chosen one to the editors. **The same bank is read once in the
-  background after launch** (non-blocking, on a worker), so `p` usually opens
-  on a warm list; a read older than a minute is taken again.
+  **`⏎` selects the row's slot on the unit** before the editors open over it.
+  The app sends Select Preset, then a Program Change; when the Program Change
+  does not take (Preset Prog OFF, or the receiver ignores it), it falls back to
+  stepping the selection with the panel's next/previous keys and verifies the
+  slot byte. **The same bank is read once in the background after launch**
+  (non-blocking, on a worker), so `p` usually opens on a warm list; a read
+  older than a minute is taken again.
 - **`m` — the eight-track editor.** The preset's eight tracks as a table.
   `⏎` on a track's sound opens a browser with **all five groups** — Internal,
   ROM, Card A, Card B and the drum kits — so a multi setup can mix sounds
@@ -271,36 +275,41 @@ channel, and a track that is off does not receive at all. Three keys reach it.
 
 The track editor's columns are grouped, and `tab` cycles the groups the way
 rxved's does. Two columns are in every group — `trk`, the track's own number,
-and `on`, whether the track plays internal voices — then:
+and `on`, the stored track marker — then:
 
 | group | columns | what the panel calls them |
 |---|---|---|
 | **sound** | `spot`, `name`, `ch`, `program` | the sound — group and slot — its name, the **MIDI channel** it receives on (1-16), and the program change it answers to (1-128); the channel is here because eight tracks on eight channels is what MULTI mode is for |
-| **MIDI** | `status`, `press`, `sustain` | Status BOTH/LOCAL/MIDI/*EXT*, Pressure NONE/KEY/CHANNEL, and the sustain switch |
+| **MIDI** | `status`, `press`, `sustain` | Status BOTH/LOCAL/MIDI/*EXT*, Pressure NONE/KEY/CHANNEL/OFF, and the sustain switch |
 | **MIX** | `vol`, `pan`, `timbre`, `rel`, `out` | Volume 0-99, Pan SOUND or -98..+99, Timbre 0-99, Release -64..+64, Output DRY/FX1/FX2/VOICE/CONTROL |
 | **KEY** | `low`, `high`, `transp` | the key range as note names (A0..C8) and the transpose (octave and semitone) |
 
+**The stored ON/OFF marker is pressure 3.** The owner's P20–P23 matrix settles
+it: the pile is `01 00 00 00 00 00 00 00` in all four, while track byte 8's
+pressure bits carry the state — pressure 1 (KEY) is the panel's track number,
+pressure 3 is its `-`. The `on` column reads that marker, and `space` toggles
+it between 1 and 3. This is a normal stored field, so the whole preset goes.
+**Any track can be off, including track 1 and all eight at once.**
+
 `⏎` edits the cell under the cursor — a list to pick from when the values are
 words, a number to type when they are numbers — a digit starts that number,
-`+`/`-` nudge it, and `space` moves the whole track in and out of the preset's
-**layer list** (the *pile*: the panel's selected/layered state, its `—`).
-Switching a track off is a **preset edit, not a live switch**: the track
-leaves the pile and its MIDI status byte is left exactly as it was. Writing
-*EXT* there would silence the track in the *stored* preset and nowhere else,
-and it latches — a later dump that restores LOCAL does not bring the live map
-back — so the status byte is repaired instead (a stored *EXT* becomes LOCAL
-when the track goes on) and is never used to switch a track off. The primary
-track cannot be switched off from here.
+and `+`/`-` nudge it.
 
-**The live MIDI switch for a track belongs to the unit's front panel**:
-Select Sound, then the Track buttons. It was looked for on the wire and is
-not there. The unit does have virtual buttons — it answers an unknown button
-number with SysEx error 02, "invalid button number" — and it accepts exactly
-its own eighteen (presses 0–13 and 16–19, releases the same numbers plus
-96), but no gesture among them reliably toggles a track: the
-both-Track-buttons chord hit once in roughly sixty attempts and never
-again. `docs/BUTTON-MAP.md` has the numbers, the experiment and the
-negative.
+**`ctrl+s` stores with the unit's Enter/Save ×3.** The manual's front-panel
+store is Enter/Enter/Enter → *SAVED*; the app sends those three presses and
+then walks to the neighbouring slot only to read the stored bytes back, walks
+back and verifies the slot against the unit's edit buffer. `E` is not needed
+and is gone.
+
+**`l` is the live switch.** The panel's two Track keys — buttons 10 and 12 —
+pressed together mute or unmute the track under the panel's cursor, and that is
+the control for what plays now. The app sends that chord; `o` and `p` send the
+Track keys singly to move the panel's track cursor (the unit's display is the
+cursor's readout, which the app cannot see). The chord must leave as one
+gesture: the ordinary 300 ms pace between SysEx messages is seven panel scans,
+and a chord sent through it is two cursor moves and no mute, so
+`PacedOut.send_chord` sends the pair 2 ms apart. `docs/KEY-MAP.md` §3 and
+`docs/BUTTON-MAP.md` have the firmware and the measurements.
 
 The effect editor lists the thirteen effects by the panel's own names (CONCERT
 REVERB … CMPRSS+DIST+VERB), then the parameters of the active set, the FX1/FX2
@@ -315,13 +324,12 @@ into its **currently selected slot** (the display shows *Edited Preset*
 transiently; no panel ENTER/SAVE is needed for a dump — ENTER/SAVE is still
 what stores *panel* edits). The write gate (`w`) must be armed first, and
 every change is read back and compared byte for byte — a refused or unmatched
-write is reported, not assumed. What the store writes, the unit's own OS
-shows (§9.7): the commit copies only the tracks and the pile (offsets
-32–151, with each track's byte 9 kept from the slot's own values), so the
-name, the address bytes, tempo and **the effect block** are never written
-by a dump — an effect change lives in the edit buffer and reverts when the
-preset is reselected; only the panel's ENTER/SAVE stores an effect change.
-Sending a slot's own backed-up bytes back is idempotent-safe.
+write is reported, not assumed. What the store writes (measured 2026-10-24):
+the tracks and pile, and the effect **parameters** (offsets 152–161). The unit
+keeps its own preset name; **re-selecting the preset** commits the live effect
+parameters, while the panel's ENTER/SAVE dialog did not store a sent effect in
+the test. `ctrl+s` performs that re-selection and verifies the read-back;
+the confirmation is green.
 
 **The send is live for the sound's levels; the track arrangement needs a reload.**
 Ear-verified on the unit on 2026-10-23: a volume send is heard immediately
@@ -427,14 +435,32 @@ single slot back, take it out on its own:
 sqcli multi --preset 12 --out slot-12.syx   # one slot, in the form `send` takes
 ```
 
-**Putting a preset back is cooperative now.** The owner selects the slot on
-the unit's front panel, the app sends the slot's backed-up bytes, and the
-unit stores them — the display's *Edited Preset* is transient, no panel
-ENTER/SAVE is needed for a dump, and the unit keeps its own name:
+**What a restore writes, and what it does not.** A dump stores the selected
+slot's **track/pile range, offsets 32–151** — that includes each track's
+pressure (the stored ON/OFF), so the arrangement is restored. It does **not**
+write the effect block (152–162) or the name (2–17): the unit keeps its own
+name, and the effect needs the panel's **ENTER/SAVE** (or the app's `ctrl+s`)
+to be stored from the working buffer. The app's local preset labels are a
+sidecar (`preset_labels.json`), not part of the unit dump, so a dump restore
+does not bring them back. A backup taken while the unit is on a slot with an
+un-stored edit captures that slot's working preset; take the backup with no
+un-stored edit, or store first. Any restore of the all-presets dump must use
+the dump's slot table (`slot = (idx + 70) % 80` on this unit), not
+`presets_raw[slot]`.
 
-1. `sqcli send slot-12.syx --yes` — the file is stored into the selected
-   slot; the dump is read back and compared byte for byte (verify=True,
-   bounded retry).
+**Local labels are backed up too.** A presets/all backup writes
+`preset_labels_<stamp>.json` beside the dump (the app's backup screen and
+`sqcli backup` both do). Restore it with `sqcli restore preset_labels_….json`;
+that is app-side only and does not touch the unit. The unit's own preset names
+are still its own and are never part of a dump.
+
+**Putting a single preset back is cooperative.** The owner selects the slot
+on the unit's front panel; the app sends the backed-up bytes; the unit stores
+the track/pile range. The effect block needs the panel's ENTER/SAVE:
+
+1. `sqcli send slot-12.syx --yes` — the track/pile range is stored into the
+   selected slot; the dump is read back and compared byte for byte
+   (verify=True, bounded retry).
 2. On the unit, panel edits still go the manual's way: **ENTER/SAVE** →
    confirm the name → pick the slot with the cursors → **ENTER/SAVE** → the
    display says *SAVED*.

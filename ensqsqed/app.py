@@ -354,7 +354,10 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
             )
             yield Static(
                 "Note: CARDA/CARDB sounds/presets can only be backed up if "
-                "the card is present and the unit can read them.",
+                "the card is present and the unit can read them. Preset names "
+                "are the unit's own and are not restored by a dump; local "
+                "labels are copied beside the dump as a sidecar. The effect "
+                "block needs the panel's ENTER/SAVE to be stored.",
                 classes="note",
             )
             yield Static("")  # spacer
@@ -1005,6 +1008,20 @@ class EnsqsqedApp(App):
             self._call_from_thread(
                 self.notify_status, f"backup error: {e}", refused=True
             )
+
+        # The app's local preset labels are user data too, and they are
+        # not part of the unit's dump (the unit owns its own names).
+        if content in ("presets", "all"):
+            labels_source = preset_labels.default_path()
+            if os.path.exists(labels_source):
+                labels = preset_labels.load(labels_source)
+                labels_file = os.path.join(backup_root, f"preset_labels_{stamp}.json")
+                preset_labels.save(labels, labels_file)
+                successful += 1
+                self._call_from_thread(
+                    self.notify_progress,
+                    f"backed up {len(labels)} local preset label(s) to {labels_file}",
+                )
 
         # Summary
         summary = f"backup complete: {successful} success, {failed} failed"
@@ -3659,9 +3676,10 @@ class EnsqsqedApp(App):
             f"store assist — the backed-up bytes of P{slot:02d} are "
             f"stored in P{slot:02d}. The send is live for the sound's "
             f"levels; the track arrangement takes effect when the preset "
-            f"is reloaded — ctrl+r forces that reload remotely. The unit "
-            f"is left in Preset Select Mode at P{slot:02d}; the unit "
-            f"keeps its own name."
+            f"is reloaded — ctrl+r forces that reload remotely. The effect "
+            f"block is outside a dump; press ENTER/SAVE on the unit to "
+            f"store it too. The unit is left in Preset Select Mode at "
+            f"P{slot:02d}; the unit keeps its own name."
         )
 
     def _store_assist_mismatch_sentence(
