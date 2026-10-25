@@ -49,6 +49,7 @@ from ensqsqed.multi import (
 )
 from sq import catalog as cat
 from sq import favorites as fav
+from sq.bridge import TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON
 from sq.presets import EXTERNAL_STATUS, Preset, Track, sound_word
 
 
@@ -161,6 +162,38 @@ class TestPresetList:
             # test only says that *something* is there.
             assert table.get_cell("0", "name").strip() != ""
 
+    async def test_the_local_label_is_shown_in_its_own_column(self):
+        """A label is the app's, beside the unit's own name."""
+        raw = _preset().to_bytes()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen([(10, raw)], favorites_like_names={10: "TEST-10"})
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#preset-table", DataTable)
+            assert table.get_cell("10", "label") == "TEST-10"
+            assert table.get_cell("10", "name").strip() != "TEST-10"
+
+    async def test_r_asks_for_a_label_and_hands_it_to_the_app(self):
+        """`r` prompts, then answers the app with (slot, text)."""
+        raw = _preset().to_bytes()
+        calls = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen(
+                [(10, raw)], on_rename=lambda slot, name: calls.append((slot, name))
+            )
+            result = []
+            await app.push_screen(screen, result.append)
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("a", "b", "c")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == [(10, "abc")]
+            assert result == [None]
+
     async def test_picking_a_row_answers_with_its_slot(self):
         raw = _preset().to_bytes()
         picked = []
@@ -185,6 +218,45 @@ class TestPresetList:
             await pilot.press("escape")
             await pilot.pause()
             assert picked == [None]
+
+
+class TestTheLocalLabel:
+    """The app's label, shown beside the unit's own preset name."""
+
+    async def test_the_label_is_shown_beside_the_units_name(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                local_label="TEST-10",
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            title = screen.query_one("#multi-title", Label)
+            assert "TEST-10" in str(title.render())
+
+    async def test_r_hands_the_label_to_the_app(self):
+        calls = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_rename=calls.append,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("a", "b", "c")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["abc"]
 
 
 class TestTheSoundPicker:
@@ -393,7 +465,7 @@ class TestTheColumns:
             assert len(set(seen[: len(COLUMN_VIEWS)])) == len(COLUMN_VIEWS)
             assert seen[0] == seen[-1]
 
-    async def test_every_view_has_a_track_and_a_state_column(self):
+    async def test_every_view_starts_with_the_track_and_on_columns(self):
         app = _Host()
         async with app.run_test() as pilot:
             screen = MultiScreen(
@@ -414,7 +486,7 @@ class TestTheColumns:
 
     async def test_the_hints_name_the_keys(self):
         assert "tab columns" in KEY_HINTS_BLOCK
-        assert "space track layer" in KEY_HINTS_BLOCK
+        assert "space track on/off" in KEY_HINTS_BLOCK
 
 
 class TestEditing:
@@ -681,10 +753,10 @@ class TestTheGateInTheScreen:
             assert "no write gate" in _status(screen)
 
 
-class TestTheTrackSwitch:
-    """``space``: the track in the layer list and out of it."""
+class TestTheTrackOnOff:
+    """``space`` toggles the stored marker: pressure 3 is OFF."""
 
-    async def test_space_switches_the_track_on(self):
+    async def test_space_sets_pressure_3(self):
         preset = _preset()
         applied = []
         app = _Host()
@@ -702,85 +774,14 @@ class TestTheTrackSwitch:
             _focus(table, 1, "trk")
             await pilot.press("space")
             await pilot.pause()
-            # The pile is what changed: the track's own byte names it.
-            assert preset.pile[1] == 2
-            assert preset.is_active(2)
-            assert preset.tracks[1].status == 1, "a switch-on keeps LOCAL"
-            assert applied == ["track 2 off→on"]
+            assert preset.tracks[1].pressure == 3
+            assert not preset.tracks[1].is_on
+            assert applied and "pressure" in applied[-1]
+            assert "OFF" in str(table.get_cell("t2", "on"))
 
-    async def test_switching_off_a_middle_track_leaves_no_hole(self):
-        """Two layered tracks, then the lower one off: the pile compacts."""
+    async def test_space_turns_an_off_track_back_on(self):
         preset = _preset()
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=True,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")
-            _focus(table, 2, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert preset.pile == bytes([1, 2, 3, 0, 0, 0, 0, 0])
-            _focus(table, 1, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert preset.pile == bytes([1, 3, 0, 0, 0, 0, 0, 0])
-            assert not preset.is_active(2)
-            assert preset.is_active(3)
-            assert preset.tracks[1].status == 1, "the status byte is untouched"
-            assert preset.tracks[2].status == 1
-            assert applied[-1] == "track 2 on→off"
-
-    async def test_switching_off_leaves_every_status_byte_alone(self):
-        """Off is the pile.  The status byte is not part of it any more.
-
-        A dump that carries *EXT* silences the track in the stored
-        preset and nowhere else, and it latches: a later dump that
-        restores LOCAL does not bring the live map back.  So the switch
-        writes the pile and nothing else.
-        """
-        preset = _preset()
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=True,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")  # on
-            await pilot.pause()
-            assert preset.tracks[1].status == 1
-            before = [track.status for track in preset.tracks]
-            await pilot.press("space")  # off
-            await pilot.pause()
-            assert not preset.is_active(2)
-            assert [track.status for track in preset.tracks] == before
-            assert preset.tracks[1].status != EXTERNAL_STATUS
-            assert applied[-1] == "track 2 on→off"
-
-    async def test_switching_off_says_the_live_switch_is_on_the_panel(self):
-        """The sentence must not promise a live change.
-
-        The unit's live switch is a front-panel gesture, and the status
-        line says where it is instead of pretending the dump did it.
-        """
-        preset = _preset()
+        preset.tracks[1] = preset.tracks[1].updated(pressure=3)
         app = _Host()
         async with app.run_test() as pilot:
             screen = MultiScreen(
@@ -796,90 +797,11 @@ class TestTheTrackSwitch:
             _focus(table, 1, "trk")
             await pilot.press("space")
             await pilot.pause()
-            said = _status(screen)
-            assert "layer list" in said
-            assert "front panel" in said
-            assert "ENTER/SAVE" in said
+            assert preset.tracks[1].pressure == 1
+            assert preset.tracks[1].is_on
+            assert "on" in str(table.get_cell("t2", "on"))
 
-    async def test_the_primary_track_cannot_be_switched_off(self):
-        preset = _preset()
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=True,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 0, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert preset.is_active(1)
-            assert applied == []
-            assert "primary" in _status(screen)
-
-    async def test_a_primary_track_marked_external_can_be_switched_on(self):
-        """The refusal is about switching it off, not about recovery."""
-        preset = _preset()
-        preset.tracks[0] = preset.tracks[0].updated(status=EXTERNAL_STATUS)
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=True,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 0, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert preset.tracks[0].status == 1
-            assert applied == ["track 1 off→on"]
-
-    async def test_a_stored_external_track_is_repaired_to_local(self):
-        """Switching a track on repairs a stored *EXT* status.
-
-        *EXT* is the status that stops the internal voices, so a track
-        the user wants to hear should not carry it.  The repair is of
-        the *stored* preset: the unit applies it when the preset is
-        selected again.
-        """
-        preset = _preset()
-        preset.tracks[1] = preset.tracks[1].updated(status=EXTERNAL_STATUS)
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=True,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert preset.tracks[1].status == 1
-            assert preset.is_active(2)
-            assert applied == ["track 2 off→on"]
-            said = _status(screen)
-            assert "LOCAL" in said
-            assert "selected again" in said
-
-    async def test_a_switched_on_track_can_be_switched_off_again(self):
+    async def test_enter_on_the_on_cell_toggles_pressure_1_to_3(self):
         preset = _preset()
         app = _Host()
         async with app.run_test() as pilot:
@@ -893,14 +815,52 @@ class TestTheTrackSwitch:
             await app.push_screen(screen)
             await pilot.pause()
             table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")
+            _focus(table, 1, "on")
+            await pilot.press("enter")
             await pilot.pause()
-            await pilot.press("space")
+            assert preset.tracks[1].pressure == 3
+            assert not preset.tracks[1].is_on
+
+    async def test_enter_on_the_on_cell_toggles_pressure_3_to_1(self):
+        preset = _preset()
+        preset.tracks[1] = preset.tracks[1].updated(pressure=3)
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
             await pilot.pause()
-            assert preset.pile[1] == 0
-            assert not preset.is_active(2)
-            assert preset.tracks[1].status == 1, "the status byte is untouched"
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "on")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert preset.tracks[1].pressure == 1
+            assert preset.tracks[1].is_on
+
+    async def test_a_cell_selected_event_on_the_on_cell_toggles(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "on")
+            event = SimpleNamespace(data_table=table)
+            screen.on_data_table_cell_selected(event)
+            await pilot.pause()
+            assert preset.tracks[0].pressure == 3
 
 
 class TestTheRange:
@@ -1171,7 +1131,7 @@ class TestTheRefusalsOfTheScreen:
             assert "0-99" in _status(screen)
 
     async def test_editing_the_track_number_is_refused(self):
-        """The track's own number is not a value; space is the gesture."""
+        """The track's own number is not a value."""
         app = _Host()
         async with app.run_test() as pilot:
             screen = MultiScreen(
@@ -1187,29 +1147,7 @@ class TestTheRefusalsOfTheScreen:
             _focus(table, 0, "trk")
             await pilot.press("enter")
             await pilot.pause()
-            assert "space switches" in _status(screen)
-
-    async def test_a_switch_is_refused_when_the_write_path_is_closed(self):
-        preset = _preset()
-        applied = []
-        app = _Host()
-        async with app.run_test() as pilot:
-            screen = MultiScreen(
-                preset,
-                on_apply=lambda live, description: applied.append(description),
-                on_undo=lambda count: None,
-                on_sound_picked=lambda index, number: None,
-                allow_write=False,
-            )
-            await app.push_screen(screen)
-            await pilot.pause()
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")
-            await pilot.pause()
-            assert applied == []
-            assert preset.pile[1] == 0
-            assert "refused" in _status(screen)
+            assert "not a value" in _status(screen)
 
 
 class TestTheTypedValue:
@@ -1521,6 +1459,80 @@ class TestTheRedrawSeam:
             await pilot.pause()
             assert table.get_cell("t1", "volume") == "8"
 
+    async def test_redraw_keeps_cursor_row_and_column(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "pressure")
+            before = table.cursor_coordinate
+            before_key = table.coordinate_to_cell_key(before)
+            screen.redraw()
+            await pilot.pause()
+            after = table.cursor_coordinate
+            after_key = table.coordinate_to_cell_key(after)
+            assert after.row == before.row
+            assert after.column == before.column
+            assert after_key.row_key.value == before_key.row_key.value
+            assert after_key.column_key.value == before_key.column_key.value
+
+    async def test_redraw_keeps_cursor_on_name_column(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 2, "name")
+            before = table.cursor_coordinate
+            screen.redraw()
+            await pilot.pause()
+            after = table.cursor_coordinate
+            assert after.row == before.row
+            assert after.column == before.column
+
+    async def test_set_preset_keeps_cursor_row_and_column(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=True,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 1, "pressure")
+            before = table.cursor_coordinate
+            screen.set_preset(_preset())
+            await pilot.pause()
+            after = table.cursor_coordinate
+            assert after.row == before.row
+            assert after.column == before.column
+
     async def test_the_screen_tells_the_app_when_it_closes(self):
         closed = []
         app = _Host()
@@ -1822,7 +1834,14 @@ class TestThePresetListEdges:
 class TestTheLiveMute:
     """``l`` is the unit's own Track pair as a chord -- the live mute."""
 
-    async def test_the_gate_closed_refuses_before_anything_is_sent(self):
+    async def test_the_locked_gate_does_not_stop_the_panel_gesture(self):
+        """The live mute is a panel gesture, not a preset write.
+
+        The gate guards this program's writes; the Track pair is the
+        unit's own control, and the remote window sends the same chord
+        ungated.  Refusing it here would take away the one control that
+        turns a track off while the gate is locked.
+        """
         called = []
         app = _Host()
         async with app.run_test() as pilot:
@@ -1837,9 +1856,7 @@ class TestTheLiveMute:
             await pilot.pause()
             await pilot.press("l")
             await pilot.pause()
-            assert called == []
-            said = str(screen.query_one(".status", Static).content)
-            assert "refused" in said
+            assert called == [True]
 
     async def test_an_armed_gate_hands_the_chord_to_the_app(self):
         called = []
@@ -1859,6 +1876,27 @@ class TestTheLiveMute:
             await pilot.press("l")
             await pilot.pause()
             assert called == [True]
+
+    async def test_o_and_p_move_the_units_own_track_cursor(self):
+        """The Track keys alone step the panel cursor, one at a time."""
+        sent = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_panel_button=sent.append,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("o")
+            await pilot.press("p")
+            await pilot.pause()
+            assert sent == [TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON]
+            said = str(screen.query_one(".status", Static).content)
+            assert "watch the unit" in said
 
 
 class TestTheEffectEditorFromHere:
@@ -1880,3 +1918,116 @@ class TestTheEffectEditorFromHere:
             await pilot.press("x")
             await pilot.pause()
             assert opened == [True]
+
+
+class TestTheGateOnSpace:
+    """A locked gate refuses a space edit visibly."""
+
+    async def test_a_locked_gate_refuses_space_on_the_on_cell(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=EditGate(),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "on")
+            before = preset.tracks[0].pressure
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.tracks[0].pressure == before
+            assert applied == []
+            said = _status(screen)
+            assert "refused" in said.lower()
+
+    async def test_allow_write_false_refuses_space_on_the_on_cell(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                allow_write=False,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "on")
+            before = preset.tracks[0].pressure
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.tracks[0].pressure == before
+            assert applied == []
+            assert "refused" in _status(screen).lower()
+
+    async def test_an_armed_gate_lets_space_change_pressure_and_call_on_apply(self):
+        preset = _preset()
+        applied = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: applied.append(description),
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=EditGate(armed=True),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#track-table", DataTable)
+            _focus(table, 0, "on")
+            await pilot.press("space")
+            await pilot.pause()
+            assert preset.tracks[0].pressure == 3
+            assert applied, "on_apply was called"
+
+    async def test_w_toggles_the_gate_and_the_gate_note(self):
+        preset = _preset()
+        gate = EditGate()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                gate=gate,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            note = screen.query_one("#multi-gate-note", Static)
+            assert "locked" in str(note.content).lower()
+            await pilot.press("w")
+            await pilot.pause()
+            assert "armed" in str(note.content).lower()
+            await pilot.press("w")
+            await pilot.pause()
+            assert "locked" in str(note.content).lower()
+
+    async def test_refresh_note_does_not_overwrite_the_store_note(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            store_note = screen.query_one("#multi-store-note", Static)
+            before = str(store_note.content)
+            screen._refresh_note()
+            await pilot.pause()
+            assert str(store_note.content) == before

@@ -201,7 +201,7 @@ class TestTheConfigIsWrittenSafely:
     def test_the_import_folder_round_trips(self, tmp_path):
         """The picker remembers where the last import file came from."""
         path = str(tmp_path / "config.toml")
-        config.save_ui_state(path, import_folder="/music/syx")
+        config.save_ui_state(path=path, import_folder="/music/syx")
         assert config.load_ui_state(path)["import_folder"] == "/music/syx"
 
     def test_an_import_folder_that_is_not_a_string_is_ignored(self, tmp_path):

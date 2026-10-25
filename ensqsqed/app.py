@@ -48,6 +48,8 @@ projects exist to avoid.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import sys
 import threading
 from collections import deque
@@ -60,7 +62,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Header, Input, Static
+from textual.widgets import DataTable, Header, Input, ProgressBar, RadioSet, Static
 
 from ensqsqed.choices import ChoicePicker
 from ensqsqed.file_picker import FilePickerScreen, start_folder
@@ -70,20 +72,28 @@ from ensqsqed.import_bank import BankImportScreen
 from ensqsqed.import_single import SingleImportScreen
 from ensqsqed.multi import (
     COLUMN_VIEWS,
-    ON_COLUMN,
     MultiScreen,
     PresetListScreen,
     SoundPickerScreen,
 )
-from ensqsqed.remote import PANEL_KEYS as _PANEL_KEYS, RemoteScreen
+from ensqsqed.remote import PANEL_KEYS as _PANEL_KEYS, SELECT_PRESET, RemoteScreen
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
 from sq import importer
 from sq import messages as msg
-from sq.bridge import AllPresetsDump, DeviceError, PresetMismatch
+from sq import preset_labels
+from sq import preset_cache
+from sq.bridge import (
+    AllPresetsDump,
+    DeviceError,
+    PRESET_SETTLE,
+    PresetAlert,
+    PresetMismatch,
+    preset_needs_write,
+)
 from sq.favorites import Favorites, Favorite
-from sq.presets import Preset, sound_word
+from sq.presets import PRESSURE_NAMES, STATUS_NAMES, Preset, sound_word
 from vinsynlib.favorites import rating_cell
 from vinsynlib import keys
 from vinsynlib.cli import add_common_arguments, make_parser, validate_common
@@ -162,6 +172,12 @@ STUCK_SLOT_LIMIT = 4
 #: twelve-second re-read on every press is what this cache exists to
 #: avoid; a stale entry is re-read after this many seconds.
 PRESET_CACHE_TTL = 60.0
+
+#: How long a persisted sidecar (the live names) or the all-presets
+#: cache is trusted at startup.  A fresh cache means no startup MIDI
+#: read and therefore no "busy" gap; an old or missing one is checked
+#: once, in the background, with the startup meter saying so.
+STARTUP_CHECK_TTL = 6 * 3600.0
 
 #: How many times the store assist asks the unit to take the backed-up
 #: bytes.  The receiver measured on 2026-10-22 accepted byte-identical
@@ -273,6 +289,116 @@ class WaitScreen(ModalScreen[None]):
             )
 
 
+#: The writable sound groups an import can target, in the order the target
+#: choice lists them. ``ROM`` and ``DRUM`` are not writable, so they are
+#: never offered.
+_IMPORT_BANKS = ("INT", "CARDA", "CARDB")
+
+#: The panel's words for each writable group.  The wire takes the group id;
+#: every sentence a person reads uses these.
+_IMPORT_LABELS = {
+    "INT": "Internal (RAM)",
+    "CARDA": "Card A",
+    "CARDB": "Card B",
+}
+
+
+class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
+    """Screen for selecting backup options.
+
+    Let the user select which sound groups to back up (INT, CARDA, CARDB),
+    either individually or all at once, and what content to back up (sounds,
+    presets, or all content).  When the user confirms, the screen dismisses
+    with the selected options and the app performs the backup.
+    """
+
+    DEFAULT_CSS = """
+    BackupSelectionScreen { align: center middle; }
+    BackupSelectionScreen > Vertical {
+        width: 60; height: auto; border: thick $accent;
+        background: $surface; padding: 1 2;
+    }
+    BackupSelectionScreen .label { margin: 1 0; }
+    BackupSelectionScreen .note { height: auto; color: $text-muted; }
+    """
+
+    def __init__(
+        self,
+        *,
+        backup_root: str = "",
+    ) -> None:
+        super().__init__()
+        self._backup_root = backup_root
+        self._selected_groups: set[str] = set()
+        self._selected_content: str = "sounds"  # sounds, presets, all
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+        from textual.widgets import Checkbox, DataTable, Label, RadioSet, Static
+
+        with Vertical():
+            yield Label("Select sound groups to back up", classes="label")
+            yield RadioSet(
+                "All groups (INT, Card A, Card B)",
+                "Internal (INT)",
+                "Card A",
+                "Card B",
+                id="groups",
+            )
+            yield Label("Select content to back up", classes="label")
+            yield RadioSet(
+                "Sounds",
+                "Presets",
+                "All content",
+                id="content",
+            )
+            yield Static(
+                "Note: CARDA/CARDB sounds/presets can only be backed up if "
+                "the card is present and the unit can read them.",
+                classes="note",
+            )
+            yield Static("")  # spacer
+            yield Static("")  # spacer
+
+    def on_radio_set_selected(self, event: RadioSet.Selected) -> None:
+        """Handle group and content selection changes."""
+        if event.region == "groups":
+            # "All groups" overrides individual selections
+            if event.pressed_label == "All groups (INT, Card A, Card B)":
+                self._selected_groups = {"INT", "CARDA", "CARDB"}
+            else:
+                # Individual group selection: determine which was pressed
+                label = event.pressed_label
+                if label == "Internal (INT)":
+                    self._selected_groups = {"INT"}
+                elif label == "Card A":
+                    self._selected_groups = {"CARDA"}
+                elif label == "Card B":
+                    self._selected_groups = {"CARDB"}
+                else:
+                    # If "All groups" was unselected and no individual is
+                    # pressed, clear selection
+                    self._selected_groups = set()
+        elif event.region == "content":
+            if event.pressed_label == "Sounds":
+                self._selected_content = "sounds"
+            elif event.pressed_label == "Presets":
+                self._selected_content = "presets"
+            elif event.pressed_label == "All content":
+                self._selected_content = "all"
+
+    def action_button_press(self) -> None:
+        """Handle button presses (Enter or button click)."""
+        # The modal owns its own button handling; dismiss with selections
+        self.dismiss(
+            {
+                "groups": self._selected_groups,
+                "content": self._selected_content,
+                "backup_root": self._backup_root,
+            }
+        )
+
+
 #: The legend. Every binding the app has, in the order somebody meets them.
 #: Built from the family's shared legend rather than hand-written: it used
 #: to be a tuple of its own, in its own order. ``keys.legend`` puts this
@@ -379,6 +505,17 @@ class EnsqsqedApp(App):
     CSS = """
     Screen { layers: base; }
     #panes { height: 1fr; }
+    /* The startup meter, shown only while the background reads run. */
+    #startup {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+    }
+    #startup-label { width: auto; padding-right: 1; color: $text; }
+    #startup-label.waiting { color: $warning; text-style: bold; }
+    #startup-label.ready { color: $success; text-style: bold; }
+    #startup-bar { width: 1fr; }
+    #startup.hidden { display: none; }
     /* Sized to its content. A fixed width does not truncate the end
        of a label -- the table scrolls sideways and clips the
        *start*, so a bank reads as nonsense rather than as narrow. */
@@ -388,14 +525,21 @@ class EnsqsqedApp(App):
     }
     #slot-table { width: 1fr; }
     DataTable { height: 1fr; }
-    #detail { height: 3; padding: 0 1; border-top: solid $panel; }
-    #status { height: 1; background: $boost; color: $text; padding: 0 1; }
+    #detail { height: auto; padding: 0 1; border-top: solid $panel; }
+    KeyHints { max-height: 3; overflow-y: hidden; }
     /* The ID is repeated or the rule never paints: an ID selector outranks
        a class, so a bare ``.refused`` was dead CSS and every refusal drew in
        the same grey as a success. Red and bold, the sibling rxved's shape,
        so a refused action is legible at a glance. */
     #status.refused {
         background: $error;
+        color: $text;
+        text-style: bold;
+    }
+    /* A verified write's confirmation: green, so "stored" cannot be
+       mistaken for another grey status line. */
+    #status.ok {
+        background: $success;
         color: $text;
         text-style: bold;
     }
@@ -440,6 +584,8 @@ class EnsqsqedApp(App):
         # `.mid`. It is destructive, so it is the browser's only capital
         # `I` and its whole flow asks twice behind the write gate.
         Binding("I", "import", "Import"),
+        # `b` opens the backup selection screen.
+        Binding("b", "backup", "Backup"),
         # `M` toggles the unit's panel between Select Sound and Select
         # Preset -- the two mode keys, on one key.  `m` is the editor.
         Binding("M", "toggle_mode", "Mode"),
@@ -529,16 +675,31 @@ class EnsqsqedApp(App):
         #: When the preset bank was last read, for the warm cache.  The
         #: bank changes only on the panel, so a short-lived cache is safe.
         self._all_dump_at: float = 0.0
+        #: Timer handle for the reload progress meter.
+        self._reload_timer: Optional[Any] = None
+        self._reload_t0: float = 0.0
+        #: The user's own labels for preset slots.  Local to this app: the
+        #: unit keeps its own preset name, and a dump never writes it.
+        self._preset_labels: Dict[int, str] = preset_labels.load()
         #: The editor screens that are open, so that a worker that
         #: finishes after its screen closed still has somewhere to
         #: report -- and so that the app knows which screen an undo
         #: belongs to.
         self._multi_screen: Optional[MultiScreen] = None
+        #: The preset list screen, while open, so a reload worker can
+        #: update it rather than pushing a new modal.
+        self._preset_list_screen: Optional[PresetListScreen] = None
+        #: Whether the multi screen was opened from the preset list.
+        #: When True, dismissing the multi screen should re-open the
+        #: preset list rather than restoring a previous editor.
+        self._multi_from_preset_list = False
         self._fx_screen: Optional[FxScreen] = None
         self._remote_screen: Optional[RemoteScreen] = None
         #: The panel mode the last ``M`` left the unit in.  The unit does
         #: not report it, so this is the app's memory of what it sent.
         self._remote_mode: str = "SOUND"
+        #: Whether the mode claim is real — false until the user presses M.
+        self._remote_mode_confirmed: bool = False
         #: The single-sound import screen, while one is open.  A worker
         #: that rereads the bank after a write reports back through this,
         #: and a screen that has already closed is ``None``.
@@ -579,6 +740,21 @@ class EnsqsqedApp(App):
         #: find neither signal set and start a second worker. ``_busy``
         #: reads this claim as the third signal.
         self._exchange = threading.Lock()
+        #: The UI thread's ident, set by ``on_mount``.  Workers use it to
+        #: decide whether a completion callback is already on the UI thread
+        #: (a test or a direct call) and may run at once, or must be
+        #: marshalled with ``call_from_thread``.
+        self._thread_id: Optional[int] = None
+        #: The startup meter: which background reads were queued, how many
+        #: are done, and when the first started.  Empty means no startup
+        #: work, and the meter stays hidden.
+        self._startup_phases: List[str] = []
+        self._startup_done = 0
+        self._startup_t0 = 0.0
+        self._startup_active = False
+        self._startup_names_inflight = False
+        self._startup_presets_inflight = False
+        self._startup_text = ""
         #: The family's undo log. ``plan``/``settle`` are the doors used
         #: here: the re-send runs on a worker, so the entries leave the log
         #: as the plan is taken, on the main thread, and ``settle`` reports
@@ -668,8 +844,182 @@ class EnsqsqedApp(App):
         self._gate.toggle()
         self.notify_status(self._gate.describe())
 
+    def action_backup(self) -> None:
+        """``b``: open the backup selection screen."""
+        self.push_screen(
+            BackupSelectionScreen,
+            self._handle_backup_selection,
+        )
+
+    def _handle_backup_selection(self, result: Optional[Dict[str, Any]]) -> None:
+        """Handle the backup selection screen dismissal.
+
+        ``result`` is ``None`` when the user cancels, or a dict with
+        ``groups`` (set of group ids), ``content`` ("sounds"|"presets"|"all"),
+        and ``backup_root`` when the user confirms.
+        """
+        if result is None:
+            self.notify_status("backup cancelled", refused=True)
+            return
+
+        groups: set[str] = result["groups"]
+        content: str = result["content"]
+        backup_root: str = result.get("backup_root", cfg.DEFAULT_BACKUP_ROOT)
+
+        self.notify_status(f"backup starting: groups={groups}, content={content}")
+
+        # Run the backup in a worker thread
+        self.run_worker(
+            lambda: self._do_backup(groups, content, backup_root), thread=True
+        )
+
+    def _do_backup(self, groups: set[str], content: str, backup_root: str) -> None:  # noqa: C901
+        """Perform the actual backup operation.
+
+        This runs in a worker thread.  It uses the bridge's backup methods
+        and writes the results to files in the backup directory.
+        """
+        import os
+        import time
+
+        # Ensure backup directory exists
+        os.makedirs(backup_root, exist_ok=True)
+
+        bridge = self.device  # type: ignore[attr-defined]
+        if bridge is None:
+            self._call_from_thread(
+                self.notify_status, "no device connected", refused=True
+            )
+            return
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        successful = 0
+        failed = 0
+
+        try:
+            int_done = False
+            if (
+                content == "all"
+                and "INT" in groups
+                and hasattr(bridge, "read_everything")
+            ):
+                try:
+                    everything = bridge.read_everything()
+                    filename = os.path.join(backup_root, f"everything_{stamp}.syx")
+                    with open(filename, "wb") as f:
+                        f.write(everything.wire())
+                    successful += 1
+                    int_done = True
+                    self._call_from_thread(
+                        self.notify_progress,
+                        f"backed up everything (all sounds + all presets) to "
+                        f"{filename} ({len(everything.wire())} bytes, "
+                        f"one command-05 dump)",
+                    )
+                except Exception as exc:
+                    failed += 1
+                    self._call_from_thread(
+                        self.notify_status,
+                        f"full dump failed ({exc}); falling back to separate reads",
+                        refused=True,
+                    )
+            if "INT" in groups and not int_done:
+                if content in ("sounds", "all"):
+                    # Backup internal sounds
+                    data = bridge.backup_sounds("INT")
+                    filename = os.path.join(backup_root, f"internal_sounds_{stamp}.bin")
+                    with open(filename, "wb") as f:
+                        f.write(data)
+                    successful += 1
+                    self._call_from_thread(
+                        self.notify_progress,
+                        f"backed up INT sounds to {filename} ({len(data)} bytes)",
+                    )
+                if content in ("presets", "all"):
+                    # Backup internal presets
+                    try:
+                        data = bridge.backup_presets("INT")
+                        filename = os.path.join(
+                            backup_root, f"internal_presets_{stamp}.bin"
+                        )
+                        with open(filename, "wb") as f:
+                            f.write(data)
+                        successful += 1
+                        self._call_from_thread(
+                            self.notify_progress,
+                            f"backed up INT presets to {filename} ({len(data)} bytes)",
+                        )
+                    except ValueError as e:
+                        failed += 1
+                        self._call_from_thread(
+                            self.notify_status,
+                            f"failed to backup INT presets: {e}",
+                            refused=True,
+                        )
+            for group in groups:
+                if group in ("CARDA", "CARDB"):
+                    if content in ("sounds", "all"):
+                        try:
+                            data = bridge.backup_sounds(group)
+                            filename = os.path.join(
+                                backup_root, f"{group.lower()}_sounds_{stamp}.bin"
+                            )
+                            with open(filename, "wb") as f:
+                                f.write(data)
+                            successful += 1
+                            self._call_from_thread(
+                                self.notify_progress,
+                                f"backed up {group} sounds to {filename} "
+                                f"({len(data)} bytes)",
+                            )
+                        except (ValueError, Exception) as e:
+                            failed += 1
+                            self._call_from_thread(
+                                self.notify_status,
+                                f"failed to backup {group} sounds: {e}",
+                                refused=True,
+                            )
+                    if content in ("presets", "all"):
+                        try:
+                            data = bridge.backup_presets(group)
+                            filename = os.path.join(
+                                backup_root, f"{group.lower()}_presets_{stamp}.bin"
+                            )
+                            with open(filename, "wb") as f:
+                                f.write(data)
+                            successful += 1
+                            self._call_from_thread(
+                                self.notify_progress,
+                                f"backed up {group} presets to {filename} "
+                                f"({len(data)} bytes)",
+                            )
+                        except ValueError as e:
+                            failed += 1
+                            self._call_from_thread(
+                                self.notify_status,
+                                f"failed to backup {group} presets: {e}",
+                                refused=True,
+                            )
+        except Exception as e:
+            failed += 1
+            self._call_from_thread(
+                self.notify_status, f"backup error: {e}", refused=True
+            )
+
+        # Summary
+        summary = f"backup complete: {successful} success, {failed} failed"
+        self._call_from_thread(self.notify_status, summary)
+
     def compose(self) -> ComposeResult:
         yield Header()
+        with Horizontal(id="startup", classes="hidden"):
+            yield Static("startup", id="startup-label")
+            yield ProgressBar(
+                total=None,
+                show_percentage=False,
+                show_eta=False,
+                id="startup-bar",
+            )
         with Horizontal(id="panes"):
             yield DataTable(id="bank-table", cursor_type="row")
             yield DataTable(id="slot-table", cursor_type="row")
@@ -681,6 +1031,7 @@ class EnsqsqedApp(App):
         yield KeyHints(KEY_HINTS)
 
     def on_mount(self) -> None:
+        self._thread_id = threading.get_ident()
         self.title = "ensqsqed"
         table = self.query_one("#bank-table", DataTable)
         for label, key in (("group", "bank"), ("n", "n"), ("src", "src"), ("♥", "fav")):
@@ -736,16 +1087,17 @@ class EnsqsqedApp(App):
 
         self._fill(self._current_bank)
         table.focus()
-        if self._read_names_at_startup and hasattr(self.device, "read_names"):
+        self._load_preset_cache()
+        self._startup_begin()
+        if "Internal names" in self._startup_phases:
             # The sidecar above paints the first frame, but it can be
             # stale: the panel, or an import, changes the bank without
-            # this program knowing.  Read the Internal bank once in the
-            # background on every launch.  It holds the exchange for about
-            # ten seconds, never the UI, and rewrites the sidecar when it
-            # lands.  `r` still refreshes on demand.
+            # this program knowing.  Check it once in the background when
+            # it is old (or missing); a fresh one costs no gap.  `r` still
+            # refreshes on demand.
             self.set_timer(0.3, self._startup_read_names)
 
-        if self._read_names_at_startup and hasattr(self.device, "read_all_presets"):
+        if "the 80 presets" in self._startup_phases:
             # The preset bank is a twelve-second read.  Warm the cache in
             # the background so `p` opens at once; the worker waits for any
             # other exchange (the names read) to finish before it starts.
@@ -868,17 +1220,21 @@ class EnsqsqedApp(App):
 
     # --- status -------------------------------------------------------------
 
-    def notify_status(self, message: str, *, refused: bool = False) -> None:
+    def notify_status(
+        self, message: str, *, refused: bool = False, success: bool = False
+    ) -> None:
         """Say the last thing; a refusal goes red and bold.
 
         The family's shape (rxved): the widget carries a ``refused`` class
         rather than a text prefix, so a refusal is a red bar the eye cannot
-        miss instead of another grey status line.
+        miss instead of another grey status line.  ``success`` is its green
+        counterpart, used for a write that was verified by a read-back.
         """
         self._last_status_refused = refused
         status = self.query_one("#status", Static)
         status.update(message)
         status.set_class(refused, "refused")
+        status.set_class(success and not refused, "ok")
 
     def notify_progress(self, message: str) -> None:
         """Report a background worker's running total, which is not news.
@@ -889,6 +1245,21 @@ class EnsqsqedApp(App):
         if getattr(self, "_last_status_refused", False):
             return
         self.notify_status(message)
+
+    def _call_from_thread(self, callback, *args, **kwargs) -> None:
+        """Call ``callback`` on the app's UI thread, from any thread.
+
+        ``call_from_thread`` refuses to run when the caller is already on
+        the UI thread, which makes a worker method impossible to invoke
+        directly (as tests and ``_do_backup``'s callers do).  Fall back to
+        a direct call in that case.
+        """
+        import threading
+
+        if getattr(self, "_thread_id", None) == threading.get_ident():
+            callback(*args, **kwargs)
+        else:
+            self.call_from_thread(callback, *args, **kwargs)
 
     def _update_subtitle(self) -> None:
         """Say in the header which pane this is and which channel sends on.
@@ -943,7 +1314,9 @@ class EnsqsqedApp(App):
             editing = f"   ·   editing “{_plain(name)}”"
         self.sub_title = (
             f"{filters}{what}   ·   ch {self._channel() + 1}"
-            f"   ·   mode {self._remote_mode.title()}{editing}"
+            f"   ·   mode "
+            f"{self._remote_mode.title() if self._remote_mode_confirmed else '?'}"
+            f"{editing}"
         )
 
     # --- navigation ---------------------------------------------------------
@@ -1020,9 +1393,9 @@ class EnsqsqedApp(App):
             self._exchange.release()
         if failure is not None:
             msg = f"select: {failure}"
-            self.call_from_thread(self.notify_status, msg, refused=True)
+            self._call_from_thread(self.notify_status, msg, refused=True)
             return
-        self.call_from_thread(
+        self._call_from_thread(
             self.notify_status,
             f"selected {entry.display} — "
             + (
@@ -1063,7 +1436,146 @@ class EnsqsqedApp(App):
             return
         self._read_worker(self._current_bank)
 
-    def _startup_read_names(self) -> None:
+    # --- the startup meter ---------------------------------------------------
+
+    def _load_preset_cache(self) -> None:
+        """Open on the last all-presets dump, if there is one.
+
+        The dump is twelve seconds on the wire; a cache means ``p`` is
+        instant and the instrument is only asked again when the cache is
+        old.  A cache that cannot be parsed is ignored, not fatal.
+        """
+        if self._all_dump is not None:
+            return
+        if not self._read_names_at_startup:
+            # Without the startup reads the app behaves as it did before
+            # the cache existed: `p` reads on demand.  This also keeps a
+            # test's fake device from being overridden by a real cache.
+            return
+        data = preset_cache.load()
+        if not data:
+            return
+        try:
+            alert = PresetAlert(
+                command=msg.CommandType.ALL_SEQUENCE_ALERT, size=0, count=80
+            )
+            self._all_dump = AllPresetsDump._from_reply(data, alert)
+            self._all_dump_at = time.monotonic()
+        except (DeviceError, ValueError, IndexError):
+            self._all_dump = None
+
+    def _startup_stale(self, path: Optional[str]) -> bool:
+        """Whether a sidecar is missing or older than the check interval."""
+        if not path:
+            return True
+        try:
+            return (time.time() - os.path.getmtime(path)) > STARTUP_CHECK_TTL
+        except OSError:
+            return True
+
+    def _startup_begin(self) -> None:
+        """Queue the startup checks that are actually needed, and show why.
+
+        A fresh sidecar/cache means no MIDI read at all, so the app has no
+        "busy" gap: the cached data is already on screen.  Only a missing
+        or stale cache is checked, and the meter says what is running.
+        """
+        phases: List[str] = []
+        if (
+            self._read_names_at_startup
+            and hasattr(self.device, "read_names")
+            and self._startup_stale(self._live_names_path)
+        ):
+            phases.append("Internal names")
+        if (
+            self._read_names_at_startup
+            and hasattr(self.device, "read_all_presets")
+            and (
+                self._all_dump is None
+                or (preset_cache.age_seconds() or 0) > STARTUP_CHECK_TTL
+            )
+        ):
+            phases.append("the 80 presets")
+        self._startup_phases = phases
+        self._startup_done = 0
+        self._startup_t0 = time.monotonic()
+        self._startup_active = bool(phases)
+        if not phases:
+            return
+        self._startup_text = "waiting for the unit"
+        self._show_startup(self._startup_text)
+        self.set_interval(0.5, self._tick_startup)
+
+    def _show_startup(self, text: str) -> None:
+        """Show the meter with this phase text, if the app is mounted."""
+        try:
+            self.query_one("#startup", Horizontal).remove_class("hidden")
+            label = self.query_one("#startup-label", Static)
+            label.update(f"startup: {text}")
+            label.set_class(True, "waiting")
+            label.set_class(False, "ready")
+        except Exception:  # pragma: no cover - called before compose
+            return
+
+    def _tick_startup(self) -> None:
+        """Refresh the elapsed seconds while a startup read is running."""
+        if not self._startup_active:
+            return
+        elapsed = time.monotonic() - self._startup_t0
+        try:
+            status = self.query_one("#startup-label", Static)
+            status.update(f"startup: {self._startup_text} — {elapsed:.0f}s")
+        except Exception:  # pragma: no cover - the app closed under us
+            return
+
+    def _startup_step(self, text: str) -> None:
+        """Name the phase that just started and refresh the meter."""
+        self._startup_text = text
+        self._show_startup(text)
+        self._tick_startup()
+
+    def _startup_step_done(self) -> None:
+        """One phase finished.  Main thread."""
+        if not self._startup_active:
+            return
+        self._startup_done += 1
+        if self._startup_done >= len(self._startup_phases):
+            self._startup_text = "ready"
+            self._tick_startup()
+            try:
+                label = self.query_one("#startup-label", Static)
+            except Exception:  # pragma: no cover - the app closed under us
+                label = None
+            if label is not None:
+                label.set_class(False, "waiting")
+                label.set_class(True, "ready")
+            self._startup_active = False
+            self.set_timer(2.0, self._hide_startup)
+            return
+        self._startup_step(
+            f"waiting for the next read "
+            f"({self._startup_done}/{len(self._startup_phases)} done)"
+        )
+
+    def _hide_startup(self) -> None:
+        """Hide the meter once the reads have finished."""
+        try:
+            self.query_one("#startup", Horizontal).add_class("hidden")
+        except Exception:  # pragma: no cover - the app closed under us
+            return
+
+    def _startup_phase_text(self, extra: str = "") -> str:
+        """The current phase, e.g. ``reading Internal names (step 1 of 2)``."""
+        index = min(self._startup_done, max(0, len(self._startup_phases) - 1))
+        name = self._startup_phases[index] if self._startup_phases else ""
+        step = (
+            f" (step {self._startup_done + 1} of {len(self._startup_phases)})"
+            if self._startup_phases
+            else ""
+        )
+        return f"reading {name}{step}{extra}"
+
+    def _startup_read_names(self, attempt: int = 0) -> None:
         """Re-read the Internal bank once, quietly, after the first frame.
 
         The same silent request `r` makes: one Internal Sound Banks Dump
@@ -1073,10 +1585,16 @@ class EnsqsqedApp(App):
         silent here -- the user did not press anything -- but a later `r`
         still reports it.
         """
-        if self._busy:
+        if self._busy or not self._exchange.acquire(blocking=False):
+            # A user action or the other startup read won the exchange.
+            # Try again shortly; the meter already says startup is running.
+            if attempt < 60:
+                self.set_timer(0.5, lambda: self._startup_read_names(attempt + 1))
+            else:
+                self._startup_step_done()
             return
-        if not self._exchange.acquire(blocking=False):
-            return
+        self._startup_names_inflight = True
+        self._startup_step(self._startup_phase_text(" (about 10 s)"))
         self._read_worker("INT")
 
     @work(thread=True)
@@ -1095,12 +1613,15 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
+        if self._startup_names_inflight:
+            self._startup_names_inflight = False
+            self._call_from_thread(self._startup_step_done)
         if failure is not None:
-            self.call_from_thread(self.notify_status, f"read: {failure}", refused=True)
+            self._call_from_thread(self.notify_status, f"read: {failure}", refused=True)
             return
         if names is None:
             return
-        self.call_from_thread(self._adopt_internal, names)
+        self._call_from_thread(self._adopt_internal, names)
 
     def _adopt_internal(self, names: Dict[int, str]) -> None:
         for number, text in names.items():
@@ -1711,7 +2232,7 @@ class EnsqsqedApp(App):
                         results.append(False)
         finally:
             self._exchange.release()
-        self.call_from_thread(self._undo_done, records, results)
+        self._call_from_thread(self._undo_done, records, results)
 
     def _undo_done(self, records: List[Record], results: List[bool]) -> None:
         """Report the batch on the main thread, and keep what did not land."""
@@ -1801,14 +2322,18 @@ class EnsqsqedApp(App):
         user did not press anything -- and ``p`` still reads the bank
         itself when the cache is missing or stale.
         """
-        if self._all_dump is not None:
-            return
         if not hasattr(self.device, "read_all_presets"):
             return
         if self._busy or not self._exchange.acquire(blocking=False):
             if attempt < 30:
                 self.set_timer(1.0, lambda: self._startup_read_presets(attempt + 1))
+            else:
+                # Give up gracefully: the meter must not claim a read that
+                # is never coming.
+                self._startup_step_done()
             return
+        self._startup_presets_inflight = True
+        self._startup_step(self._startup_phase_text(" (about 12 s)"))
         self._startup_presets_worker()
 
     @work(thread=True)
@@ -1823,14 +2348,23 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
+        if self._startup_presets_inflight:
+            self._startup_presets_inflight = False
+            self._call_from_thread(self._startup_step_done)
         if failure is not None or dump is None:
             return
-        self.call_from_thread(self._startup_presets_done, dump)
+        self._call_from_thread(self._startup_presets_done, dump)
 
     def _startup_presets_done(self, dump: AllPresetsDump) -> None:
         """Keep the background read for ``p``.  Main thread."""
         self._all_dump = dump
         self._all_dump_at = time.monotonic()
+        try:
+            preset_cache.save(dump.to_bytes())
+        except (ValueError, AttributeError):
+            # A fake dump in a test, or a parser that cannot round-trip;
+            # the cache is an optimisation, never a requirement.
+            return
 
     def action_preset_list(self) -> None:
         """``p``: the eighty presets the unit holds.
@@ -1838,14 +2372,12 @@ class EnsqsqedApp(App):
         Reading them all is one message and about twelve seconds, so the
         status line says what is happening before it starts rather than
         after: a screen that appears twelve seconds later with no
-        explanation is a screen that looks like a hang.  A read taken at
-        startup (or by a previous press) is shown at once while it is
-        still fresh.
+        explanation is a screen that looks like a hang.  The list is
+        read once (at startup or on the first ``p``) and then served
+        from the cache; the cache is refreshed only after a change
+        (rename).
         """
-        if (
-            self._all_dump is not None
-            and (time.monotonic() - self._all_dump_at) < PRESET_CACHE_TTL
-        ):
+        if self._all_dump is not None:
             self._show_preset_list(self._all_dump)
             return
         if self._busy:
@@ -1884,11 +2416,11 @@ class EnsqsqedApp(App):
         finally:
             self._exchange.release()
         if failure is not None:
-            self.call_from_thread(
+            self._call_from_thread(
                 self.notify_status, f"preset: {failure}", refused=True
             )
             return
-        self.call_from_thread(self._adopt_preset, current, open_fx)
+        self._call_from_thread(self._adopt_preset, current, open_fx)
 
     def _adopt_preset(self, current, open_fx: bool) -> None:
         """Take the unit's preset into the session.  Main thread.
@@ -1929,11 +2461,28 @@ class EnsqsqedApp(App):
         finally:
             self._exchange.release()
         if failure is not None:
-            self.call_from_thread(
+            self._call_from_thread(
                 self.notify_status, f"presets: {failure}", refused=True
             )
             return
-        self.call_from_thread(self._show_preset_list, dump)
+        self._call_from_thread(self._save_preset_cache, dump)
+        self._call_from_thread(self._show_preset_list, dump)
+
+    def _tick_reload(self) -> None:
+        """Refresh the reload elapsed seconds while the worker runs."""
+        if self._reload_timer is None:
+            return
+        elapsed = time.monotonic() - self._reload_t0
+        if self._preset_list_screen is not None:
+            with contextlib.suppress(Exception):
+                self._preset_list_screen.say(f"reloading presets... {elapsed:.0f}s")
+
+    def _save_preset_cache(self, dump: AllPresetsDump) -> None:
+        """Save the preset dump to the cache file. Main thread."""
+        try:
+            preset_cache.save(dump.to_bytes())
+        except (ValueError, AttributeError, OSError):
+            pass
 
     def _show_preset_list(self, dump) -> None:
         """The list of the eighty presets.  Main thread.
@@ -1942,6 +2491,13 @@ class EnsqsqedApp(App):
         with nothing to do for twelve seconds is a modal that looks
         broken.  The rows carry the unit's own names, read with the
         mute bit cleared and never written back.
+
+        **Note:** The app cannot read the unit's own ``Preset Prog``
+        setting.  It knows only the panel mode it last sent (if the user
+        has pressed ``M``), and Program Change selects a preset only when
+        the unit is in Select Preset *and* Preset Prog is ON.  The note
+        says that rather than inventing a device state: the unit on the
+        bench was really ON while the old note claimed OFF.
         """
         try:
             rows: List[Tuple[int, bytes]] = [
@@ -1953,18 +2509,269 @@ class EnsqsqedApp(App):
             return
         self._all_dump = dump
         self._all_dump_at = time.monotonic()
-        screen = PresetListScreen(rows, current=self._edit_slot, progress_note=None)
+        if self._remote_mode_confirmed:
+            if self._remote_mode == "PRESET":
+                mode_note = (
+                    "This app last sent Select Preset. Program Change selects "
+                    "a preset only while the unit's own Preset Prog setting "
+                    "(system bank) is ON — this app cannot read that setting."
+                )
+            else:
+                mode_note = (
+                    "This app last sent Select Sound. Press M to send Select "
+                    "Preset; Program Change selects presets only while the "
+                    "unit's own Preset Prog setting (system bank) is ON."
+                )
+        else:
+            mode_note = (
+                "The unit does not report its Select Sound / Select Preset "
+                "mode. Press M to send Select Preset; remote preset selection "
+                "also needs the unit's own Preset Prog setting (system bank) ON."
+            )
+        if hasattr(self.device, "select_preset_by_walk"):
+            mode_note += (
+                " ⏎ selects the slot on the unit: a Program Change first, "
+                "then the button walk when it does not take."
+            )
+        # A screen that is already open is refreshed in place; a new
+        # screen pushes onto the stack when the user opens the list
+        # fresh (with ``p`` or after multi closes back to it).
+        if self._preset_list_screen is not None:
+            with contextlib.suppress(Exception):
+                self._preset_list_screen.refresh_presets(rows)
+                if self._reload_timer is not None:
+                    self._reload_timer.stop()
+                    self._reload_timer = None
+                if self._preset_list_screen is not None:
+                    self._preset_list_screen.say("presets reloaded")
+                return
+        screen = PresetListScreen(
+            rows,
+            current=self._edit_slot,
+            progress_note=None,
+            mode_note=mode_note,
+            favorites_like_names=self._preset_labels,
+            on_rename=self._rename_preset,
+            on_reload=self._reload_preset_list,
+        )
+        self._preset_list_screen = screen
         self.push_screen(screen, self._preset_picked)
+        # The screen will remain open until a preset is picked; when it
+        # closes, the preset picker does not track it, so we rely on the
+        # screen being replaced or cleared by the reload flow.
+
+    def _reload_preset_list(self) -> None:
+        """Reload the eighty presets from the device.
+
+        **The spinner stays here, not in the modal.**  Reading all
+        presets is one message and about twelve seconds, so the
+        worker keeps the app's own spinner and hands the finished
+        list to the screen, which repaints its rows.  The screen
+        stays open throughout: a reload is a refresh, not a
+        navigation.
+        """
+        if self._preset_list_screen is None:
+            return
+        if self._busy or not self._exchange.acquire(blocking=False):
+            self.notify_status("presets reload not sent: busy", refused=True)
+            return
+        if self._preset_list_screen is not None:
+            self._preset_list_screen.say("reloading presets...")
+        self._reload_t0 = time.monotonic()
+        self._reload_timer = self.set_interval(0.5, self._tick_reload)
+        self._preset_list_worker()
+
+    def _rename_preset(self, slot: int, new_name: str) -> None:
+        """Give a preset slot a local label.
+
+        **The unit keeps its own preset name.**  The firmware's store
+        copies only the live track-and-pile snapshot (preset offsets
+        32-151), so the name field (2-17) is never written by a dump and
+        no SysEx message renames a preset.  What this app can do is keep
+        its own label for the slot; the unit's name is unchanged, and the
+        label is shown in the preset list's "label" column and beside the
+        name in the multi editor.
+        """
+        updated = preset_labels.set_label(self._preset_labels, slot, new_name)
+        if updated == self._preset_labels:
+            return
+        self._preset_labels = updated
+        preset_labels.save(self._preset_labels)
+        label = self._preset_labels.get(slot)
+        if self._multi_screen is not None:
+            self._multi_screen.set_local_label(label)
+        if label is None:
+            self.notify_status(f"P{slot:02d} label cleared")
+        else:
+            self.notify_status(
+                f"P{slot:02d} labelled {label!r} in this app; the unit keeps "
+                f"its own preset name (a dump never writes it)"
+            )
+
+    def _slot_of_edit_preset(self) -> Optional[int]:
+        """The slot the multi editor's preset came from.
+
+        **The preset's own seqno/address byte is the slot.**  The unit
+        rewrites it to the selected slot, and the preset walk verifies
+        the slot by reading it.  A content match against the cached dump
+        is *not* safe: after editing P23 it can be byte-identical in
+        32-151 to P01, and the editor then stored into P01 (the owner's
+        fresh-start report).  A preset picked out of the list already
+        carries `_edit_slot`; otherwise the address byte is the answer.
+        """
+        if self._edit_slot is not None:
+            return self._edit_slot
+        raw = self._edit_preset_raw
+        if raw and 0 <= raw[0] < 80:
+            self._edit_slot = raw[0]
+            return raw[0]
+        return None
+
+    def _rename_current_preset_label(self, new_name: str) -> None:
+        """Label the preset the multi editor is over, when its slot is known."""
+        slot = self._slot_of_edit_preset()
+        if slot is None:
+            self._say_to_editor(
+                "this preset's slot is unknown; open the preset list with p "
+                "and rename the slot there",
+                refused=True,
+            )
+            return
+        self._rename_preset(slot, new_name)
 
     def _preset_picked(self, slot: Optional[int]) -> None:
-        """A preset was picked out of the list: load it into the session.
+        """A preset was picked: select it on the unit, then load it.
 
-        **Loading is not writing.**  The unit is not touched: the
-        preset is decoded here and the editor is opened over it, and
-        nothing reaches the instrument until a change is applied.
+        **Enter on the list is a selection, not a preset write.**  With
+        Preset Prog ON, a Program Change on the base channel selects the
+        slot; the app reads the working preset back to see whether it
+        took.  When it did not (Preset Prog OFF, the unit in Select Sound
+        mode, or the receiver's own flakiness), the app walks the
+        selection with buttons 5/7 and verifies the seqno.  Only then
+        does the editor open, over the bytes the unit actually holds.
+
+        A device without the selection path (the demo, the test fakes)
+        falls back to decoding the cached dump, which is the old
+        behaviour: that load is not a write and the unit is untouched.
         """
         if slot is None:
+            # The screen was closed; clear the reference so a later reload
+            # can push a fresh screen.
+            self._preset_list_screen = None
             return
+        if hasattr(self.device, "select_preset_by_walk") and hasattr(
+            self.device, "read_current_preset"
+        ):
+            if self._busy or not self._exchange.acquire(blocking=False):
+                self.notify_status("preset selection not sent: busy", refused=True)
+                return
+            self.notify_status(f"selecting P{slot:02d} on the unit...")
+            self._select_preset_worker(slot)
+            return
+        self._load_preset_from_dump(slot)
+
+    @work(thread=True)
+    def _select_preset_worker(self, slot: int) -> None:
+        """**MIDI only** -- Program Change, read back, walk if needed."""
+        failure: Optional[BaseException] = None
+        current = None
+        try:
+            with self._busy_gate, self._lock:
+                # **A read first, and no panel key when the unit is
+                # already there.**  Sending Select Preset on a slot that
+                # is already selected reloads the preset; after a commit
+                # that is exactly what showed the owner an all-off
+                # PSET01 and "Edited Prest" again.  A pick of the current
+                # slot is a read, nothing more.
+                current = self.device.read_current_preset()
+                known = current.preset_raw[0] if current.preset_raw else 0
+                if known != slot and hasattr(self.device, "tap_button"):
+                    # Preset Prog and the panel mode are two different
+                    # things.  Button 2 is Select Preset; sending it makes
+                    # the Program Change mean what the list promises.
+                    self.device.tap_button(SELECT_PRESET)
+                    time.sleep(PRESET_SETTLE)
+                    current = self.device.read_current_preset()
+                    known = current.preset_raw[0] if current.preset_raw else known
+                if known != slot:
+                    if hasattr(self.device, "select_preset"):
+                        try:
+                            current = self.device.select_preset(slot)
+                            known = (
+                                current.preset_raw[0] if current.preset_raw else known
+                            )
+                        except _BRIDGE_ERRORS:
+                            # A Program Change that does not take is not a
+                            # failed operation; the walk is the fallback.
+                            current = self.device.read_current_preset()
+                            known = (
+                                current.preset_raw[0] if current.preset_raw else known
+                            )
+                    if known != slot:
+                        self.device.select_preset_by_walk(slot, known_slot=known)
+                        current = self.device.read_current_preset()
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self._call_from_thread(self._preset_selected, slot, current, failure)
+
+    def _preset_selected(
+        self,
+        slot: int,
+        current,
+        failure: Optional[BaseException],
+    ) -> None:
+        """The unit has moved: adopt its bytes and open the editor.  Main thread."""
+        if failure is not None:
+            self.notify_status(f"P{slot:02d} not selected: {failure}", refused=True)
+            return
+        if current is None or not current.preset_raw:
+            self.notify_status(
+                f"P{slot:02d} not selected: the unit sent no preset",
+                refused=True,
+            )
+            return
+        try:
+            preset = Preset.from_bytes(current.preset_raw)
+        except ValueError as exc:
+            self.notify_status(f"P{slot:02d}: {exc}", refused=True)
+            return
+        observed = current.preset_raw[0]
+        self._edit_preset = preset
+        self._edit_seq_blob = current.seq_blob
+        self._edit_preset_raw = current.preset_raw
+        self._edit_snapshot = _copy_preset(preset)
+        self._edit_slot = observed
+        self._preset_loaded = True
+        if hasattr(self.device, "tap_button"):
+            # The worker sent Select Preset before the selection, so the
+            # app's own memory of the panel mode is now confirmed.
+            self._remote_mode = "PRESET"
+            self._remote_mode_confirmed = True
+        self._update_subtitle()
+        # Remember that the multi screen came from the preset list, so
+        # that dismissing it with `q` can pop back to the list instead of
+        # dropping to the main window.
+        self._multi_from_preset_list = True
+        self._push_multi_screen()
+        if observed == slot:
+            self.notify_status(
+                f"P{slot:02d} selected on the unit and loaded into the editor"
+            )
+        else:
+            self.notify_status(
+                f"the unit reports P{observed:02d}, not P{slot:02d}; the editor "
+                f"is open over what the unit holds",
+                refused=True,
+            )
+
+    def _load_preset_from_dump(self, slot: int) -> None:
+        """Decode a slot from the cached dump into the editor.
+
+        The fallback for a device that cannot select a preset.  That load
+        is not a write and the unit is untouched; the reader is told so.
+        """
         dump = self._all_dump
         if dump is None:
             self.notify_status("the preset list was read a long time ago", refused=True)
@@ -1988,6 +2795,10 @@ class EnsqsqedApp(App):
         self._edit_slot = slot
         self._preset_loaded = True
         self._update_subtitle()
+        # Remember that the multi screen came from the preset list, so
+        # that dismissing it with `q` can pop back to the list instead of
+        # dropping to the main window.
+        self._multi_from_preset_list = True
         self._push_multi_screen()
         self.notify_status(
             f"preset {slot + 1} loaded into the editor — the unit is "
@@ -2015,6 +2826,7 @@ class EnsqsqedApp(App):
             )
             return
         self._remote_mode = new
+        self._remote_mode_confirmed = True
         if self._remote_screen is not None:
             self._remote_screen.set_mode(new)
         self._remote_press(number)
@@ -2025,6 +2837,10 @@ class EnsqsqedApp(App):
         """The remote window toggled the mode: keep the app's copy."""
         if mode in ("SOUND", "PRESET"):
             self._remote_mode = mode
+            # The window only calls this after it has sent the mode key,
+            # so from here on the mode is a fact about what went out --
+            # not about what the unit's Preset Prog setting says.
+            self._remote_mode_confirmed = True
             self._update_subtitle()
 
     # --- the editors themselves ---------------------------------------------
@@ -2046,7 +2862,15 @@ class EnsqsqedApp(App):
             on_store_assist=self._store_assist,
             on_reload_preset=self._reload_preset,
             on_live_mute=self._live_mute,
+            on_panel_button=self._remote_press,
             on_open_fx=self._push_fx_screen,
+            on_rename=self._rename_current_preset_label,
+            on_commit=self._commit_preset,
+            local_label=(
+                self._preset_labels.get(self._edit_slot)
+                if self._edit_slot is not None
+                else None
+            ),
             slot=self._edit_slot,
             backup_root=self._backup_root,
         )
@@ -2065,6 +2889,7 @@ class EnsqsqedApp(App):
             preset,
             on_apply=self._apply_fx,
             on_undo=self._undo_from_screen,
+            on_commit=self._commit_preset,
             allow_write=self._gate.armed,
             gate=self._gate,
         )
@@ -2089,10 +2914,26 @@ class EnsqsqedApp(App):
         self._remote_screen = None
 
     def _multi_screen_dismissed(self, _result: Any = None) -> None:
-        """The multi editor screen was closed."""
+        """The multi editor screen was closed.
+
+        When the editor was opened from the preset list, closing it --
+        with ``q`` or ``escape`` -- pops back to that list rather than to
+        the main window, which is the screen the user came from.  A
+        multi opened straight from ``m`` over the unit's own current
+        preset still drops back to the browser behind it.
+        """
         self._multi_screen = None
         self._active_editor = self._previous_editor
         self._previous_editor = None
+        if self._multi_from_preset_list:
+            # The multi window was opened out of the preset list, so the
+            # preset browser is the screen the user meant to come back
+            # to. Re-open it from the cached dump; it was served from
+            # there anyway, and the list is the browser the flow
+            # started from.
+            self._multi_from_preset_list = False
+            self._preset_list_screen = None
+            self._show_preset_list(self._all_dump)
 
     def _fx_screen_dismissed(self, _result: Any = None) -> None:
         """The FX editor screen was closed."""
@@ -2234,8 +3075,9 @@ class EnsqsqedApp(App):
 
     @work(thread=True)
     def _reload_preset_worker(self, slot: int) -> None:
-        """**MIDI only** -- read the position, then leave and return."""
+        """**MIDI only** -- leave and return, then read the stored preset."""
         failure: Optional[BaseException] = None
+        current = None
         try:
             with self._busy_gate, self._lock:
                 known = self.device.read_current_preset()
@@ -2243,20 +3085,53 @@ class EnsqsqedApp(App):
                 self.device.select_preset_by_walk(
                     slot, known_slot=known_slot, force_reload=True
                 )
+                current = self.device.read_current_preset()
         except _BRIDGE_ERRORS as exc:
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._reload_preset_done, slot, failure)
+        self._call_from_thread(self._reload_preset_done, slot, current, failure)
 
-    def _reload_preset_done(self, slot: int, failure: Optional[BaseException]) -> None:
-        """Say what the reload did.  Main thread."""
+    def _reload_preset_done(
+        self,
+        slot: int,
+        current,
+        failure: Optional[BaseException],
+    ) -> None:
+        """Adopt what the unit reloaded, and say so.  Main thread.
+
+        **A reload is a read as well as a walk.**  Without this the table
+        went on showing the bytes the editor already had, which is why
+        ``ctrl+r`` appeared to change nothing (the owner's PSET 03 was
+        selected track 2 with layers 3-8, and the table still showed an
+        older model).
+        """
         if failure is not None:
             self._say_to_editor(f"reload not sent: {failure}", refused=True)
             return
+        if current is None or not current.preset_raw:
+            self._say_to_editor("reload read no preset from the unit", refused=True)
+            return
+        try:
+            preset = Preset.from_bytes(current.preset_raw)
+        except ValueError as exc:
+            self._say_to_editor(f"reload: {exc}", refused=True)
+            return
+        observed = current.preset_raw[0]
+        self._edit_preset = preset
+        self._edit_seq_blob = current.seq_blob
+        self._edit_preset_raw = current.preset_raw
+        self._edit_snapshot = _copy_preset(preset)
+        self._edit_slot = observed
+        self._preset_loaded = True
+        self._update_subtitle()
+        if self._multi_screen is not None:
+            self._multi_screen.set_preset(preset)
+        else:
+            self._redraw_screen(self._active_editor)
         self._say_to_editor(
-            f"the unit walked around and reloaded P{slot:02d}; "
-            "what it plays now is the preset's stored bytes."
+            f"P{observed:02d} reloaded from the unit — the editor now shows "
+            f"its stored bytes"
         )
 
     def _live_mute(self) -> None:
@@ -2290,7 +3165,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._live_mute_done, failure)
+        self._call_from_thread(self._live_mute_done, failure)
 
     def _live_mute_done(self, failure: Optional[BaseException]) -> None:
         """Say what the live mute did.  Main thread."""
@@ -2372,8 +3247,8 @@ class EnsqsqedApp(App):
                         self.device.tap_button(number)
             except _BRIDGE_ERRORS as exc:
                 failure = exc
-            self.call_from_thread(self._remote_press_done, item, failure)
-        self.call_from_thread(self._remote_drained)
+            self._call_from_thread(self._remote_press_done, item, failure)
+        self._call_from_thread(self._remote_drained)
 
     def _remote_drained(self) -> None:
         """The queue is empty: the next press starts a fresh drain."""
@@ -2418,6 +3293,269 @@ class EnsqsqedApp(App):
             return
         self.call_later(lambda: screen.say(message, refused=refused))
 
+    def _commit_preset(self) -> None:
+        """Store the edit buffer with the manual's Enter/Save three times.
+
+        **The store is the three Enter/Save presses, not a reselection.**
+        The owner's panel sequence is Edit Track → toggle → Select Preset
+        → Enter/Enter/Enter → *SAVED*.  This sends those three presses,
+        then walks to the neighbouring slot only to read the slot's
+        stored bytes back (the dump mirrors the working preset for the
+        selected slot), walks back, and compares.  The earlier
+        "leaving a slot commits" claim did not hold for a panel edit.
+        """
+        if not self._gate.armed:
+            self._say_to_editor(
+                "write gate is locked — press w to arm it before committing",
+                refused=True,
+            )
+            return
+        slot = self._slot_of_edit_preset()
+        if slot is None:
+            self._say_to_editor(
+                "this preset's slot is unknown; open the preset list with p "
+                "and pick it, then commit",
+                refused=True,
+            )
+            return
+        if self._busy:
+            self._say_to_editor("busy", refused=True)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self._say_to_editor("busy", refused=True)
+            return
+        self._say_to_editor(
+            "storing... (Enter/Save three times, then reading the slot back)"
+        )
+        intended = (
+            self._edit_preset.to_bytes() if self._edit_preset is not None else None
+        )
+        self._commit_preset_worker(slot, intended)
+
+    @work(thread=True)
+    def _commit_preset_worker(self, slot: int, intended_raw: Optional[bytes]) -> None:
+        """**MIDI only** -- Enter/Save three times, then read the slot back."""
+        failure: Optional[BaseException] = None
+        result = None
+        try:
+            with self._busy_gate, self._lock:
+                if hasattr(self.device, "store_current_edit"):
+                    # The manual's store: three Enter/Save presses on the
+                    # edit buffer, then walk away only to *read* the slot.
+                    result = self.device.store_current_edit(slot=slot)
+                else:  # a device double without the panel store
+                    result = self.device.commit_current_preset(slot=slot)
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self._call_from_thread(
+            self._commit_preset_done, slot, failure, result, intended_raw
+        )
+
+    def _commit_preset_done(  # noqa: C901
+        self,
+        slot: int,
+        failure: Optional[BaseException],
+        result,
+        intended_raw: Optional[bytes] = None,
+    ) -> None:
+        """Say whether the commit survived the re-read.  Main thread."""
+        if failure is not None:
+            self._say_to_editor(f"commit P{slot:02d}: {failure}", refused=True)
+            return
+        if result is None:  # pragma: no cover - the worker always returns one
+            self._say_to_editor(f"commit P{slot:02d}: no read-back", refused=True)
+            return
+        from sq.bridge import (
+            COMMIT_KEPT_OFFSETS,
+            COMMIT_LIVE_TRACK_BYTES,
+            TRACK_PROGRAM_OFFSETS,
+        )
+
+        # **The unit's edit buffer is the thing the store saves.**  The
+        # app's own model does not know about a change made with the
+        # panel's Track keys, so compare the slot with `working_raw` (the
+        # buffer read immediately before Enter/Save), not with the model.
+        expected = result.working_raw
+
+        def kept_program_offsets(actual: Optional[bytes]) -> List[int]:
+            """Per-track program/sustain bytes the slot kept for itself.
+
+            The store restores these from the slot's own bytes after the
+            commit (firmware ``$C128FA``), so a difference is the unit's
+            value, not a failed write.  Same for the live track byte 8.
+            """
+            if actual is None or len(actual) != 168:
+                return []
+            return [
+                index
+                for index in TRACK_PROGRAM_OFFSETS
+                if expected[index] != actual[index]
+            ]
+
+        def split(actual: Optional[bytes]) -> Tuple[List[int], List[int]]:
+            """Real differences and the unit's own live track bytes.
+
+            The commit copies the live engine's track records, and the
+            Track-pair chord writes a track's byte 8 (Status, Pressure,
+            channel) there.  A difference in that byte is the unit's live
+            value, not a failed write; it is reported, not refused, so a
+            commit whose on/off arrangement landed is not called a
+            failure over the status word.
+            """
+            real: List[int] = []
+            live: List[int] = []
+            if actual is None or len(actual) != 168:
+                return real, live
+            for index in range(168):
+                if index in COMMIT_KEPT_OFFSETS or expected[index] == actual[index]:
+                    continue
+                (live if index in COMMIT_LIVE_TRACK_BYTES else real).append(index)
+            return real, live
+
+        differing, live_stored = split(result.stored_raw)
+        # **The dump is not the only witness.**  The slot's entry while
+        # the unit was on the neighbour is stored memory, and the preset
+        # reloaded after walking back is the same memory read through the
+        # unit's own loader.  If the two disagree, the reload is what the
+        # panel will work from; a commit that only looks right in the dump
+        # is not a commit the user can hear.
+        reloaded = getattr(result, "after_raw", None)
+        differ_after, live_after = split(reloaded)
+        live_kept = sorted(set(live_stored) | set(live_after))
+        program_kept = sorted(
+            set(kept_program_offsets(result.stored_raw))
+            | set(kept_program_offsets(reloaded))
+        )
+        if not differing and not differ_after:
+            # Refresh the cached all-presets dump so the preset browser
+            # shows the committed sounds on the next selection.
+            if self._all_dump is not None and result.stored_raw is not None:
+                with contextlib.suppress(Exception):
+                    offsets = self._all_dump.slot_offsets()
+                    if slot in offsets:
+                        index = offsets[slot]
+                        new_raw = list(self._all_dump.presets_raw)
+                        new_raw[index] = result.stored_raw
+                        self._all_dump = AllPresetsDump(
+                            count=self._all_dump.count,
+                            alloc=self._all_dump.alloc,
+                            track_table=self._all_dump.track_table,
+                            track_blobs=self._all_dump.track_blobs,
+                            preset_table=self._all_dump.preset_table,
+                            preset_area_start=self._all_dump.preset_area_start,
+                            presets_raw=tuple(new_raw),
+                            globals=self._all_dump.globals,
+                        )
+                        with contextlib.suppress(ValueError, AttributeError, OSError):
+                            preset_cache.save(self._all_dump.to_bytes())
+            # **Adopt the slot the unit actually stored.**  A panel edit
+            # (the Track keys) is not in the app's model, so without this
+            # the next send would carry the old pile/status back.
+            if reloaded is not None and len(reloaded) == 168:
+                try:
+                    stored_preset = Preset.from_bytes(reloaded)
+                except ValueError:
+                    stored_preset = None
+                if stored_preset is not None:
+                    self._edit_preset = stored_preset
+                    self._edit_preset_raw = reloaded
+                    self._edit_snapshot = _copy_preset(stored_preset)
+                    if self._multi_screen is not None:
+                        self._multi_screen.set_preset(stored_preset)
+                    else:
+                        self._redraw_screen(self._active_editor)
+            live_note = ""
+            if live_kept:
+                source = (
+                    reloaded
+                    if reloaded is not None and len(reloaded) == 168
+                    else result.stored_raw
+                )
+                facts = []
+                for offset in live_kept[:3]:
+                    track_number = (offset - 40) // 14 + 1
+                    byte = source[offset]
+                    facts.append(
+                        f"track {track_number} status "
+                        f"{STATUS_NAMES[(byte >> 6) & 0x03]}, pressure "
+                        f"{PRESSURE_NAMES[(byte >> 4) & 0x03]}, channel "
+                        f"{(byte & 0x0F) + 1}"
+                    )
+                live_note = (
+                    " The unit kept its own live "
+                    + "; ".join(facts)
+                    + " at preset offset(s) "
+                    + ", ".join(str(offset) for offset in live_kept)
+                    + " — that is the track's MIDI routing, not its stored "
+                    "on/off."
+                )
+                if any((source[offset] >> 6) & 0x03 == 3 for offset in live_kept):
+                    live_note += " (*EXT* silences internal voices after a reload.)"
+            program_note = ""
+            if program_kept:
+                source = (
+                    reloaded
+                    if reloaded is not None and len(reloaded) == 168
+                    else result.stored_raw
+                )
+                facts = []
+                for offset in program_kept[:4]:
+                    track_number = (offset - 41) // 14 + 1
+                    byte = source[offset]
+                    facts.append(
+                        f"track {track_number} program {byte & 0x7F}, "
+                        f"sustain {'on' if byte & 0x80 else 'off'}"
+                    )
+                program_note = (
+                    " The unit kept its own per-track program/sustain at "
+                    + "; ".join(facts)
+                    + " (preset offset(s) "
+                    + ", ".join(str(offset) for offset in program_kept)
+                    + "); the PC column shows the edit, not what the slot kept."
+                )
+            self._say_to_editor(
+                f"P{slot:02d} stored with Enter/Save three times and verified — "
+                f"the slot matches the unit's edit buffer."
+                f"{live_note}{program_note}",
+                success=True,
+            )
+            return
+        reported = differing or differ_after
+        pile_offsets = [index for index in reported if 144 <= index <= 151]
+        if pile_offsets:
+            source = result.stored_raw if differing else reloaded
+            wanted = " ".join(f"{byte:02X}" for byte in expected[144:152])
+            kept = " ".join(f"{byte:02X}" for byte in source[144:152])
+            self._say_to_editor(
+                f"commit P{slot:02d} did not store the track on/off: the app's "
+                f"ON list is {wanted}, the unit's pile stayed {kept} at preset "
+                f"offset(s) {', '.join(str(i) for i in pile_offsets)}. A dump "
+                f"changes the working preset, but the store commits the "
+                f"unit's live pile, and the app cannot set that pile; the "
+                f"panel's Select Sound/Track/YES flow is the only way. `l` "
+                f"changes the live mask, not the stored pile.",
+                refused=True,
+            )
+            return
+        where = (
+            ", ".join(
+                f"{index} (edit 0x{expected[index]:02X}, "
+                f"{'stored' if differing else 'reloaded'} 0x"
+                f"{(result.stored_raw if differing else reloaded)[index]:02X})"
+                for index in (differing or differ_after)[:4]
+            )
+            or "unknown"
+        )
+        witness = "stored bytes" if differing else "the reloaded preset"
+        self._say_to_editor(
+            f"store P{slot:02d} was not verified; {witness} differ at "
+            f"preset offset(s) {where} — the unit did not save the edit. "
+            f"Check the display (did it reach SAVED?) and try again",
+            refused=True,
+        )
+
     @work(thread=True)
     def _store_assist_worker(self, slot: int, preset_raw: bytes) -> None:
         """**MIDI only** -- read, send, verify and retry, as one operation.
@@ -2436,6 +3574,8 @@ class EnsqsqedApp(App):
         """
         failure: Optional[BaseException] = None
         mismatch: Optional[BaseException] = None
+        skipped = False
+        kept: Tuple[int, ...] = ()
         try:
             with self._busy_gate, self._lock:
                 known = self.device.read_current_preset()
@@ -2446,12 +3586,16 @@ class EnsqsqedApp(App):
                 # so this is the slot's own sequence data, which is
                 # what a restore of the preset should carry.
                 current = self.device.read_current_preset()
-                self.device.send_preset_with_retry(
-                    current.seq_blob,
-                    preset_raw,
-                    attempts=STORE_ASSIST_ATTEMPTS,
-                    verify=True,
-                )
+                if not preset_needs_write(current.preset_raw, preset_raw):
+                    skipped = True
+                else:
+                    sent = self.device.send_preset_with_retry(
+                        current.seq_blob,
+                        preset_raw,
+                        attempts=STORE_ASSIST_ATTEMPTS,
+                        verify=True,
+                    )
+                    kept = sent.kept_preset_offsets
         except PresetMismatch as exc:
             # Its own case: the unit took the dump and holds something
             # else, and the offsets are the sentence.
@@ -2460,13 +3604,17 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._store_assist_done, slot, failure, mismatch)
+        self._call_from_thread(
+            self._store_assist_done, slot, failure, mismatch, skipped, kept
+        )
 
     def _store_assist_done(
         self,
         slot: int,
         failure: Optional[BaseException],
         mismatch: Optional[BaseException],
+        skipped: bool = False,
+        kept: Tuple[int, ...] = (),
     ) -> None:
         """Say what the store assist did.  Main thread."""
         if mismatch is not None:
@@ -2480,7 +3628,22 @@ class EnsqsqedApp(App):
             # say what happened, and neither is improved by a rewrite.
             self._say_to_editor(f"store assist not sent: {failure}", refused=True)
             return
-        self._say_to_editor(self._store_assist_sentence(slot))
+        if skipped:
+            self._say_to_editor(
+                f"store assist — P{slot:02d} already matches the backed-up "
+                f"bytes in every byte a dump can write; nothing sent. The "
+                f"unit's own name and inactive tracks' program bytes are "
+                f"left untouched."
+            )
+            return
+        sentence = self._store_assist_sentence(slot)
+        if kept:
+            sentence += (
+                f" The unit kept its own values at preset offset(s) "
+                f"{', '.join(map(str, kept))} (name, tempo/effect regions "
+                f"or inactive-track programs)."
+            )
+        self._say_to_editor(sentence)
 
     def _store_assist_sentence(self, slot: int) -> str:
         """What a verified store assist did, in the measured model's words.
@@ -2546,7 +3709,7 @@ class EnsqsqedApp(App):
             failure = exc
         # The exchange is released by _change_applied, not here: a
         # coalesced burst keeps the wire between its sends.
-        self.call_from_thread(
+        self._call_from_thread(
             self._change_applied,
             preset,
             description,
@@ -2670,12 +3833,6 @@ class EnsqsqedApp(App):
             # plays is one -- is put back by the app, and the table is
             # drawn again after it.
             return None
-        if snapshot.pile != preset.pile:
-            # The pile says which tracks are on; the byte that changed
-            # names the track it was about.
-            for position, (old, new) in enumerate(zip(snapshot.pile, preset.pile)):
-                if old != new:
-                    return position, ON_COLUMN.key
         return None
 
     def _tell_screen(
@@ -2718,19 +3875,22 @@ class EnsqsqedApp(App):
         except Exception:  # pragma: no cover - the screen closed under us
             return
 
-    def _say_to_editor(self, message: str, *, refused: bool = False) -> None:
+    def _say_to_editor(
+        self, message: str, *, refused: bool = False, success: bool = False
+    ) -> None:
         """Say one sentence on the open editor's own line.
 
         The app's status line is behind the modal, so a sentence written
         there is written where nobody is looking.  ``refused`` carries
         the difference between news and a "no" to the screen, which
-        marks it the way the rest of the family does.
+        marks it the way the rest of the family does; ``success`` marks
+        a verified write green.
         """
         screen = self._active_editor
         if screen is None:
-            self.notify_status(message, refused=refused)
+            self.notify_status(message, refused=refused, success=success)
             return
-        screen.say(message, refused=refused)
+        screen.say(message, refused=refused, ok=success)
 
     def _store_sentence(self, description: str) -> str:
         """What the app says after a change has landed.
@@ -2754,12 +3914,13 @@ class EnsqsqedApp(App):
             where = f" into slot {self._edit_slot + 1}"
         return (
             f"{description} — sent. The send is live for the sound's "
-            f"levels and stores the preset's tracks and pile into the "
-            f"unit's working preset (its Edit Preset buffer). The track "
-            f"arrangement -- which tracks are on -- takes effect when the "
-            f"preset is reloaded; ctrl+r forces that reload remotely. A "
-            f"whole-buffer store (the effect included) is still the "
-            f"panel's ENTER/SAVE{where}."
+            f"levels and stores the preset's tracks, pile and effect "
+            f"parameters into the unit's working preset (its Edit Preset "
+            f"buffer). The track arrangement -- which tracks are on -- takes "
+            f"effect when the preset is reloaded; ctrl+r forces that reload "
+            f"remotely. ctrl+s commits the live parameters by "
+            f"re-selecting the slot and verifies the read-back; the unit "
+            f"keeps its own preset name{where}."
         )
 
     def _undo_from_screen(self, count: Optional[int]) -> None:
@@ -2904,7 +4065,7 @@ class EnsqsqedApp(App):
                 "in turn and its current-sound record is read back. That "
                 "changes what the unit is playing while it runs, and takes a "
                 "minute or two. Internal is not scanned -- `r` reads it "
-                "silently in one message.\n\nPress S again to stop early.",
+                "silently in one message.\n\nPress ctrl+r again to stop early.",
                 confirm="Scan",
                 cancel="Cancel",
             ),
@@ -2924,9 +4085,9 @@ class EnsqsqedApp(App):
         total = sum(group.count for group in groups)
         done = 0
         stopped = False
-        self.call_from_thread(
+        self._call_from_thread(
             self.notify_progress,
-            f"- scanning names: 0/{total} — S stops",
+            f"- scanning names: 0/{total} — ctrl+r stops",
         )
         try:
             with self._busy_gate, self._lock:
@@ -2936,7 +4097,7 @@ class EnsqsqedApp(App):
                 # exactly like the factory ROM set and be mistaken for it.
                 internal = self._read_internal_for_scan()
                 if internal:
-                    self.call_from_thread(self._adopt_scanned, "INT", internal)
+                    self._call_from_thread(self._adopt_scanned, "INT", internal)
                 for group in groups:
                     names: Dict[int, str] = {}
                     last_name: Optional[str] = None
@@ -2952,7 +4113,7 @@ class EnsqsqedApp(App):
                             record = self.device.read_current_sound()
                             name = msg.sound_name(record).rstrip()
                         except _BRIDGE_ERRORS as exc:
-                            self.call_from_thread(
+                            self._call_from_thread(
                                 self.notify_status,
                                 f"scan {slot.display}: {exc}",
                                 refused=True,
@@ -2967,15 +4128,15 @@ class EnsqsqedApp(App):
                             stuck = True
                             break
                         spinner = "-\\|/"[done % 4]
-                        self.call_from_thread(
+                        self._call_from_thread(
                             self.notify_progress,
                             f"{spinner} scanning names: {done}/{total} "
-                            f"({slot.display}) — S stops",
+                            f"({slot.display}) — ctrl+r stops",
                         )
                     if stuck:
                         # The selector is not landing. Do not adopt partial
                         # names: they would all describe the same sound.
-                        self.call_from_thread(
+                        self._call_from_thread(
                             self.notify_status,
                             f"{group.label}: the unit stopped changing sound "
                             f"(no card fitted?); its names were not saved",
@@ -2983,12 +4144,12 @@ class EnsqsqedApp(App):
                         )
                         continue
                     if names:
-                        self.call_from_thread(self._adopt_scanned, group.id, names)
+                        self._call_from_thread(self._adopt_scanned, group.id, names)
                     if stopped:
                         break
         finally:
             self._exchange.release()
-            self.call_from_thread(self._finish_scan, done, total, stopped)
+            self._call_from_thread(self._finish_scan, done, total, stopped)
 
     def _finish_scan(self, done: int, total: int, stopped: bool) -> None:
         """Say how the scan ended, and let `S` start another."""
@@ -3268,7 +4429,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._open_single_done, source, target, names, failure)
+        self._call_from_thread(self._open_single_done, source, target, names, failure)
 
     def _open_single_done(
         self,
@@ -3315,7 +4476,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._reload_single_done, target, names, failure)
+        self._call_from_thread(self._reload_single_done, target, names, failure)
 
     def _reload_single_done(
         self,
@@ -3429,7 +4590,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(
+        self._call_from_thread(
             self._import_done, mode, target, writes, source, result, failure
         )
 
@@ -3511,7 +4672,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(self._refresh_bank_done, target, names, failure)
+        self._call_from_thread(self._refresh_bank_done, target, names, failure)
 
     def _refresh_bank_done(
         self,
@@ -3562,7 +4723,7 @@ class EnsqsqedApp(App):
             failure = exc
         finally:
             self._exchange.release()
-        self.call_from_thread(
+        self._call_from_thread(
             self._reopen_after_import_done, source, target, names, failure, verified
         )
 
@@ -3727,9 +4888,9 @@ class EnsqsqedApp(App):
             self._exchange.release()
         if failure is not None:
             msg = f"device: {failure}"
-            self.call_from_thread(self.notify_status, msg, refused=True)
+            self._call_from_thread(self.notify_status, msg, refused=True)
             return
-        self.call_from_thread(self._show_info, record)
+        self._call_from_thread(self._show_info, record)
 
     def _show_info(self, record) -> None:
         """Build and show the device report. Main thread only."""
@@ -3834,11 +4995,12 @@ The preset editor
   A change is sent as a whole preset -- the sequence data and the 168
   bytes of the preset -- because this protocol has no field-level
   write. The unit takes it into its working preset (its Edit Preset
-  buffer) and updates the stored slot's tracks and pile. The send is
-  live for the sound's levels; the track arrangement takes effect when
-  the preset is reloaded -- ctrl+r forces that reload remotely. A
-  whole-buffer store (the effect included) is still the panel's
-  ENTER/SAVE.
+  buffer) and updates the stored slot's tracks, pile and effect
+  parameters. The send is live for the sound's levels; the track
+  arrangement takes effect when the preset is reloaded -- ctrl+r forces
+  that reload remotely. ctrl+s commits the live parameters by
+  re-selecting the slot and verifies the read-back; the unit keeps its
+  own preset name. The confirmation is green.
 
   `z` puts the previous preset back, the whole of it. The editors are
   behind the write gate, so arm it with `w` before editing.

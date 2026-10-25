@@ -827,6 +827,50 @@ def test_a_walk_that_cannot_converge_names_the_observed_slot(
     assert caught.value.observed_slot == 5
 
 
+def test_the_live_mute_chord_leaves_as_one_gesture(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The two Track keys must reach the unit inside one key scan.
+
+    The ordinary pace between messages is 300 ms.  Sent through it, the
+    two downs are two single presses -- the cursor moves left, then
+    right, and nothing is muted.  The chord's own frames therefore go
+    together, while the hold between the downs and the ups is kept.
+    """
+    import time as clock
+
+    sent: List[float] = []
+
+    class _Port:
+        def send_message(self, message) -> None:
+            sent.append(clock.monotonic())
+
+    port = _Port()
+    bridge = b.SqBridge(_FakeIn(), port, channel=0)
+    bridge._out = b.PacedOut(port, gap=0.05)
+
+    bridge.toggle_live_mute(hold=0.06)
+
+    assert len(sent) == 4
+    assert sent[1] - sent[0] <= b.CHORD_GAP + 0.02, sent
+    assert sent[3] - sent[2] <= b.CHORD_GAP + 0.02, sent
+    assert sent[2] - sent[1] >= 0.04, sent
+
+
+def test_store_current_edit_wraps_from_p79_to_p00(monkeypatch: pytest.MonkeyPatch):
+    """P79's neighbour is P00; the walk wraps and comes home."""
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    unit = _WalkUnit(start_slot=79)
+    exchange = FakeExchangeBridge(unit)
+
+    result = exchange.bridge.store_current_edit()
+
+    assert result.slot == 79
+    assert result.neighbour == 0
+    assert result.stored_raw == result.working_raw
+    assert unit.slot == 79
+
+
 def test_the_paced_output_leaves_a_gap_between_messages() -> None:
     """Two SysEx messages never leave closer than the gap."""
     import itertools
@@ -847,6 +891,27 @@ def test_the_paced_output_leaves_a_gap_between_messages() -> None:
     gaps = [b - a for a, b in itertools.pairwise(sent)]
     assert all(gap >= 0.02 for gap in gaps), gaps
     assert paced.throttled_seconds >= 0.03
+
+
+def test_the_chord_group_is_paced_as_a_whole_gesture() -> None:
+    """Inside the group the frames go together; outside it the gap stays."""
+    import time as clock
+
+    from sq.bridge import PacedOut
+
+    sent: List[float] = []
+
+    class _Port:
+        def send_message(self, message):
+            sent.append(clock.monotonic())
+
+    paced = PacedOut(_Port(), gap=0.05)
+    paced.send_chord([[0xF0], [0xF7]])
+    paced.send_message([0xF0, 0xF7])
+
+    assert len(sent) == 3
+    assert sent[1] - sent[0] < 0.02, sent
+    assert sent[2] - sent[1] >= 0.05, sent
 
 
 def test_the_store_walks_the_dialog_and_verifies_by_reload(

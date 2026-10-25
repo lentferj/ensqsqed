@@ -38,7 +38,7 @@ from ensqsqed.multi import MultiScreen, PresetListScreen, SoundPickerScreen
 from sq import catalog as cat
 from sq import favorites as fav
 from sq.bridge import AllPresetsDump, CurrentPreset, PresetMismatch, PresetSent
-from sq.presets import EXTERNAL_STATUS, Preset, split_single_dump
+from sq.presets import Preset, split_single_dump
 from vinsynlib.ui.modals import ChoiceScreen
 from vinsynlib.undo import Record
 
@@ -147,6 +147,47 @@ class FakeMultiDevice:
             diff_offsets=(),
             read_back=self.current,
         )
+
+
+class SelectingMultiDevice(FakeMultiDevice):
+    """A unit that can move its selection, with either path.
+
+    ``pc_works`` decides whether the Program Change takes; when it does
+    not, the app must fall back to the button walk.  The working preset's
+    seqno byte is what both paths change, exactly as on the unit.
+    """
+
+    def __init__(self, *, pc_works: bool = True, start_slot: int = 5) -> None:
+        super().__init__()
+        self.pc_works = pc_works
+        self.pc_calls: List[int] = []
+        self.walk_calls: List[Tuple[int, int]] = []
+        self.tap_calls: List[int] = []
+        raw = bytearray(PRESET_RAW)
+        raw[0] = start_slot
+        self.current = CurrentPreset(seq_blob=SEQ_BLOB, preset_raw=bytes(raw))
+
+    def tap_button(self, number: int, *, hold: float = 0.12) -> None:
+        self.tap_calls.append(number)
+
+    def _land(self, slot: int) -> CurrentPreset:
+        raw = bytearray(self.current.preset_raw)
+        raw[0] = slot
+        self.current = CurrentPreset(
+            seq_blob=self.current.seq_blob, preset_raw=bytes(raw)
+        )
+        return self.current
+
+    def select_preset(self, slot: int, *, timeout=None) -> CurrentPreset:
+        self.pc_calls.append(slot)
+        return self._land(slot) if self.pc_works else self.current
+
+    def select_preset_by_walk(
+        self, target_slot: int, *, known_slot: int, **kwargs
+    ) -> int:
+        self.walk_calls.append((target_slot, known_slot))
+        self._land(target_slot)
+        return target_slot
 
 
 @pytest.fixture
@@ -391,63 +432,6 @@ class TestTheGateArmed:
             assert preset_raw[34] == PRESET_RAW[34] - 1
             assert preset_raw[35:] == PRESET_RAW[35:]
 
-    async def test_track_off_sends_the_pile_and_touches_no_status_byte(
-        self, app: EnsqsqedApp, device: FakeMultiDevice
-    ):
-        """Off is the pile.  The status byte is not written any more.
-
-        A dump that carries *EXT* silences the track in the stored preset
-        and nowhere else, and it latches: a later dump that restores
-        LOCAL does not bring the live map back.  So the switch writes
-        the pile and leaves every status byte as it was.
-        """
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("w")
-            await pilot.press("m")
-            assert await _wait(lambda: app._multi_screen is not None, pilot)
-            screen = app._multi_screen
-            assert screen is not None
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")  # on
-            assert await _wait(lambda: len(device.sent) == 1, pilot)
-            on = Preset.from_bytes(device.sent[0][1])
-            before = [track.status for track in on.tracks]
-            await pilot.press("space")  # off
-            assert await _wait(lambda: len(device.sent) == 2, pilot)
-            preset = Preset.from_bytes(device.sent[1][1])
-            assert not preset.is_active(2)
-            assert preset.pile[1] == 0
-            assert [track.status for track in preset.tracks] == before
-            assert preset.tracks[1].status != EXTERNAL_STATUS
-
-    async def test_switching_on_repairs_a_stored_external_status(
-        self, app: EnsqsqedApp, device: FakeMultiDevice
-    ):
-        """A stored *EXT* is put back to LOCAL when the track goes on.
-
-        The repair is of the *stored* preset: the unit applies it when
-        the preset is selected again.
-        """
-        stored = Preset.from_bytes(PRESET_RAW)
-        stored.tracks[1] = stored.tracks[1].updated(status=EXTERNAL_STATUS)
-        device.current = CurrentPreset(seq_blob=SEQ_BLOB, preset_raw=stored.to_bytes())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("w")
-            await pilot.press("m")
-            assert await _wait(lambda: app._multi_screen is not None, pilot)
-            screen = app._multi_screen
-            assert screen is not None
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            await pilot.press("space")
-            assert await _wait(lambda: len(device.sent) == 1, pilot)
-            sent = Preset.from_bytes(device.sent[0][1])
-            assert sent.tracks[1].status == 1
-            assert sent.is_active(2)
-
     async def test_undo_sends_the_original_bytes_back(
         self, app: EnsqsqedApp, device: FakeMultiDevice
     ):
@@ -581,8 +565,6 @@ class TestOnePresetPerSession:
             assert await _wait(lambda: app._multi_screen is not None, pilot)
             screen = app._multi_screen
             assert screen is not None
-            table = screen.query_one("#track-table", DataTable)
-            assert "on" in str(table.get_cell("t2", "on"))
             assert app._edit_preset is not None
             assert app._edit_preset.is_active(2)
             assert app._edit_preset.tracks[1].status == 1
@@ -590,30 +572,6 @@ class TestOnePresetPerSession:
 
 class TestTheRefusedWrite:
     """A write that did not land leaves the model as it was."""
-
-    async def test_a_refused_switch_puts_the_pile_back(
-        self, app: EnsqsqedApp, device: FakeMultiDevice
-    ):
-        """The pile is the track's on/off state, and it goes back too."""
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("w")
-            await pilot.pause()
-            await pilot.press("m")
-            assert await _wait(lambda: app._multi_screen is not None, pilot)
-            screen = app._multi_screen
-            assert screen is not None
-            table = screen.query_one("#track-table", DataTable)
-            _focus(table, 1, "trk")
-            device.fail = TimeoutError("no Single Sequence Dump came back")
-            await pilot.press("space")
-            assert await _wait(lambda: "not sent" in _status(screen), pilot)
-            preset = app._edit_preset
-            assert preset is not None
-            assert preset.pile[1] == 0
-            assert not preset.is_active(2)
-            # And the table says so: the picture is of the model.
-            assert "OFF" in str(table.get_cell("t2", "on"))
 
     async def test_a_mismatch_puts_the_change_back(
         self, app: EnsqsqedApp, device: FakeMultiDevice
@@ -777,6 +735,57 @@ class TestTheEffectEditor:
 class TestThePresetList:
     """`p`: the eighty presets the unit holds."""
 
+    async def test_enter_selects_the_preset_on_the_unit(self):
+        """Enter is a selection: Program Change first, read back, then open."""
+        device = SelectingMultiDevice(start_slot=5)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("enter")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            assert device.tap_calls == [2]
+            assert device.pc_calls == [0]
+            assert device.walk_calls == []
+            assert app._edit_slot == 0
+            assert app._edit_preset_raw[0] == 0
+            assert "selected on the unit" in _app_status(app)
+
+    async def test_picking_the_current_slot_sends_no_panel_key(self):
+        """A pick of the slot the unit is already on is a read, nothing more.
+
+        Sending Select Preset there reloads the preset and was what made
+        a post-commit PSET01 show all-off again.
+        """
+        device = SelectingMultiDevice(start_slot=0)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("enter")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            assert device.tap_calls == []
+            assert device.pc_calls == []
+            assert device.walk_calls == []
+            assert app._edit_slot == 0
+
+    async def test_a_program_change_that_does_not_take_walks_instead(self):
+        """Preset Prog may be OFF or the PC may be ignored; the walk is the guard."""
+        device = SelectingMultiDevice(pc_works=False, start_slot=5)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("enter")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            assert device.tap_calls == [2]
+            assert device.pc_calls == [0]
+            assert device.walk_calls == [(0, 5)]
+            assert app._edit_slot == 0
+
     async def test_a_picked_preset_is_loaded_into_the_editor(
         self, app: EnsqsqedApp, device: FakeMultiDevice
     ):
@@ -840,6 +849,50 @@ class TestThePresetList:
             await pilot.press("minus")
             assert await _wait(lambda: "into slot 1" in _status(screen), pilot)
 
+    async def test_the_mode_note_does_not_invent_preset_prog(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        """The unit's Preset Prog is not readable, so it is not claimed.
+
+        The owner's unit had Preset Prog ON while the old note said
+        "Preset Prog is OFF (Sound mode)" -- a device state the app had
+        never read.
+        """
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            screen = app.screen
+            assert isinstance(screen, PresetListScreen)
+            note = str(screen.query_one(".note", Static).content)
+            assert "Preset Prog is OFF" not in note
+            assert "does not report" in note
+            assert "cannot read" in note or "Preset Prog" in note
+
+    async def test_a_confirmed_preset_mode_says_it_is_the_last_mode_sent(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._remote_mode = "PRESET"
+            app._remote_mode_confirmed = True
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            screen = app.screen
+            assert isinstance(screen, PresetListScreen)
+            note = str(screen.query_one(".note", Static).content)
+            assert "last sent Select Preset" in note
+            assert "Preset Prog" in note
+            assert "cannot read" in note
+            assert "Preset Prog is OFF" not in note
+
+    async def test_the_subtitle_does_not_claim_a_mode_before_m(
+        self, app: EnsqsqedApp, device: FakeMultiDevice
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert "mode ?" in app.sub_title
+
 
 class TestTheSentenceAfterASend:
     """What the app says after a send is a measurement, not a mood.
@@ -872,8 +925,9 @@ class TestTheSentenceAfterASend:
             # reload (the blackout claim was meter-based and is gone).
             assert "live for the sound's levels" in said
             assert "ctrl+r forces that reload remotely" in said
-            # A whole-buffer store is the unit's own act.
-            assert "ENTER/SAVE" in said
+            # The remote store is the reselecting commit, not Enter/Save.
+            assert "ctrl+s" in said
+            assert "keeps its own preset name" in said
             # The withdrawn claims are gone.
             assert "does not play incoming MIDI" not in said
             assert "leave Edit mode" not in said
@@ -898,7 +952,8 @@ class TestTheSentenceAfterASend:
             said = _status(screen)
             assert "live for the sound's levels" in said
             assert "ctrl+r forces that reload remotely" in said
-            assert "ENTER/SAVE" in said
+            assert "ctrl+s" in said
+            assert "keeps its own preset name" in said
             assert "does not play incoming MIDI" not in said
             assert "briefly deaf" not in said
 

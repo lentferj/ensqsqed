@@ -525,10 +525,28 @@ class TestThePile:
         preset.set_active(5, True)
         assert preset.pile == bytes([1, 4, 5, 0, 0, 0, 0, 0])
 
-    def test_the_primary_track_stays_on(self):
+    def test_any_track_can_be_switched_off_including_the_first(self):
+        """There is no mandatory primary track.
+
+        The owner disabled all eight tracks on the panel; nothing in the
+        manual or on the bench makes the first pile entry stay on.  The
+        pile is the ON list, and removing its last entry leaves all
+        zeros.
+        """
         preset = presets.Preset.from_bytes(_single_dump()[48:216])
-        with pytest.raises(ValueError, match="primary track"):
-            preset.set_active(preset.primary_track, False)
+        preset.set_active(1, False)
+        assert preset.pile == b"\x00" * 8
+        assert not any(preset.is_active(number) for number in range(1, 9))
+        assert preset.primary_track == 0
+
+    def test_the_last_track_can_be_switched_off_too(self):
+        preset = presets.Preset.from_bytes(_single_dump()[48:216])
+        for number in range(1, 9):
+            preset.set_active(number, True)
+        assert preset.pile == bytes(range(1, 9))
+        for number in range(1, 9):
+            preset.set_active(number, False)
+        assert preset.pile == b"\x00" * 8
 
     def test_a_track_outside_the_preset_is_refused(self):
         preset = presets.Preset.from_bytes(_single_dump()[48:216])
@@ -675,7 +693,7 @@ class TestThePublicSurface:
         assert len(presets.NOTE_NAMES) == 12
         assert presets.OUTPUT_NAMES == ("DRY", "FX1", "FX2", "VOICE", "CONTROL")
         assert presets.STATUS_NAMES == ("BOTH", "LOCAL", "MIDI", "*EXT*")
-        assert presets.PRESSURE_NAMES == ("NONE", "KEY", "CHANNEL")
+        assert presets.PRESSURE_NAMES == ("NONE", "KEY", "CHANNEL", "OFF")
         assert presets.SUSTAIN_NAMES == ("ON", "OFF")
 
     def test_the_track_ranges_are_the_specifications(self):
@@ -687,7 +705,7 @@ class TestThePublicSurface:
         assert ranges["release"] == (-64, 63)
         assert ranges["output"] == (0, 4)
         assert ranges["status"] == (0, 3)
-        assert ranges["pressure"] == (0, 2)
+        assert ranges["pressure"] == (0, 3)
         assert ranges["midi_channel"] == (0, 15)
         assert ranges["sustain"] == (0, 1)
         assert ranges["midi_program"] == (0, 127)
@@ -728,6 +746,7 @@ class TestTheTrackReadings:
         assert presets.Track(pressure=0).pressure_name == "NONE"
         assert presets.Track(pressure=1).pressure_name == "KEY"
         assert presets.Track(pressure=2).pressure_name == "CHANNEL"
+        assert presets.Track(pressure=3).pressure_name == "OFF"
 
     def test_the_sustain_switch_is_named(self):
         assert presets.Track(sustain=True).sustain_name == "ON"
@@ -739,8 +758,8 @@ class TestTheTrackReadings:
             _ = presets.Track(output=5).output_name
         with pytest.raises(ValueError, match="status 4 is outside 0-3"):
             _ = presets.Track(status=4).status_name
-        with pytest.raises(ValueError, match="pressure 3 is outside 0-2"):
-            _ = presets.Track(pressure=3).pressure_name
+        with pytest.raises(ValueError, match="pressure 4 is outside 0-3"):
+            _ = presets.Track(pressure=4).pressure_name
 
     def test_the_pan_label_is_the_word_or_the_number(self):
         assert presets.Track(pan=presets.PAN_SOUND).pan_label == "SOUND"

@@ -33,16 +33,16 @@ written back unchanged unless somebody edits it, and every conversion
 between the unit's storage and the panel's wording happens in one
 place, here, where it can be pointed at.
 
-**Bit 7 of a name byte is not part of the name.**  The specification says
-so (Note 3): preset, sequence and song names are plain eight-bit ASCII,
-but the top bit of each byte "is reserved for track mute status and
-should not be used or changed".  Every preset in the dumps this project
-has carries its top bit set on the first nine name bytes -- the ones
-that spell the name -- and clear on the rest, so a name that has been
-read back and written back with its bits shifted would come back mute.
-:attr:`Preset.name` therefore reads the bytes with that bit cleared and
-:attr:`Preset.name`'s writer puts the *text* into the low seven bits and
-leaves the unit's flag bits where they were.
+**Bit 7 of a name byte is not part of the name.**  The specification
+calls it "track mute status" (Note 3) and says not to change it, but the
+dumps do not support a per-track meaning: every preset in every dump this
+project has carries the top bit set on the **first eight** name bytes and
+clear on the rest (`Preset-NN`), the same fixed `11111111 00000000`
+pattern.  It is the unit's own decoration, not a mute flag and not an
+on/off field (the stored track on/off is pressure 3; see
+``docs/PRESET-FRAMING.md``).  :attr:`Preset.name` reads the bytes with
+that bit cleared and its writer puts the *text* into the low seven bits
+and leaves the unit's decoration bits where they were.
 
 **Three things here are not the specification's, and they are marked as
 such.**
@@ -113,6 +113,7 @@ __all__ = [
     "STATUS_NAMES",
     "EXTERNAL_STATUS",
     "PRESSURE_NAMES",
+    "PRESSURE_OFF",
     "SUSTAIN_NAMES",
     "EFFECTS",
     "MIX_SOURCES",
@@ -218,7 +219,14 @@ STATUS_NAMES: Tuple[str, ...] = ("BOTH", "LOCAL", "MIDI", "*EXT*")
 EXTERNAL_STATUS = STATUS_NAMES.index("*EXT*")
 
 #: The kind of aftertouch a track listens for (§4.8.1 offset 8).
-PRESSURE_NAMES: Tuple[str, ...] = ("NONE", "KEY", "CHANNEL")
+#: The pressure field's names.  The specification gives three; the unit
+#: uses the fourth value (3) as the track's **OFF** marker: the owner's
+#: P20-P23 matrix has pressure 1 for the tracks the panel shows on and 3
+#: for the ones it shows as "-".  Track byte 8 is
+#: ``status<<6 | pressure<<4 | channel``.
+PRESSURE_NAMES: Tuple[str, ...] = ("NONE", "KEY", "CHANNEL", "OFF")
+#: The pressure value the unit uses for a track the panel draws as "-".
+PRESSURE_OFF = PRESSURE_NAMES.index("OFF")
 
 #: Whether a track reacts to the sustain pedal (§4.8.1 offset 9).
 SUSTAIN_NAMES: Tuple[str, ...] = ("ON", "OFF")
@@ -419,7 +427,7 @@ TRACK_RANGES: Dict[str, Tuple[int, int]] = {
     "release": (-64, 63),
     "output": (0, 4),
     "status": (0, 3),
-    "pressure": (0, 2),
+    "pressure": (0, 3),
     "midi_channel": (0, 15),
     "sustain": (0, 1),
     "midi_program": (0, 127),
@@ -642,6 +650,17 @@ class Track:
     def status_name(self) -> str:
         """The MIDI status as the panel prints it."""
         return _name_for(STATUS_NAMES, self.status, "status")
+
+    @property
+    def is_on(self) -> bool:
+        """The stored track ON/OFF marker.
+
+        **This is pressure 3, not the pile.**  The owner's P20-P23
+        matrix: pressure 1 (KEY) is the printed track number, pressure 3
+        is the panel's ``-``.  The pile is the separate layer/selection
+        list and is ``01`` in all four of those presets.
+        """
+        return self.pressure != PRESSURE_OFF
 
     @property
     def pressure_name(self) -> str:
@@ -1180,8 +1199,8 @@ class Preset:
     seqno: int = 0
     #: The sequence flags, 0..99.
     flags: int = 0
-    #: The name, sixteen bytes, with bit 7 of each byte carrying the
-    #: unit's mute flag rather than part of the name.
+    #: The name, sixteen bytes, with bit 7 carrying the unit's fixed
+    #: decoration (first eight bytes set, the rest clear), not the name.
     name_bytes: bytes = b"\x00" * 16
     #: The bar length, 0..999.
     bar_length: int = 0
@@ -1283,19 +1302,20 @@ class Preset:
     def name(self) -> str:
         """The preset's name, as the panel prints it.
 
-        Bit 7 of each name byte carries the unit's mute flag and is not
-        part of the name, so the name is the bytes with that bit
-        cleared.
+        Bit 7 is the unit's fixed decoration (first eight bytes set in
+        every dump), not a mute flag and not part of the name; the name
+        is the low seven bits of each byte.
         """
         return bytes(byte & 0x7F for byte in self.name_bytes).decode("ascii", "replace")
 
     @name.setter
     def name(self, value: str) -> None:
-        """Rename the preset, leaving the unit's flag bits alone.
+        """Set the modeled name, leaving the unit's decoration alone.
 
-        The text is written into the low seven bits of each byte and
-        the bits above them are kept: the flags are the unit's, not the
-        name's, and renaming a preset must not silently clear them.
+        The text goes into the low seven bits; the high bits are kept.
+        A dump never stores this field on the unit (the store commit
+        copies offsets 32-151 only), so this is a model/local-label
+        concern; see ``PresetLabels`` and the app's ``r`` key.
         """
         encoded = value.encode("ascii", "replace")[:16]
         padded = encoded + b" " * (16 - len(encoded))
@@ -1307,65 +1327,55 @@ class Preset:
 
     @property
     def primary_track(self) -> int:
-        """The number of the track the pile names as the primary one.
+        """The first track the pile names as on, or 0 when all are off.
 
-        Note 6: the pile's first byte holds the primary track's number.
-        Every dump this project has holds 1 there, with the other seven
-        bytes zero.
+        Note 6 calls the first byte the primary track.  It is the lead
+        entry of the ON list, not a special track: the owner can switch
+        any track off, track 1 included, and a pile of eight zeros is an
+        all-off preset.  Nothing in the manual or on the bench makes
+        track 1 mandatory.
         """
         return self.pile[0]
 
     def is_active(self, number: int) -> bool:
-        """Whether the pile names this track as selected or layered.
+        """Whether the stored pile names this track as on.
 
-        This is the panel's layering state, not the whole on/off story:
-        a track that is out of the pile but still LOCAL keeps receiving
-        on its MIDI channel in MULTI mode.  The manual's *EXT* status is
-        what stops internal playback; the MULTI screen combines the two.
-        In the dumps the tracks the panel draws as off have full
-        parameters and the same LOCAL status as the one that sounds, and
-        the pile is the only field that tells them apart.
-
-        A track is in the pile when the pile names it: the primary track
-        by the first byte, the layered tracks by the other seven.
+        **The pile is the list of ON tracks.**  Its first byte is simply
+        the first one; the rest follow, packed left.  A zero byte is
+        padding, and all zeros means every track is off.  The pile is the
+        *stored* arrangement, not the unit's live RAM mask: the live
+        switch is the Track-pair chord and cannot be read back.  See
+        ``docs/KEY-MAP.md`` section 3.
         """
         if not 1 <= number <= 8:
             raise ValueError(f"track {number} is outside 1-8")
-        if number == self.primary_track:
-            return True
-        return number in self.pile[1:]
+        return number in self.pile
 
     def set_active(self, number: int, active: bool) -> None:
-        """Switch a track on or off, in the pile.
+        """Switch a track on or off in the pile.
 
-        **The layered tracks are a compact ordered list, not one slot
-        per track number.**  The specification calls the pile an
-        "ordered list of eight bytes with one byte per track", but the
-        unit compacts it on receipt: sending ``01 00 03`` (track 3
-        layered, track 2 absent) is read back as ``01 03 00``.  A write
-        that leaves a hole therefore fails the read-back check and the
-        change appears to be refused -- the track that was switched off
-        goes on being shown as on.
+        **The pile is a compact ordered list of the ON tracks.**  The
+        specification calls it "one byte per track", but the unit
+        compacts it on receipt: sending ``01 00 03`` reads back as
+        ``01 03 00``.  A write that leaves a hole therefore fails its own
+        read-back check, which is why switching a track off below another
+        looked like it did nothing.
 
-        So switching a track off removes its number from the list and
-        shifts the ones after it left; switching it on appends to the
-        end of the list.  The primary track is named by the pile's
-        first byte and stays on -- a preset without a primary track is
-        not a state the unit offers.
+        So switching a track off removes its number and shifts the rest
+        left; switching it on appends to the end.  **Any track may be
+        switched off, including the first one**, and removing the last
+        ON track leaves an all-zero pile (all off).  There is no
+        mandatory primary track.
         """
         if not 1 <= number <= 8:
             raise ValueError(f"track {number} is outside 1-8")
-        if number == self.primary_track:
-            if not active:
-                raise ValueError("the primary track stays on")
-            return
-        layered = [track for track in self.pile[1:] if track]
+        active_tracks = [track for track in self.pile if track]
         if active:
-            if number in layered:
+            if number in active_tracks:
                 return
-            if len(layered) >= 7:
-                raise ValueError("all seven layered tracks are already in the pile")
-            layered.append(number)
+            if len(active_tracks) >= 8:
+                raise ValueError("all eight tracks are already on")
+            active_tracks.append(number)
         else:
-            layered = [track for track in layered if track != number]
-        self.pile = bytes([self.primary_track] + layered + [0] * (7 - len(layered)))
+            active_tracks = [track for track in active_tracks if track != number]
+        self.pile = bytes(active_tracks + [0] * (8 - len(active_tracks)))

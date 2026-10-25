@@ -32,38 +32,24 @@ do while it waits.
 **The editor** (:class:`MultiScreen`) is the eight tracks of one preset:
 the parameters the rack's Track Edit Mode shows, in four column groups
 that ``tab`` cycles, edited with the family's gestures -- ``⏎`` edits the
-focused cell, a digit starts a number, ``+`` and ``-`` nudge it, and
-``space`` switches the whole track on or off.
+focused cell, a digit starts a number, and ``+`` and ``-`` nudge it.
 
-Three decisions are worth stating up front, because they are the ones a
-reader of the manual would expect to be different.
+**The stored on/off marker is pressure 3, and ``space`` edits it.**
+The owner's P20-P23 matrix settles it: the pile is `01 00…` in all
+four, while track byte 8's pressure bits carry the state — pressure 1
+(KEY) is the printed track number, pressure 3 is the panel's `-`.  The
+`on` column reads that marker, and ``space`` toggles it between 1 and 3.
+It is a normal stored field, so the whole preset goes and ``ctrl+s``
+stores it with the unit's Enter/Save three times.
 
-**A track's off state is the pile, and ``space`` edits the pile.**  The
-specification's track structure has no off state, but the two fields do
-different jobs.  The pile byte is the panel's selected/layered state --
-the track LEDs and the "—".  It does not gate the receiver: on the bench
-a track removed from the pile, with the preset read back exactly, still
-received on its MIDI channel and played.  The manual's *EXT* status is
-what stops internal voices ("good for turning off certain tracks when
-using the SQ as a multitimbral receiver in MULTI Mode"), and the panel
-shows it as "-".  So the two together say whether a track plays, and
-this screen edits the pile: off leaves the layer list, and the status
-byte is left exactly as it was.
+**The live mask is a separate RAM state.**  ``l`` sends the Track-pair
+chord (buttons 10 and 12) for the track under the unit's cursor, and
+``o``/``p`` move that cursor.  The screen cannot read the cursor or the
+mask, so a live sentence names the unit's track, not the app's row.
 
-**What ``space`` does not do is switch the track off on the unit.**  The
-live switch is a front-panel gesture -- Select Sound, then the Track
-buttons -- and this protocol has no message for it.  A dump reaches the
-unit's Edit Preset buffer and not its live map, so a track switched off
-here is off in the stored preset, and on the panel only after that
-preset is stored and selected again.  Writing *EXT* there would not help
-either: it silences the track in the stored preset and nowhere else,
-and it latches -- a later dump that restores LOCAL does not bring the
-live map back.  So the status byte is repaired, never used to switch a
-track off; see ``docs/PRESET-FRAMING.md``.
-
-**The primary track cannot be switched off.**  The pile's first byte
-names the primary track, and a preset without one is not a state the
-unit offers.  The refusal says so rather than quietly doing nothing.
+**Any track can be off, including all eight.**  Pressure 3 on every
+track is a valid stored state; there is no mandatory primary track or
+pile entry.
 
 **A screen writes nothing by itself.**  A change is handed to the app
 through ``on_apply``, and the app does the gate, the send, the read-back
@@ -71,7 +57,7 @@ and the undo record.  The screen holds the one live
 :class:`~sq.presets.Preset` object, changes it, and shows what it now
 says -- which is the truth about the model, and about the unit only once
 the app has said the write landed.  The one action that has to know
-about the unit is the store assist (``ctrl+s``): it reads a backed-up
+about the unit is the store assist (``ctrl+shift+s``): it reads a backed-up
 slot out of the newest dump, asks the owner which one and confirms it,
 and hands the 168 bytes to the app, which does the gate, the send and
 the verified retry.  The screen still owns no device and starts no
@@ -89,6 +75,7 @@ would be invisible until it had already written the wrong preset.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -103,13 +90,19 @@ from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from sq import banks
 from sq import messages as m
-from sq.bridge import AllPresetsDump, DeviceError, PresetAlert
+from sq.bridge import (
+    TRACK_LEFT_BUTTON,
+    TRACK_RIGHT_BUTTON,
+    AllPresetsDump,
+    DeviceError,
+    PresetAlert,
+)
 from sq.config import DEFAULT_BACKUP_ROOT
 from sq.presets import (
-    EXTERNAL_STATUS,
     OUTPUT_NAMES,
     PAN_SOUND,
     PRESSURE_NAMES,
+    PRESSURE_OFF,
     STATUS_NAMES,
     SUSTAIN_NAMES,
     TRACK_RANGES,
@@ -132,6 +125,7 @@ __all__ = [
     "ChoicePicker",
     "MultiScreen",
     "NumberPrompt",
+    "TextPrompt",
     "PresetListScreen",
     "SoundPickerScreen",
     "StoreAssistError",
@@ -269,16 +263,19 @@ def _literal(text: str) -> str:
 #: The same list in every tool of the family that has an editor over a
 #: table of values: the arrows move, ``tab`` changes what the columns
 #: are, ``⏎`` edits the cell under the cursor, a digit types, ``+`` and
-#: ``-`` nudge, and ``space`` flips the one thing a space is for.
+#: ``-`` nudge.  The Track pair's keys are this screen's own: ``o``/``p``
+#: move the unit's cursor and ``l`` sends its live-mute chord.
 KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "↑↓ move",
     "tab columns",
     "⏎ edit",
     "0-9 type",
     "+ - nudge",
-    "space track layer",
+    "space track on/off",
     "x fx",
+    "ctrl+r reload",
     "w write gate",
+    "r rename",
     "esc close",
 )
 
@@ -326,6 +323,7 @@ class _Column:
     step: int = 1
     fmt: str = ""
     bool_field: bool = False
+    width: int = 0  # 0 = auto
 
     # --- reading -----------------------------------------------------------
 
@@ -421,22 +419,20 @@ class _Column:
 
 
 #: The row's own track number.  It writes nothing.
-TRACK_COLUMN = _Column("trk", "trk")
+TRACK_COLUMN = _Column("trk", "trk", width=4)
 
-#: The track's on/off state: in the pile and not *EXT*.  It writes
-#: nothing -- ``space`` edits the pile -- but it is the answer to the
-#: question the screen is usually opened with.
-ON_COLUMN = _Column("on", "on")
+#: The track's stored ON/OFF: pressure 3 is the panel's "-".
+ON_COLUMN = _Column("on", "on", width=4)
 
 #: The sound the track plays: the group and the slot inside it.
 #:
 #: The drum kits are the numbers 80 to 99 and ignore the bank code, so
 #: they are shown as they are -- "~DRUM~ 01" -- rather than as a group
 #: and a slot that do not exist.
-SPOT_COLUMN = _Column("spot", "sound")
+SPOT_COLUMN = _Column("spot", "sound", width=10)
 
 #: The sound's name, from the catalog the app hands in.
-NAME_COLUMN = _Column("name", "name")
+NAME_COLUMN = _Column("name", "name", width=16)
 
 #: SOUND: what the track plays, what MIDI program change it answers to,
 #: and **the channel it receives on**.  The channel is here rather than
@@ -463,14 +459,20 @@ PRG_COLUMNS: Tuple[_Column, ...] = (
         low=1,
         high=128,
         fmt="plus_one",
+        width=8,
     ),
 )
 
 #: MIDI: the rest of what the track listens to.  The channel is in the
 #: SOUND group above; these are the switches around it.
+#: MIDI: the status, the pressure (whose value 3 is the track OFF
+#: marker), and the sustain switch.
+PRESSURE_COLUMN = _Column(
+    "pressure", "press", field="pressure", kind="enum", names=PRESSURE_NAMES
+)
 MIDI_COLUMNS: Tuple[_Column, ...] = (
     _Column("status", "status", field="status", kind="enum", names=STATUS_NAMES),
-    _Column("pressure", "press", field="pressure", kind="enum", names=PRESSURE_NAMES),
+    PRESSURE_COLUMN,
     _Column(
         "sustain",
         "sustain",
@@ -589,6 +591,51 @@ class NumberPrompt(ModalScreen[Optional[str]]):
 
     def action_cancel(self) -> None:
         """``escape``: nothing was typed."""
+        self.dismiss(None)
+
+
+class TextPrompt(ModalScreen[Optional[str]]):
+    """One line of text, seeded and selected, in the family's modal shape.
+
+    The sibling of :class:`NumberPrompt` for text: a preset name is not a
+    number, and the first keystroke replaces the seeded value.
+    """
+
+    DEFAULT_CSS = """
+    TextPrompt { align: center middle; }
+    TextPrompt > Vertical {
+        width: 70; height: auto; border: thick $accent;
+        background: $surface; padding: 1 2;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self, prompt: str, seed: str = "", *, select_all: bool = False
+    ) -> None:
+        super().__init__()
+        self._prompt = prompt
+        self._seed = seed
+        self._select_all = select_all
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self._prompt)
+            yield Input(value=self._seed, id="value")
+
+    def on_mount(self) -> None:
+        field = self.query_one("#value", Input)
+        field.focus()
+        if self._select_all:
+            field.select_all()
+        else:
+            field.cursor_position = len(field.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
         self.dismiss(None)
 
 
@@ -891,17 +938,20 @@ class PresetListScreen(ModalScreen[Optional[int]]):
     DEFAULT_CSS = """
     PresetListScreen { align: center middle; }
     PresetListScreen > Vertical {
-        width: 78; height: auto; max-height: 90%;
-        border: thick $accent; background: $surface; padding: 1 2;
+        width: 78; height: auto; border: thick $accent;
+        background: $surface; padding: 1 2;
     }
-    PresetListScreen DataTable { height: auto; max-height: 20; }
+    PresetListScreen DataTable { height: auto; }
     PresetListScreen .note { height: auto; color: $text-muted; padding-top: 1; }
     PresetListScreen .hint { height: auto; color: $text-muted; }
+    PresetListScreen .status { height: auto; color: $text; padding: 0 1; }
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("q", "cancel", "Cancel"),
+        Binding("r", "rename", "Rename"),
+        Binding("ctrl+r", "reload", "Reload"),
     ]
 
     #: The table's DOM id: a rule or a query that names one screen's
@@ -915,6 +965,9 @@ class PresetListScreen(ModalScreen[Optional[int]]):
         favorites_like_names: Optional[Dict[int, str]] = None,
         *,
         progress_note: Optional[str] = None,
+        mode_note: Optional[str] = None,
+        on_rename: Optional[Callable[[int, str], None]] = None,
+        on_reload: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
         #: ``(slot, raw)`` for every preset the unit holds.  The slot is
@@ -932,17 +985,30 @@ class PresetListScreen(ModalScreen[Optional[int]]):
         #: caption so the list says where it came from.  The spinner
         #: itself stays in the app's worker.
         self._progress_note = progress_note
+        #: A short note about the mode this list is shown in.
+        self._mode_note = mode_note
+        #: The app's rename callback: ``(slot, new_name)``.
+        self._on_rename = on_rename
+        #: The app's reload callback: refreshes the list from the device.
+        #: ``None`` means there is no write path to hand the reload to,
+        #: and ``ctrl+r`` says so rather than pretending to reload.
+        self._on_reload = on_reload
 
     # --- layout ------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("[b]Presets[/b]  [dim]· the eighty the unit holds[/dim]")
+            if self._mode_note:
+                yield Static(_literal(self._mode_note), classes="note")
             if self._progress_note:
                 yield Static(_literal(self._progress_note), classes="note")
             yield DataTable(id=self.TABLE_ID, cursor_type="row", zebra_stripes=True)
+            yield Static("", classes="status", id="preset-status")
             yield Static(
-                "[dim]⏎ picks a preset · esc / q to close[/dim]", classes="hint"
+                "[dim]⏎ picks a preset · r rename · ctrl+r reload · "
+                "esc / q to close[/dim]",
+                classes="hint",
             )
 
     def on_mount(self) -> None:
@@ -950,7 +1016,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
         table.add_column("", key="mark", width=2)
         table.add_column("preset", key="slot")
         table.add_column("name", key="name")
-        table.add_column("yours", key="yours")
+        table.add_column("label", key="label")
         for slot, raw in self._presets:
             table.add_row(
                 "←" if slot == self._current else "",
@@ -961,20 +1027,32 @@ class PresetListScreen(ModalScreen[Optional[int]]):
             )
         table.focus()
 
-    def _name_of(self, raw: bytes) -> str:
-        """The preset's name, as the unit prints it.
+    def refresh_presets(self, presets: List[Tuple[int, bytes]]) -> None:
+        """Refresh the preset list rows from the provided data.
 
-        The name field's bit 7 carries the unit's mute flag and is not
-        part of the name, so the name is the bytes with that bit
-        cleared -- which is what :attr:`sq.presets.Preset.name` reads.
-
-        A preset that cannot be decoded shows "?" rather than stopping
-        the list: one bad row must not hide the other seventy-nine.
+        The screen is already open, so we just update the rows in place.
+        The spinner stays in the app's worker; the screen repaints itself.
         """
+        self._presets = list(presets)
+        if not self._presets:
+            return
         try:
-            return _literal(Preset.from_bytes(raw).name.strip())
-        except ValueError:
-            return "?"
+            table = self.query_one(f"#{self.TABLE_ID}", DataTable)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+        table.clear(columns=True)
+        table.add_column("", key="mark", width=2)
+        table.add_column("preset", key="slot")
+        table.add_column("name", key="name")
+        table.add_column("label", key="label")
+        for slot, raw in self._presets:
+            table.add_row(
+                "←" if slot == self._current else "",
+                f"P{slot:02d}",
+                self._name_of(raw),
+                self._names.get(slot, ""),
+                key=str(slot),
+            )
 
     # --- picking -----------------------------------------------------------
 
@@ -997,9 +1075,82 @@ class PresetListScreen(ModalScreen[Optional[int]]):
             return None
         return self._presets[row][0]
 
+    def action_rename(self) -> None:
+        """``r``: rename the preset under the cursor.
+
+        The screen asks for the new name and hands it to the app through
+        ``on_rename``; it sends nothing itself.  The app selects the slot,
+        sends the preset and reports whether the unit kept the name.
+        """
+        if self._on_rename is None:
+            self.app.notify("rename is not wired", severity="warning")
+            return
+        table = self.query_one(f"#{self.TABLE_ID}", DataTable)
+        row = table.cursor_row
+        slot = self._slot_at(row)
+        if slot is None:
+            self.app.notify("no preset selected", severity="warning")
+            return
+        raw = dict(self._presets).get(slot)
+        if raw is None:
+            return
+        current_name = self._name_of(raw)
+
+        def on_name(new_name: Optional[str]) -> None:
+            if new_name is None:
+                return
+            new_name = new_name.strip()
+            if not new_name:
+                return
+            self._on_rename(slot, new_name)
+            self.dismiss(None)
+
+        self.app.push_screen(
+            TextPrompt(
+                f"Rename preset P{slot:02d} (current: {current_name}):",
+                current_name.strip(),
+                select_all=True,
+            ),
+            on_name,
+        )
+
+    def _name_of(self, raw: bytes) -> str:
+        """The preset's name, as the unit prints it.
+
+        The name field's bit 7 carries the unit's mute flag and is not
+        part of the name, so the name is the bytes with that bit
+        cleared -- which is what :attr:`sq.presets.Preset.name` reads.
+
+        A preset that cannot be decoded shows "?" rather than stopping
+        the list: one bad row must not hide the other seventy-nine.
+        """
+        try:
+            return _literal(Preset.from_bytes(raw).name.strip())
+        except ValueError:
+            return "?"
+
     def action_cancel(self) -> None:
         """``escape`` and ``q``: nothing was picked."""
         self.dismiss(None)
+
+    def action_reload(self) -> None:
+        """``ctrl+r``: reload the presets from the device.
+
+        The screen asks for the reload via ``on_reload``; if not wired,
+        it says so rather than pretending. The app handles the worker
+        that reads all presets and updates the list.
+        """
+        if self._on_reload is None:
+            self.app.notify("reload is not wired", severity="warning")
+            return
+        self._on_reload()
+
+    def say(self, message: str, *, refused: bool = False) -> None:
+        """Update the screen's own status line."""
+        with contextlib.suppress(Exception):
+            status = self.query_one("#preset-status", Static)
+            status.update(message)
+            status.set_class(refused, "refused")
 
 
 class MultiScreen(ModalScreen[None]):
@@ -1025,8 +1176,7 @@ class MultiScreen(ModalScreen[None]):
     **The gestures are the family's.**  ``⏎`` edits the focused cell --
     a list to pick from when the values are words, a number to type when
     they are numbers -- a digit starts that number with the digit in it,
-    ``+`` and ``-`` nudge the value by its own step, and ``space`` moves
-    the track in and out of the preset's layer list.  Every one of them
+    ``+`` and ``-`` nudge the value by its own step.  Every one of them
     is the same path: the value is changed in the model and handed to
     the app.
 
@@ -1039,23 +1189,29 @@ class MultiScreen(ModalScreen[None]):
     **What is not here.**  The sound picker is the app's -- this screen
     says which track wants a sound and the app runs its own picker.
     And the screen sends nothing itself, including the store assist:
-    ``ctrl+s`` finds and confirms the backed-up bytes and hands them to
+    ``ctrl+shift+s`` finds and confirms the backed-up bytes and hands them to
     the app, which does the gate, the send and the verified retry.  See
-    the module docstring.
+    the module docstring.  The ``r`` key asks for a **local label** for
+    the preset's slot; the unit's own preset name cannot be written
+    over MIDI (a dump never writes the name field).
     """
 
     DEFAULT_CSS = """
     MultiScreen { align: center middle; }
     MultiScreen > Vertical {
-        width: 90; height: auto; max-height: 90%;
-        border: thick $accent; background: $surface; padding: 1 2;
+        width: 90; height: auto; max-height: 90%; border: thick $accent;
+        background: $surface; padding: 1 2;
     }
-    MultiScreen DataTable { height: auto; max-height: 16; }
+    MultiScreen DataTable { width: 1fr; height: auto; max-height: 16; }
     MultiScreen .note { height: auto; color: $text-muted; padding-top: 1; }
-    MultiScreen .status { height: auto; color: $text; padding: 0 1; }
+    MultiScreen .status { height: auto; color: $text; padding-top: 1; }
     /* The browser's alarm, on this screen's own line. */
     MultiScreen .status.refused {
         background: $error; color: $text; text-style: bold;
+    }
+    /* A verified store's confirmation: green, never another grey line. */
+    MultiScreen .status.ok {
+        background: $success; color: $text; text-style: bold;
     }
     MultiScreen .hint { height: auto; color: $text-muted; }
     """
@@ -1063,11 +1219,12 @@ class MultiScreen(ModalScreen[None]):
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("q", "close", "Close"),
+        Binding("r", "rename", "Rename"),
         # Enter is NOT bound here.  A focused DataTable consumes it for
         # its own cell selection, so it arrives as CellSelected instead;
         # see on_data_table_cell_selected.
         Binding("tab", "toggle_view", "Columns", show=False),
-        Binding("space", "toggle_track", "Track layer", show=False),
+        Binding("space", "toggle_track", "Track on/off", show=False),
         Binding("plus", "bump(1)", "Value +", show=False),
         # `=` as well as `+`, because `+` is a shift on most layouts and
         # a nudge is a one-handed gesture.
@@ -1088,7 +1245,10 @@ class MultiScreen(ModalScreen[None]):
         # The cooperative restore: pick a backup slot, select it on the
         # unit, confirm, and the app sends it to wherever the unit is
         # selected.  See action_store_assist.
-        Binding("ctrl+s", "store_assist", "Store assist"),
+        Binding("ctrl+shift+s", "store_assist", "Store assist"),
+        # Store the edit buffer with the unit's own Enter/Save three times.  The
+        # walk after it is only the stored read-back, not the store.
+        Binding("ctrl+s", "commit_to_unit", "Store on unit"),
         # Force a reload of the preset this screen is editing: walk the
         # unit's selection a full lap so the final press reloads it with
         # its stored content.  See action_reload_on_unit.
@@ -1098,6 +1258,12 @@ class MultiScreen(ModalScreen[None]):
         # the only way to change what the unit plays without touching the
         # stored preset.  See action_live_mute.
         Binding("l", "live_mute", "Live mute"),
+        # The panel's own track cursor, one key each: the unit's display
+        # moves its track number, so the owner can put `l` on the track
+        # they mean.  The cursor cannot be read back; the unit is the
+        # display for it.
+        Binding("o", "track_cursor(-1)", "Track left", show=False),
+        Binding("p", "track_cursor(1)", "Track right", show=False),
         # The effect is part of this preset: its editor opens from here,
         # not only from the browser behind.
         Binding("x", "open_fx", "FX"),
@@ -1135,7 +1301,11 @@ class MultiScreen(ModalScreen[None]):
         on_reload: Optional[Callable[[int], None]] = None,
         on_reload_preset: Optional[Callable[[int], None]] = None,
         on_live_mute: Optional[Callable[[], None]] = None,
+        on_panel_button: Optional[Callable[[int], None]] = None,
         on_open_fx: Optional[Callable[[], None]] = None,
+        on_rename: Optional[Callable[[str], None]] = None,
+        on_commit: Optional[Callable[[], None]] = None,
+        local_label: Optional[str] = None,
         slot: Optional[int] = None,
         preset_slot: Optional[int] = None,
         backup_root: Optional[str] = None,
@@ -1193,10 +1363,25 @@ class MultiScreen(ModalScreen[None]):
         #: the gate, the exchange and the send.  ``None`` means there is
         #: no write path, and the action says so.
         self._on_live_mute = on_live_mute
+        #: ``on_panel_button(number)`` -- one virtual button, for the
+        #: panel's own track cursor (Track L/R).  The unit displays the
+        #: cursor; this screen cannot read it.
+        self._on_panel_button = on_panel_button
         #: ``on_open_fx()`` -- open the effect editor for the same preset.
         #: The effect is part of the preset, so its editor belongs to the
         #: preset editor's own key row; the app owns the screen.
         self._on_open_fx = on_open_fx
+        #: ``on_rename(text)`` -- the app stores a local label for the
+        #: preset slot.  The unit's own preset name cannot be written
+        #: over MIDI; see the class docstring.
+        self._on_rename = on_rename
+        #: ``on_commit()`` -- store the edit buffer with Enter/Save three
+        #: times.  The app owns the presses, the walk and the verification.
+        self._on_commit = on_commit
+        #: The user's own label for this preset's slot, when one exists.
+        #: Shown beside the unit's name because the two are different
+        #: claims: the unit keeps its own name, the label is this app's.
+        self._local_label = local_label.strip() if local_label else None
         #: The slot this screen is editing, when it is known -- a preset
         #: picked out of the list carries one, and the unit's own current
         #: preset does not.  The reload re-selects this slot.
@@ -1222,7 +1407,20 @@ class MultiScreen(ModalScreen[None]):
         name = self._preset.name.strip() or "(no name)"
         tempo = self._preset.tempo
         where = f"[dim]· {tempo} bpm[/dim]" if 25 <= tempo <= 250 else ""
-        return f"[b]Multi — preset “{_literal(name)}”[/b]  {where}"
+        label = (
+            f"  [dim]· label “{_literal(self._local_label)}”[/dim]"
+            if self._local_label
+            else ""
+        )
+        return f"[b]Multi — preset “{_literal(name)}”[/b]  {where}{label}"
+
+    def set_local_label(self, label: Optional[str]) -> None:
+        """Show the app's local label for this preset's slot, or clear it."""
+        self._local_label = label.strip() if label else None
+        try:
+            self.query_one("#multi-title", Label).update(self._title())
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
 
     def _note(self) -> str:
         """What the user cannot change from here, said once.
@@ -1266,9 +1464,14 @@ class MultiScreen(ModalScreen[None]):
         return self._allow_write
 
     def _refresh_note(self) -> None:
-        """Redraw the note after the gate changes."""
+        """Redraw the gate/MULTI note after the gate changes.
+
+        The id is specific so the store note below it is never overwritten:
+        there are two ``.note`` widgets now, and ``.note`` alone is
+        ambiguous.
+        """
         try:
-            self.query_one(".note", Static).update(self._note())
+            self.query_one("#multi-gate-note", Static).update(self._note())
         except Exception:  # pragma: no cover - the screen closed under us
             return
 
@@ -1284,7 +1487,15 @@ class MultiScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(self._title(), id="multi-title")
-            yield Static(self._note(), classes="note")
+            yield Static(self._note(), classes="note", id="multi-gate-note")
+            yield Static(
+                "[b $accent]space[/] toggles the track's stored ON/OFF "
+                "(pressure 3 = OFF). [b $accent]ctrl+s[/] stores with the "
+                "unit's Enter/Save three times and verifies the slot. The preset name "
+                "is local to this app.",
+                classes="note",
+                id="multi-store-note",
+            )
             yield DataTable(id=self.TABLE_ID, cursor_type="cell", zebra_stripes=True)
             # The screen's own status line.  Without it everything the
             # app says -- a refusal, a result -- lands on the app's
@@ -1306,14 +1517,27 @@ class MultiScreen(ModalScreen[None]):
         recompute them.
         """
         table = self.query_one(f"#{self.TABLE_ID}", DataTable)
-        row = table.cursor_row
+        try:
+            coord = table.cursor_coordinate
+            row = int(coord.row)
+            column = int(coord.column)
+        except Exception:  # pragma: no cover - a table with no cursor yet
+            row = 0
+            column = 0
         table.clear(columns=True)
-        for column in self._columns():
-            table.add_column(column.label, key=column.key)
+        for col in self._columns():
+            if col.width:
+                table.add_column(col.label, key=col.key, width=col.width)
+            else:
+                table.add_column(col.label, key=col.key)
         for index in range(len(self._preset.tracks)):
             table.add_row(*self._row(index), key=f"t{index + 1}")
-        if table.row_count:
-            table.move_cursor(row=min(row, table.row_count - 1))
+        if table.row_count and len(table.columns):
+            row = max(0, min(row, table.row_count - 1))
+            column = max(0, min(column, len(table.columns) - 1))
+            table.move_cursor(row=row, column=column)
+        with contextlib.suppress(Exception):
+            table.focus()
 
     def _view_hint(self) -> str:
         """Which column group is shown, and what comes next."""
@@ -1330,22 +1554,8 @@ class MultiScreen(ModalScreen[None]):
     # --- the rows ----------------------------------------------------------
 
     def _is_on(self, number: int) -> bool:
-        """Whether a track will play internal voices.
-
-        **The pile is not enough.**  A track that is un-layered but still
-        has status LOCAL keeps receiving on its MIDI channel -- the
-        manual recommends *EXT* when the SQ is a multitimbral receiver
-        in MULTI mode, and that is the status the panel shows as "-".
-        So "on" is: in the pile **and** not *EXT*.
-
-        This is what the *stored* bytes say, which is why the column can
-        show a track as off that this screen never switched off.  It is
-        not a claim about the unit's live map: a dump does not reach
-        that.
-        """
-        if not self._preset.is_active(number):
-            return False
-        return self._preset.tracks[number - 1].status != EXTERNAL_STATUS
+        """The stored track ON/OFF marker (pressure 3 is OFF)."""
+        return self._preset.tracks[number - 1].is_on
 
     def _row(self, index: int) -> Tuple[str, ...]:
         """One track's cells, in the current view."""
@@ -1353,7 +1563,7 @@ class MultiScreen(ModalScreen[None]):
         cells = []
         for column in self._columns():
             if column is ON_COLUMN:
-                cells.append("[b]OFF[/b]" if not self._is_on(index + 1) else "on")
+                cells.append("on" if self._is_on(index + 1) else "[b]OFF[/b]")
             elif column is SPOT_COLUMN:
                 cells.append(self._spot(track))
             elif column is NAME_COLUMN:
@@ -1449,6 +1659,41 @@ class MultiScreen(ModalScreen[None]):
             self._on_close()
         self.dismiss(None)
 
+    def action_commit_to_unit(self) -> None:
+        """``ctrl+s``: store the edit buffer with Enter/Save three times."""
+        if self._on_commit is None:
+            self.say("store is not wired", refused=True)
+            return
+        self._on_commit()
+
+    def action_rename(self) -> None:
+        """``r``: label the preset this editor is over.
+
+        **This is a local label, not the unit's name.**  The firmware's
+        store copies only preset offsets 32-151, so the name field is
+        never written by a dump and no SysEx message renames a preset.
+        The text is handed to the app, which keeps it for the preset's
+        slot and shows it in the preset list.
+        """
+        current = (self._local_label or self._preset.name).strip()
+        if self._on_rename is None:
+            if self._say is not None:
+                self._say("rename is not wired", refused=True)
+            return
+
+        def on_name(new_name: Optional[str]) -> None:
+            if new_name is None:
+                return
+            new_name = new_name.strip()
+            if not new_name:
+                return
+            self._on_rename(new_name[:16])
+
+        self.app.push_screen(
+            TextPrompt("Local preset label:", current, select_all=True),
+            on_name,
+        )
+
     def action_toggle_write_gate(self) -> None:
         """``w`` here: the app's own gate, toggled where it is shown.
 
@@ -1468,7 +1713,7 @@ class MultiScreen(ModalScreen[None]):
     # --- the store assist --------------------------------------------------
 
     def action_store_assist(self) -> None:
-        """``ctrl+s``: send a slot's backed-up bytes to the unit.
+        """``ctrl+shift+s``: send a slot's backed-up bytes to the unit.
 
         **A send stores into the unit's current selection.**  The
         measured model (2026-10-22) has no per-slot addressing: the
@@ -1750,11 +1995,14 @@ class MultiScreen(ModalScreen[None]):
         the unit's live mask, not the preset).  There is no read-back
         for the cursor, so this toggles whichever track the panel points
         at; the sentence says so rather than pretending the screen's
-        cursor chooses the track.  ``space`` remains the *stored* edit.
+        cursor chooses the track.  It changes the live mask, not the
+        stored pile, so it is the control to use for what plays now.
+
+        **No write gate.**  This is a panel gesture, not a preset write:
+        the remote window's chord is ungated for the same reason, and
+        gating it here would refuse the one control that actually turns
+        a track off while the gate is locked.
         """
-        if not self._writes_allowed():
-            self._refuse_write()
-            return
         if self._on_live_mute is None:
             self.say(
                 "live mute not sent: this screen has no write path",
@@ -1763,39 +2011,14 @@ class MultiScreen(ModalScreen[None]):
             return
         self._on_live_mute()
 
-    def action_open_fx(self) -> None:
-        """``x``: the effect editor over this same preset."""
-        if self._on_open_fx is None:
-            self.say("the effect editor is not reachable from here", refused=True)
-            return
-        self._on_open_fx()
-
     def action_toggle_track(self) -> None:
-        """``space``: the track under the cursor, in the layer list or out.
+        """``space``: switch the track on or off in the stored preset.
 
-        **This is a preset edit, not a live switch.**  The live switch
-        for a track is a front-panel gesture -- Select Sound, then the
-        Track buttons -- and this protocol has no message for it.  A
-        dump reaches the unit's Edit Preset buffer and not its live map,
-        so a track switched off here is off in the *stored* preset and
-        on the panel only once that preset is stored and selected again.
-
-        So off is the pile alone: the track leaves the layer list and
-        its status byte is left exactly as it was.  Writing *EXT* there
-        would silence the track in the stored preset and nowhere else,
-        and it latches -- a later dump that restores LOCAL does not
-        bring the live map back.  So the status byte is never written to
-        switch a track off.
-
-        On is the pile again, plus one repair: a track whose stored
-        status is *EXT* is put back to LOCAL, because that status is
-        what stops the internal voices and a track the user wants to
-        hear should not carry it.  The repair is of the stored preset
-        too; the unit applies it when the preset is selected again.
-
-        **The primary track stays on.**  The pile's first byte names
-        it, and a preset without a primary track is not a state the
-        unit offers; the refusal says so rather than doing nothing.
+        The unit marks an off track with **pressure 3** (the panel's
+        ``-``); an on track is pressure 1 (KEY).  The pile is the separate
+        layer/selection list and is not touched.  This is a normal field
+        edit: the app sends the whole preset, and ``ctrl+s`` stores it
+        with the unit's Enter/Save three times.
         """
         index, _column = self._cursor()
         if index is None:
@@ -1803,70 +2026,39 @@ class MultiScreen(ModalScreen[None]):
         if not self._writes_allowed():
             self._refuse_write()
             return
-        number = index + 1
-        track = self._preset.tracks[index]
-        active = self._is_on(number)
-        if active and number == self._preset.primary_track:
+        current = self._preset.tracks[index]
+        wanted = 1 if current.pressure == PRESSURE_OFF else PRESSURE_OFF
+        self._apply(index, PRESSURE_COLUMN, wanted)
+        self.say(f"track {index + 1} {'off' if wanted == PRESSURE_OFF else 'on'}")
+
+    def action_track_cursor(self, direction: int) -> None:
+        """``o`` / ``p``: move the unit's own track cursor one step.
+
+        **The unit is the display for this cursor.**  The Track keys
+        (buttons 10 and 12) move the blinking track number on the
+        panel's preset display, and ``l`` mutes the track it points at;
+        the app cannot read that number back, so this sentence tells the
+        owner to watch the unit rather than pretending a row is marked.
+        """
+        if self._on_panel_button is None:
             self.say(
-                f"track {number} is the primary track and cannot be switched "
-                "off from here — a preset without a primary track is not a "
-                "state the unit offers",
+                "track cursor not moved: this screen has no panel path",
                 refused=True,
             )
             return
-        added = False
-        repaired = False
-        try:
-            if active:
-                self._preset.set_active(number, False)
-            else:
-                added = not self._preset.is_active(number)
-                self._preset.set_active(number, True)
-                if track.status == EXTERNAL_STATUS:
-                    track = track.updated(status=LOCAL_STATUS)
-                    repaired = True
-        except ValueError as exc:
-            self.say(str(exc), refused=True)
-            return
-        self._preset.tracks[index] = track
-        for column in self._columns():
-            self._draw_cell(index, column)
-        was = "on" if active else "off"
-        now = "off" if active else "on"
-        self._on_apply(self._preset, f"track {number} {was}→{now}")
-        self.say(self._toggle_sentence(number, added=added, repaired=repaired))
-
-    def _toggle_sentence(self, number: int, *, added: bool, repaired: bool) -> str:
-        """What the switch did, said without promising a live change.
-
-        Three facts, and only facts: what the stored preset now says,
-        what the unit does with it, and where the live switch is.
-        """
-        if repaired:
-            head = f"track {number}'s stored status repaired to LOCAL (it was *EXT*)"
-            if added:
-                head = (
-                    f"track {number} added to the preset's layer list and its "
-                    "stored status repaired to LOCAL (it was *EXT*)"
-                )
-            tail = (
-                "the unit applies the repaired status when the preset is selected again"
-            )
-        elif added:
-            head = f"track {number} added to the preset's layer list"
-            tail = ""
-        else:
-            head = f"track {number} removed from the preset's layer list"
-            tail = ""
-        parts = [head]
-        if tail:
-            parts.append(tail)
-        parts.append(
-            "the live MIDI switch for a track is on the unit's front panel "
-            "(Select Sound, then the Track buttons)"
+        number = TRACK_LEFT_BUTTON if direction < 0 else TRACK_RIGHT_BUTTON
+        label = "Track L" if direction < 0 else "Track R"
+        self._on_panel_button(number)
+        self.say(
+            f"{label} sent — watch the unit's display; l mutes the track it points at"
         )
-        parts.append("press ENTER/SAVE on the unit to keep this")
-        return " — ".join(parts)
+
+    def action_open_fx(self) -> None:
+        """``x``: the effect editor over this same preset."""
+        if self._on_open_fx is None:
+            self.say("the effect editor is not reachable from here", refused=True)
+            return
+        self._on_open_fx()
 
     # --- offering an edit --------------------------------------------------
 
@@ -1891,12 +2083,18 @@ class MultiScreen(ModalScreen[None]):
         if column is SPOT_COLUMN or column is NAME_COLUMN:
             self._pick_sound(index)
             return
-        if column is TRACK_COLUMN or column is ON_COLUMN:
+        if column is ON_COLUMN:
+            self.action_toggle_track()
+            return
+        if column is TRACK_COLUMN:
             self.say(
-                f"{column.label} is not edited here — space switches the "
-                "track on and off",
+                f"{column.label} is the track's number, not a value — it is "
+                "not edited here",
                 refused=True,
             )
+            return
+        if column.field == "":
+            self.say(f"{column.label} is read-only", refused=True)
             return
         if column.kind == "enum":
             self._offer_names(index, column)
@@ -2053,14 +2251,15 @@ class MultiScreen(ModalScreen[None]):
 
     # --- the seams the app looks for ---------------------------------------
 
-    def say(self, message: str, *, refused: bool = False) -> None:
+    def say(self, message: str, *, refused: bool = False, ok: bool = False) -> None:
         """One sentence on this screen's own status line.
 
         The app's ``#status`` is the dimmed backdrop behind this modal,
         so a refusal written there is written where nobody is looking.
         ``[b]refused[/b] · `` in front of a refusal, because the
         difference between a "no" and news is carried by the words and
-        the weight, not by the colour alone.
+        the weight, not by the colour alone.  ``ok`` marks a verified
+        store green.
 
         The optional ``say_`` hook gets the sentence too, when a caller
         wants it; the app does not pass one, because its own line is
@@ -2073,6 +2272,7 @@ class MultiScreen(ModalScreen[None]):
         prefix = "[b]refused[/b] · " if refused else ""
         status.update(prefix + message)
         status.set_class(refused, "refused")
+        status.set_class(ok and not refused, "ok")
         if self._say is not None:
             self._say(message, refused=refused)
 
@@ -2171,6 +2371,18 @@ class MultiScreen(ModalScreen[None]):
         )
 
     # --- the app's seam ----------------------------------------------------
+
+    def set_preset(self, preset: Preset) -> None:
+        """Adopt a preset read from the unit and draw it.
+
+        The app's ``ctrl+r`` walks the unit and reads the slot back; this
+        is where those bytes replace the model the table is showing.  The
+        screen keeps one live preset object, so the reference is replaced
+        and the table rebuilt from it.
+        """
+        self._preset = preset
+        self._pending.clear()
+        self._build_table()
 
     def redraw(self) -> None:
         """Draw the table again from the model.

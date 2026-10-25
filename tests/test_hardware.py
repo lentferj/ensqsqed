@@ -223,9 +223,9 @@ class TestHardwarePresetReads:
         # The model decodes it, and the pile names a primary track.
         preset = presets.Preset.from_bytes(preset_raw)
         assert len(preset.pile) == 8, f"the pile is {len(preset.pile)} bytes, not 8"
-        assert 1 <= preset.primary_track <= 8, (
-            f"the pile names track {preset.primary_track} as the primary "
-            "one, and the primary track is one of the eight"
+        assert 0 <= preset.primary_track <= 8, (
+            f"the pile's first byte is {preset.primary_track}; it is the "
+            "first ON track, and 0 is all-off"
         )
         # The unit compacts the layered list: reading back a pile with a
         # hole (``01 00 03``) gives ``01 03 00``.  If the unit ever

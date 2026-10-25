@@ -117,6 +117,8 @@ __all__ = [
     "PresetAlert",
     "CurrentPreset",
     "AllPresetsDump",
+    "EverythingDump",
+    "PresetCommit",
     "PresetSent",
     "list_ports",
     "likely_ports",
@@ -125,12 +127,21 @@ __all__ = [
     "BANK_TIMEOUT",
     "SEQ_TIMEOUT",
     "ALL_PRESETS_TIMEOUT",
+    "EVERYTHING_TIMEOUT",
     "ACK_WINDOW",
     "PRESET_SETTLE",
     "BUTTON_GAP",
     "SCAN_SETTLE",
+    "CHORD_GAP",
     "SoundBankWrite",
     "WRITABLE_SOUND_GROUPS",
+    "COMMIT_START",
+    "COMMIT_END",
+    "TRACK_PROGRAM_OFFSETS",
+    "COMMIT_KEPT_OFFSETS",
+    "COMMIT_LIVE_TRACK_BYTES",
+    "preset_needs_write",
+    "preset_commit_matches",
 ]
 
 
@@ -240,6 +251,11 @@ SEQ_TIMEOUT = 15.0
 #: this has to cover.
 ALL_PRESETS_TIMEOUT = 60.0
 
+#: Command 05 answered with all sounds (~10.5 s) then the sequence
+#: alert and all sequences (~12.5 s): 2026-10-24 measured about 23 s.
+#: Ninety seconds is the sixty-second class with room for a slow link.
+EVERYTHING_TIMEOUT = 90.0
+
 #: How long the sender of a dump waits for the receiver's acknowledgement
 #: of the alert. This is the specification's own window -- "If the
 #: receiver does not respond within one second, the transmitter will
@@ -282,6 +298,10 @@ PRESET_NEXT_BUTTON = 7
 #: manual's three-step save is three presses of it).
 ENTER_SAVE_BUTTON = 9
 
+#: Select Preset (button 2).  After a save it closes the dialog so the
+#: preset walk cannot be consumed by the slot page.
+SELECT_PRESET_BUTTON = 2
+
 #: The two Track keys. A single press moves the panel's track cursor
 #: (10 backwards, 12 forwards); both together toggle the track under
 #: the cursor — the live mute the panel does by hand. Measured on the
@@ -310,6 +330,73 @@ TRACK_RIGHT_BUTTON = 12
 UNIT_KEPT_OFFSETS = frozenset(
     {0, 1, *range(2, 19), 30, 41, 55, 69, 83, 97, 111, 125, 139}
 )
+
+#: What a dump actually commits: preset offsets 32-151, minus the eight
+#: per-track byte-9s the unit recomputes from the live engine.
+COMMIT_START = 32
+COMMIT_END = 152
+TRACK_PROGRAM_OFFSETS = frozenset({41, 55, 69, 83, 97, 111, 125, 139})
+
+
+#: Preset offsets a commit cannot write: the address/sequence bytes (the
+#: unit rewrites them to the selected slot), the name (the unit keeps its
+#: own, bit-7 decoration and all), and the eight per-track byte-9s
+#: (``sustain<<7 | program``).  The store saves those bytes from the
+#: slot's own values before it copies the live snapshot and restores them
+#: afterwards (firmware ``$C128FA``), so a sent program/sustain is never
+#: adopted.  Everything else -- the track sound words, track byte 8 and
+#: the effect block -- is expected to match.  Measured 2026-10-25: sound,
+#: channel, effect number and effect parameters all persisted through a
+#: send + re-select.
+COMMIT_KEPT_OFFSETS = frozenset({0, 1, *range(2, 18), *TRACK_PROGRAM_OFFSETS})
+
+#: Track byte 8 of each of the eight tracks: Status, Pressure and MIDI
+#: channel.  The store commit copies the live engine's track records, and
+#: the Track-pair chord writes this byte in the live engine.  So a
+#: difference here is the unit's live value, not a failed write; the app
+#: reports it (and says which status it kept) rather than refusing a
+#: commit whose on/off arrangement did land.  Offsets 40, 54, ... 138.
+COMMIT_LIVE_TRACK_BYTES = frozenset(40 + 14 * index for index in range(8))
+
+
+def preset_commit_matches(expected: bytes, stored: bytes) -> bool:
+    """Whether a commit stored everything a commit can write.
+
+    Compares the whole preset except :data:`COMMIT_KEPT_OFFSETS` (the
+    address bytes and the name).  Anything else that differs is a field
+    the send did not store, whatever the reason, and is worth reporting.
+    Both arguments are 168 bytes; wrong lengths raise ``ValueError``.
+    """
+    if len(expected) != 168 or len(stored) != 168:
+        raise ValueError(
+            f"a preset is 168 bytes; these are {len(expected)} and {len(stored)} bytes"
+        )
+    for index in range(168):
+        if index in COMMIT_KEPT_OFFSETS:
+            continue
+        if expected[index] != stored[index]:
+            return False
+    return True
+
+
+def preset_needs_write(target_raw: bytes, candidate_raw: bytes) -> bool:
+    """Whether sending ``candidate_raw`` could change a stored slot.
+
+    A send writes preset offsets 32-151 (the commit range).  If the
+    candidate differs from the target only outside it, there is nothing
+    a send could change; skipping it avoids dirtying the edit buffer for
+    no reason.  Inside the range, every byte counts.
+    """
+    if len(target_raw) != 168 or len(candidate_raw) != 168:
+        raise ValueError(
+            "a preset is 168 bytes; these are "
+            f"{len(target_raw)} and {len(candidate_raw)} bytes"
+        )
+    return any(
+        target_raw[index] != candidate_raw[index]
+        for index in range(COMMIT_START, COMMIT_END)
+    )
+
 
 #: One preset is 168 bytes: eight tracks, a pile, an effect, and the
 #: sequence it belongs to (specification section 4.8.2).
@@ -515,6 +602,11 @@ class PresetSent:
     #: raised, not returned, and the exception carries the same tuple
     #: in :attr:`PresetMismatch.diff_offsets`.
     diff_offsets: Tuple[int, ...]
+    #: Preset-relative offsets the read-back differed at *only because
+    #: the unit keeps them* (the name, byte 30, channels, the eight
+    #: track byte-9s).  Never a failure; said out loud so a restore can
+    #: report what a dump cannot write.
+    kept_preset_offsets: Tuple[int, ...] = ()
     #: What the unit held after the send, when it was read back.
     read_back: Optional[CurrentPreset] = None
 
@@ -549,6 +641,55 @@ class SoundBankWrite:
 
 
 WRITABLE_SOUND_GROUPS = ("INT", "CARDA", "CARDB")
+
+
+@dataclass(frozen=True)
+class EverythingDump:
+    """The answer to the Dump Everything Request (command 05).
+
+    Three frames, in the order the unit sends them: the all-sounds dump,
+    the alert that announces the sequence dump, and the all-sequences
+    dump.  The decoded halves are the same values ``read_internal_bank``
+    and ``read_all_presets`` return; the ``*_wire`` bytes are kept so a
+    backup can be written without re-framing anything.
+    """
+
+    #: 0..79 -> the 204-byte sound record.
+    sounds: Dict[int, bytes]
+    #: The parsed all-presets dump.
+    presets: "AllPresetsDump"
+    #: The exact type-03 frame.
+    sounds_wire: bytes
+    #: The alert frame followed by the exact type-05 frame.
+    presets_wire: bytes
+
+    def wire(self) -> bytes:
+        """All three frames, concatenated for a single backup file."""
+        return self.sounds_wire + self.presets_wire
+
+
+@dataclass(frozen=True)
+class PresetCommit:
+    """What one commit-by-reselection did.
+
+    ``stored_raw`` is the slot's bytes as read from the all-presets dump
+    **while the unit was on the neighbour** -- that is the only moment the
+    dump shows stored memory rather than the working preset.  ``working_raw``
+    is the working preset before the commit; ``after_raw`` is the working
+    preset after returning to the slot.  ``matched`` says whether the
+    committed fields survived the round trip.
+    """
+
+    slot: int
+    neighbour: int
+    stored_raw: bytes
+    working_raw: bytes
+    after_raw: bytes
+
+    @property
+    def matched(self) -> bool:
+        """Whether the fields a commit can write survived."""
+        return preset_commit_matches(self.working_raw, self.stored_raw)
 
 
 @dataclass(frozen=True)
@@ -783,6 +924,13 @@ def likely_ports() -> List[str]:
 #: use), so this sits between the two: 300 ms per message.
 SYSEX_GAP = 0.30
 
+#: How far apart the two halves of one panel chord may be, in seconds.
+#: The specification's own window for button commands is 2-300 ms, but a
+#: chord has to reach the unit's key scan as one gesture: 300 ms is seven
+#: scans on this panel, and the unit then reads two single presses.  Two
+#: milliseconds is the specification's floor and inside one scan.
+CHORD_GAP = 0.002
+
 
 class PacedOut:
     """A MIDI output that never sends SysEx faster than ``gap`` seconds.
@@ -809,6 +957,31 @@ class PacedOut:
                 self.throttled_seconds += wait
                 time.sleep(wait)
             self._port.send_message(message)
+            self._last = time.monotonic()
+
+    def send_chord(self, messages) -> None:
+        """Send one gesture's frames together, then resume the pacing gap.
+
+        **A chord is one panel gesture, not a burst of separate keys.**
+        The pacing gap exists so a flood cannot upset the unit, and it
+        still applies before this group and after it.  Between the group's
+        own frames the gap would be fatal: the two Track keys pressed
+        300 ms apart are two cursor moves, not a chord, and the unit
+        never mutes anything.  :data:`CHORD_GAP` is the specification's
+        floor, fast enough for the key scan to see the pair as one press.
+
+        The lock is held across the whole group so no other sender can
+        slip a frame between the chord's halves.
+        """
+        with self._lock:
+            wait = self._gap - (time.monotonic() - self._last)
+            if wait > 0:
+                self.throttled_seconds += wait
+                time.sleep(wait)
+            for index, message in enumerate(messages):
+                if index:
+                    time.sleep(CHORD_GAP)
+                self._port.send_message(message)
             self._last = time.monotonic()
 
     # The raw port's lifecycle, delegated so :meth:`SqBridge.close` and
@@ -1296,6 +1469,184 @@ class SqBridge:
         )
         return AllPresetsDump._from_reply(data, alert)
 
+    def read_everything(self, *, timeout: Optional[float] = None) -> "EverythingDump":  # noqa: C901
+        """All internal sounds, then all presets: the command-05 dump.
+
+        **Verified on the unit 2026-10-24.**  The request is answered by
+        three frames -- the type-03 all-sounds dump, an alert 07, and the
+        type-05 all-sequences dump -- in that order.  The alert is what
+        says how many presets the sequence dump holds.  A refusal raises;
+        silence is a TimeoutError naming what was still missing.
+        """
+        self._drain()
+        self._out.send_message(
+            list(
+                m.command_message(
+                    m.CommandType.DUMP_EVERYTHING_REQUEST, channel=self.channel
+                )
+            )
+        )
+        deadline = time.time() + (EVERYTHING_TIMEOUT if timeout is None else timeout)
+
+        sounds: Optional[Dict[int, bytes]] = None
+        sounds_wire: Optional[bytes] = None
+        alert: Optional[PresetAlert] = None
+        alert_frame: Optional[bytes] = None
+        presets: Optional[AllPresetsDump] = None
+        presets_wire: Optional[bytes] = None
+
+        while time.time() < deadline:
+            message = self._in.get_message()
+            if message is None:
+                time.sleep(0.002)
+                continue
+            packet = m.parse(message[0])
+            if packet is None or packet.device != self.channel:
+                continue
+            if packet.function == m.Function.ERROR and packet.payload:
+                code = m.from_nibbles(packet.payload)[:1]
+                value = code[0] if code else 0xFF
+                if value != m.ErrorCode.ACK:
+                    raise DeviceRefused(f"the unit refused: {m.ErrorCode.name(value)}")
+                continue
+            if packet.function == m.Function.ALL_SOUNDS_DUMP:
+                if not packet.size_is_right:
+                    continue
+                if sounds is None:
+                    sounds_wire = bytes(message[0])
+                    decoded = m.from_nibbles(packet.payload)
+                    sounds = {}
+                    for number in range(80):
+                        sounds[number] = decoded[number * 204 : (number + 1) * 204]
+                continue
+            candidate_alert = self._alert_of(packet, m.CommandType.ALL_SEQUENCE_ALERT)
+            if candidate_alert is not None:
+                if alert is None:
+                    alert = candidate_alert
+                    alert_frame = bytes(message[0])
+                continue
+            if packet.function == m.Function.ALL_SEQUENCES_DUMP:
+                if alert is None:
+                    continue
+                if presets is None:
+                    presets_wire = alert_frame + bytes(message[0])
+                    decoded = m.from_nibbles(packet.payload)
+                    presets = AllPresetsDump._from_reply(decoded, alert)
+                continue
+
+        if sounds is None:
+            raise TimeoutError(
+                "no All Sounds Dump came back for the Dump Everything "
+                "Request: " + self._silence_causes() + "."
+            )
+        if presets is None:
+            raise TimeoutError(
+                "no All Sequences Dump came back for the Dump Everything "
+                "Request: " + self._silence_causes() + "."
+            )
+        assert sounds_wire is not None  # noqa: S101
+        assert presets_wire is not None  # noqa: S101
+        assert alert is not None  # noqa: S101
+        return EverythingDump(
+            sounds=sounds,
+            presets=presets,
+            sounds_wire=sounds_wire,
+            presets_wire=presets_wire,
+        )
+
+    def backup_sounds(self, group_id: str) -> bytes:
+        """Dump all sounds from a group.
+
+        For ``INT``: one internal sound banks dump request (80 sounds,
+        32640 bytes of nibble-encoded sound data in the payload).
+        For ``CARDA``/``CARDB``: per-slot scan -- select each slot in
+        turn, wait for the sound to settle, then read the current sound.
+
+        Returns ``bytes`` containing the sound data in the format returned
+        by the unit's response (decoded 204-byte sound records for all
+        eighty sounds, concatenated in slot order).
+        """
+        if group_id == "INT":
+            packet = self.request(
+                m.internal_banks_request(channel=self.channel),
+                m.Function.ALL_SOUNDS_DUMP,
+                timeout=BANK_TIMEOUT,
+            )
+            # Decode all 80 sounds from the nibble-encoded payload
+            sounds: List[bytes] = []
+            for number in range(banks.SOUNDS_PER_GROUP):
+                chunk = packet.payload[
+                    number * m.SOUND_BYTES_PACKED : (number + 1) * m.SOUND_BYTES_PACKED
+                ]
+                sounds.append(m.from_nibbles(chunk))
+            # Concatenate all sounds in slot order
+            return bytes(sounds[i] for i in range(banks.SOUNDS_PER_GROUP))
+        elif group_id in ("CARDA", "CARDB"):
+            out = bytearray()
+            for slot_number in range(banks.SOUNDS_PER_GROUP):
+                self.select(banks.slot(group_id, slot_number + 1))
+                time.sleep(SCAN_SETTLE)
+                sound = self.read_current_sound(timeout=BANK_TIMEOUT)
+                out.extend(sound)
+            return bytes(out)
+        else:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+
+    def backup_presets(self, group_id: str) -> bytes:
+        """Dump all presets from a group (two-message handshake).
+
+        For ``INT``: sends an all-sequence request and receives the alert
+        followed by the full preset dump. Returns the decoded preset data
+        as ``bytes``.
+        For ``CARDA``/``CARDB``: these groups are not dumpable via the
+        preset protocol; an error is raised.
+
+        Returns ``bytes`` of decoded preset data (17977 bytes for all eighty
+        presets, in the format returned by the unit's response).
+        """
+        if group_id == "INT":
+            _alert, data = self._request_preset(
+                m.command_message(
+                    m.CommandType.ALL_SEQUENCE_REQUEST, channel=self.channel
+                ),
+                m.CommandType.ALL_SEQUENCE_ALERT,
+                m.Function.ALL_SEQUENCES_DUMP,
+                timeout=ALL_PRESETS_TIMEOUT,
+            )
+            return data
+        elif group_id in ("CARDA", "CARDB"):
+            raise ValueError(
+                f"{group_id!r} presets are not dumpable from the unit; "
+                "only the Internal group can be read via the dump protocol."
+            )
+        else:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+
+    def backup_single_sound(self, group_id: str, slot_number: int) -> bytes:
+        """Dump a single sound from a group.
+
+        Selects the specified slot on the unit and reads the current sound.
+        Slot number is 0-based (0-79), converted to the unit's 1-based
+        numbering internally.
+
+        Returns ``bytes`` of the sound data (204 decoded bytes), in the
+        format returned by :meth:`read_current_sound`.
+        """
+        if group_id not in WRITABLE_SOUND_GROUPS:
+            raise ValueError(
+                f"{group_id!r} is not a writable sound group; the writable "
+                f"groups are {', '.join(WRITABLE_SOUND_GROUPS)}."
+            )
+        self.select(banks.slot(group_id, slot_number + 1))
+        time.sleep(SCAN_SETTLE)
+        return self.read_current_sound(timeout=BANK_TIMEOUT)
+
     # --- sound bank writes ---------------------------------------------------
 
     def _sound_at(self, sounds: Any, index: int) -> bytes:
@@ -1614,17 +1965,22 @@ class SqBridge:
             index
             for index in range(len(expected))
             if expected[index] != actual[index]
-            # The unit's own regions are not part of what a send can
-            # change, so a difference there is not a failed store: the
-            # comparison skips them (see UNIT_KEPT_OFFSETS).
-            and (
-                index < len(seq_blob) or index - len(seq_blob) not in UNIT_KEPT_OFFSETS
+            and not (
+                index >= len(seq_blob) and (index - len(seq_blob)) in UNIT_KEPT_OFFSETS
             )
+        )
+        kept_preset_offsets = tuple(
+            index - len(seq_blob)
+            for index in range(len(expected))
+            if expected[index] != actual[index]
+            and index >= len(seq_blob)
+            and (index - len(seq_blob)) in UNIT_KEPT_OFFSETS
         )
         result = PresetSent(
             acked=True,
             verified=not diff_offsets,
             diff_offsets=diff_offsets,
+            kept_preset_offsets=kept_preset_offsets,
             read_back=read_back,
         )
         if diff_offsets:
@@ -1697,6 +2053,33 @@ class SqBridge:
                 remaining -= 1
                 if remaining <= 0:
                     raise
+
+    def select_preset(
+        self,
+        slot: int,
+        *,
+        timeout: Optional[float] = None,
+    ) -> "CurrentPreset":
+        """Select a preset slot with a Program Change, and read the result.
+
+        **Preset Prog is the unit's own setting, and this program cannot
+        read it.** With Preset Prog ON and the unit in Select Preset
+        mode, a Program Change on the base channel selects a preset; with
+        it OFF, the same message selects a *sound* for the current track
+        and the preset does not move. The read-back is therefore the
+        answer, not the send: the caller checks the working preset's
+        seqno byte (offset 0) and falls back to
+        :meth:`select_preset_by_walk` when it did not reach ``slot``.
+
+        The Program Change is one two-byte message, still subject to the
+        ordinary outgoing pace. The settle is the same one a preset
+        selection change needs before the working buffer can be read.
+        """
+        if not 0 <= slot < 80:
+            raise ValueError(f"a preset slot is 0..79; this one was {slot}")
+        self._out.send_message([0xC0 | self.channel, slot])
+        time.sleep(PRESET_SETTLE)
+        return self.read_current_preset(timeout=timeout)
 
     def select_preset_by_walk(
         self,
@@ -1822,19 +2205,22 @@ class SqBridge:
         action picks one of them.
 
         The chord is the two presses down, a hold, then the two
-        releases -- one selection gesture, as the panel does it.
+        releases -- one selection gesture, as the panel does it.  The two
+        downs go out together through :meth:`PacedOut.send_chord`: the
+        300 ms pace between messages is longer than the panel's key scan,
+        and a chord sent through it is two cursor moves and no mute.
         """
-        for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON):
-            self._out.send_message(
-                list(m.virtual_button(button, down=True, channel=self.channel))
-            )
-            time.sleep(0.02)
+        downs = [
+            list(m.virtual_button(button, down=True, channel=self.channel))
+            for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON)
+        ]
+        self._out.send_chord(downs)
         time.sleep(hold)
-        for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON):
-            self._out.send_message(
-                list(m.virtual_button(button, down=False, channel=self.channel))
-            )
-            time.sleep(0.02)
+        ups = [
+            list(m.virtual_button(button, down=False, channel=self.channel))
+            for button in (TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON)
+        ]
+        self._out.send_chord(ups)
 
     def tap_button(self, number: int, *, hold: float = 0.12) -> None:
         """One press (down) and one release (up) of a virtual button.
@@ -1897,6 +2283,140 @@ class SqBridge:
         if not current.preset_raw:
             raise DeviceError("the unit's preset dump is empty")
         return current.preset_raw[0]
+
+    def commit_current_preset(
+        self,
+        *,
+        slot: Optional[int] = None,
+        neighbour: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> "PresetCommit":
+        """Commit the working preset to stored memory by re-selecting it.
+
+        **Measured 2026-10-24:** leaving a slot commits the live snapshot
+        (tracks and effect parameters) to that slot's stored memory; the
+        panel's Enter/Save dialog did not store a sent effect and, in the
+        test, reverted it.  This method walks to a neighbour, reads the
+        all-presets dump there (the only point where it shows stored
+        memory), walks back, and returns both reads.
+
+        ``slot`` must be the preset the unit is on; when omitted it is the
+        working preset's sequence byte (``preset_raw[0]``), which the
+        factory data numbers like its slot.  The unit ends on ``slot``.
+        """
+        if slot is not None and not (0 <= slot < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {slot}")
+        if neighbour is not None and not (0 <= neighbour < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {neighbour}")
+
+        current = self.read_current_preset()
+        working = current.preset_raw
+        if slot is None:
+            slot = working[0]
+        if not (0 <= slot < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {slot}")
+        if neighbour is None:
+            neighbour = (slot + 1) % 80
+        if not (0 <= neighbour < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {neighbour}")
+
+        self.select_preset_by_walk(neighbour, known_slot=slot)
+        dump = self.read_all_presets(timeout=timeout)
+        index = dump.slot_offsets()[slot]
+        stored = dump.presets_raw[index]
+        self.select_preset_by_walk(slot, known_slot=neighbour)
+        after = self.read_current_preset().preset_raw
+        return PresetCommit(
+            slot=slot,
+            neighbour=neighbour,
+            stored_raw=stored,
+            working_raw=working,
+            after_raw=after,
+        )
+
+    def store_current_edit(
+        self,
+        *,
+        slot: Optional[int] = None,
+        neighbour: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> "PresetCommit":
+        """Store the unit's **current edit buffer** with Enter/Save three times.
+
+        **This is the manual's store, not a reselection.**  The owner's
+        physical sequence is Edit Track → toggle → Select Preset →
+        Enter/Enter/Enter → *SAVED*.  The app sends the three presses,
+        with a settle and a longer gap; the first attempt was too fast
+        and left the dialog on the slot page.
+
+        A **fourth** Enter/Save is the safety net: if the dialog is still
+        on the slot page it confirms, and if the save already happened it
+        only reopens a dialog.  **Select Preset then closes whatever is
+        open** before any preset walk: without that, the walk's 5/7 keys
+        were changing the save target (P23 → P24 → P23) instead of
+        moving the preset.  Only then is the selection walked to the
+        neighbour, verified, walked home, and the **reloaded preset at
+        the slot** read as the stored bytes.  A failed save leaves the
+        old bytes there; a successful one leaves the edit.  That avoids
+        the twelve-second all-presets dump while the unit sat on the
+        neighbour.
+
+        The walk is verified to land on the neighbour before it is
+        walked home; a save dialog left open raises instead of letting
+        the working mirror look like a stored change.  The caller
+        compares ``stored_raw`` with ``working_raw``.
+        """
+        if slot is not None and not (0 <= slot < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {slot}")
+        if neighbour is not None and not (0 <= neighbour < 80):
+            raise ValueError(f"a preset slot is 0..79; this one was {neighbour}")
+
+        current = self.read_current_preset()
+        working = current.preset_raw
+        if slot is None:
+            slot = working[0]
+        if neighbour is None:
+            neighbour = (slot + 1) % 80
+
+        # The owner's physical sequence is exactly three Enter/Save
+        # presses (prompt, name page, slot page/confirmation).  Give the
+        # unit a settle and a longer gap: the app's immediate three left
+        # the dialog on the slot page, which is a lost press.  A fourth
+        # press is the safety net: if the dialog is still on the slot
+        # page it confirms; if the save already happened it merely
+        # reopens a dialog.  Select Preset then closes whatever is open,
+        # **before** any preset walk — otherwise the walk's 5/7 keys
+        # change the save target (the owner saw P23 -> P24 -> P23).
+        time.sleep(PRESET_SETTLE)
+        for _ in range(3):
+            self._press_release(ENTER_SAVE_BUTTON, gap=0.6)
+        self._press_release(ENTER_SAVE_BUTTON, gap=0.6)
+        self._press_release(SELECT_PRESET_BUTTON)
+        time.sleep(PRESET_SETTLE)
+
+        self.select_preset_by_walk(neighbour, known_slot=slot)
+        # The dump mirrors the *selected* slot's working preset, so the
+        # walk must really be on the neighbour.  Verify it; only then
+        # walk back.  The reloaded preset at the slot is the stored
+        # bytes: a failed save leaves the old bytes there, a successful
+        # one leaves the edit.  That avoids the 12-second all-presets
+        # dump (the owner saw the unit sit on the neighbour during it).
+        away = self.read_current_preset(timeout=timeout)
+        if not away.preset_raw or away.preset_raw[0] != neighbour:
+            raise DeviceError(
+                "the unit did not leave the slot after Enter/Save; the "
+                "stored read would be the working preset, not the slot"
+            )
+        self.select_preset_by_walk(slot, known_slot=neighbour)
+        after = self.read_current_preset(timeout=timeout).preset_raw
+        stored = after
+        return PresetCommit(
+            slot=slot,
+            neighbour=neighbour,
+            stored_raw=stored,
+            working_raw=working,
+            after_raw=after,
+        )
 
     def store_current_slot(
         self,
@@ -1992,7 +2512,13 @@ class SqBridge:
 
     # --- selecting, which is the one thing that changes what plays --------
 
-    def select(self, target: "banks.Slot", *, with_effect: bool = False) -> None:
+    def select(
+        self,
+        target: "banks.Slot",
+        *,
+        channel: Optional[int] = None,
+        with_effect: bool = False,
+    ) -> None:
         """Select ``target`` on the unit. **This changes what is playing.**
 
         Always the group selector first, then the sound: the two are
@@ -2000,14 +2526,21 @@ class SqBridge:
         whatever the last selector said. A drum kit's program change is
         absolute, so it gets no selector.
 
+        ``channel`` is the MIDI channel the program changes go on; the
+        base channel by default.  In MULTI mode a track listens on its own
+        channel, so selecting a **track's** sound means sending on the
+        track's channel -- that is what updates the live engine's track
+        sound, and the one a later commit stores.
+
         ``with_effect`` puts program change 123 first, which asks the unit
         to bring the next sound's effect too (MULTI mode). The manual is
         explicit that the selector goes *between* 123 and the real program
         change, which is the order :func:`sq.banks.select_messages` emits.
         """
-        for message in banks.select_messages(
-            target, self.channel, with_effect=with_effect
-        ):
+        use = self.channel if channel is None else channel
+        if not 0 <= use <= 15:
+            raise ValueError(f"channel {use} is outside 0-15")
+        for message in banks.select_messages(target, use, with_effect=with_effect):
             self._out.send_message(list(message))
 
     # --- discovery ----------------------------------------------------------

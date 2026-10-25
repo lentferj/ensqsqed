@@ -275,14 +275,14 @@ async def _open_multi(app: EnsqsqedApp, pilot) -> MultiScreen:
 
 
 async def _ask_for_slot(app: EnsqsqedApp, pilot, number: int = 0) -> MultiScreen:
-    """Press ``ctrl+s`` and answer the slot prompt.
+    """Press ``ctrl+shift+s`` and answer the slot prompt.
 
     ``number`` is the unit's own preset number, ``P00`` through
     ``P79`` -- the same number the unit's display shows.
     """
     screen = app.screen
     assert isinstance(screen, MultiScreen)
-    await pilot.press("ctrl+s")
+    await pilot.press("ctrl+shift+s")
     await pilot.pause()
     prompt = app.screen
     assert isinstance(prompt, NumberPrompt)
@@ -310,7 +310,7 @@ class TestTheStoreAssistRefuses:
             assert await _wait(lambda: app._multi_screen is not None, pilot)
             screen = app._multi_screen
             assert screen is not None
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+shift+s")
             await pilot.pause()
             # The gate is closed, so no slot prompt opens and nothing
             # reaches the unit.
@@ -328,7 +328,7 @@ class TestTheStoreAssistRefuses:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = await _open_multi(app, pilot)
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+shift+s")
             await pilot.pause()
             assert app.screen is screen
             said = _status(screen)
@@ -352,7 +352,7 @@ class TestTheStoreAssistRefuses:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = await _open_multi(app, pilot)
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+shift+s")
             await pilot.pause()
             prompt = app.screen
             assert isinstance(prompt, NumberPrompt)
