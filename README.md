@@ -48,13 +48,24 @@ number are the same; nothing converts between them silently.
 
 ## Install
 
+You need **git** and **Python 3.11+** — on Debian/Ubuntu, `sudo apt
+install git python3-venv`. Then:
+
 ```sh
+git clone https://github.com/lentferj/ensqsqed.git
+cd ensqsqed
 python3 -m venv .venv
 source .venv/bin/activate
 .venv/bin/pip install -e .
 ```
 
-Needs Python 3.11+, `python-rtmidi` and `textual`, plus **vinsynlib** —
+That installs the two commands, `ensqsqed` (the browser) and `sqcli`
+(the command line). No hardware is needed to look around:
+`ensqsqed --demo` opens the browser on invented sounds. To talk to the
+real unit, plug it in over MIDI and start with `ensqsqed` — it finds
+the ports itself and remembers them.
+
+Needs `python-rtmidi` and `textual`, plus **vinsynlib** —
 the shared base of this family of terminal instrument tools: the settings
 cache, the keymap and legend, the command line and the port listing. It
 comes from PyPI with the rest. To develop against a *working copy* of it
