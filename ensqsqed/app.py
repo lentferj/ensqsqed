@@ -859,7 +859,7 @@ class EnsqsqedApp(App):
     def action_backup(self) -> None:
         """``b``: open the backup selection screen."""
         self.push_screen(
-            BackupSelectionScreen,
+            BackupSelectionScreen(),
             self._handle_backup_selection,
         )
 
@@ -5029,9 +5029,7 @@ class EnsqsqedApp(App):
         self.push_screen(
             SearchScreen(
                 "Search",
-                search_names=True,
-                search_tags=True,
-                search_notes=True,
+                {"names": True, "tags": True, "notes": True},
             ),
             run,
         )
