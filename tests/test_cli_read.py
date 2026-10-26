@@ -77,6 +77,41 @@ def _write_sqs(tmp_path, bodies: Iterable[bytes], name: str = "bank.sqs"):
     return path
 
 
+def _tnel(name: str, record: bytes) -> bytes:
+    payload = record[:177] + record[191:204]
+    body = (
+        b"\x00\xff\x00\x00"
+        + b"\x01\x02\x03\x04"
+        + b"\x05\x06\x07\x08"
+        + b"\x01"
+        + bytes([len(name)])
+        + name.encode("ascii")
+        + b"\x03\x81\x41\x53\x51\x00"
+        + payload
+        + b"\x00" * 6
+    )
+    return b"TNEL" + struct.pack("<I", len(body)) + body
+
+
+def _container(chunks: bytes) -> bytes:
+    content = b"BLSS" + chunks
+    return b"MROF" + struct.pack("<I", len(content)) + content
+
+
+def _lib_name(record: bytes) -> str:
+    """The TNEL name for ``record``: its own, within the decoder's 9-16."""
+    base = m.sound_name(record).rstrip()[:16]
+    return base.ljust(max(9, len(base)))
+
+
+def _write_lib(tmp_path, records: Iterable[bytes], name: str = "library.lib"):
+    path = tmp_path / name
+    path.write_bytes(
+        _container(b"".join(_tnel(_lib_name(record), record) for record in records))
+    )
+    return path
+
+
 def _no_connect(*_args, **_kwargs):
     raise AssertionError("read must not open a MIDI port")
 
@@ -136,5 +171,49 @@ def test_restore_refuses_a_sqs_file_before_reading_it(tmp_path, monkeypatch):
     said = str(raised.value)
     assert said.startswith("error:")
     assert ".sqs" in said
+    assert "not supported" in said
+    assert "sqcli read" in said
+
+
+def test_read_lib_prints_the_names_table_without_connecting(
+    tmp_path, monkeypatch, capsys
+):
+    path = _write_lib(tmp_path, [_record("Zz006"), _record("Zz007")])
+    monkeypatch.setattr(cli, "_connect", _no_connect)
+
+    assert cli.main(["read", str(path)]) == 0
+
+    out = capsys.readouterr().out
+    assert "Zz006" in out
+    assert "Zz007" in out
+    assert "shown" in out
+    assert "PC" in out
+    assert "name" in out
+    assert str(path) in out
+
+
+def test_read_lib_reports_duplicates_once(tmp_path, monkeypatch, capsys):
+    repeated = _record("Zz008")
+    path = _write_lib(tmp_path, [repeated, _record("Zz009"), repeated])
+    monkeypatch.setattr(cli, "_connect", _no_connect)
+
+    assert cli.main(["read", str(path)]) == 0
+
+    out = capsys.readouterr().out
+    assert out.count("Zz008") == 1
+    assert "Zz009" in out
+
+
+def test_restore_refuses_a_lib_file_before_reading_it(tmp_path, monkeypatch):
+    path = _write_lib(tmp_path, [_record("Zz010")])
+    fake = SimpleNamespace(channel=0, close=lambda: None)
+    monkeypatch.setattr(cli, "_connect", lambda *_a, **_k: fake)
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["restore", "--yes", str(path)])
+
+    said = str(raised.value)
+    assert said.startswith("error:")
+    assert ".lib" in said
     assert "not supported" in said
     assert "sqcli read" in said

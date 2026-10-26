@@ -30,8 +30,8 @@ useful when the file was copied in after the screen opened.
 **Every file is listed.**  A browser that hid everything but ``.syx``
 would be lying about what is in the folder, and the user might be
 looking for a ``.mid`` this build does not import yet.  The SysEx,
-MIDI and SoundQuest extensions sort first instead, so the common case
-is at the top.
+MIDI, SoundQuest and SoundDiver extensions sort first instead, so the
+common case is at the top.
 
 **A directory that cannot be read is a message, not a crash.**  The
 listing is one I/O call and it can fail with permission denied, a stale
@@ -56,8 +56,9 @@ __all__ = ["PRIORITY_SUFFIXES", "FilePickerScreen", "start_folder"]
 #: Extensions the importers understand, sorted ahead of every other file.
 #: They are still listed with a name like any other; the suffix only
 #: decides the order.  ``.sqs`` is SoundQuest's favourite-bank file; only
-#: its embedded Ensoniq SysEx sounds are imported.
-PRIORITY_SUFFIXES = (".sqs", ".syx", ".mid")
+#: its embedded Ensoniq SysEx sounds are imported.  ``.lib`` is a
+#: SoundDiver library; only its sound records are imported.
+PRIORITY_SUFFIXES = (".sqs", ".lib", ".syx", ".mid")
 
 #: The row that walks up one level.  It is a row, not a binding, so it is
 #: reached and opened the same way as a directory.

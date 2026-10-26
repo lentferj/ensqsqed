@@ -25,6 +25,11 @@ holds; this module is the import-shaped rest of the journey: one
 :class:`SourceSound` per sound, in file order, with a name read back off
 the record and the device the dump came from.
 
+A SoundQuest ``.sqs`` bank and a SoundDiver ``.LIB`` library are not
+dumps: they are read by their own decoders and flattened into the same
+list.  A ``.LIB`` file contributes only its sound records; SoundDiver's
+global settings and other data are not part of an import.
+
 Names are the instrument's own wording, read with
 :func:`sq.messages.sound_name` and stripped of its centering padding.  The
 instrument pads short names with spaces, and that padding is display
@@ -38,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-from sq import banks, dumps, sqs
+from sq import banks, dumps, lib, sqs
 from sq import messages as m
 
 __all__ = [
@@ -109,30 +114,54 @@ def _read_sqs_import(path: str) -> ImportSource:
     return ImportSource(path=path, sounds=sounds, device=None, kinds=("sqs",))
 
 
+def _read_lib_import(path: str) -> ImportSource:
+    """Read a SoundDiver ``.lib`` library into one flat import list.
+
+    The decoder returns 204-byte records in file order.  An identical
+    record is one row, not two: the bytes are compared exactly.  A
+    library has no device of its own -- the sounds were collected rather
+    than dumped from one bank -- so ``device`` is :data:`None`, and
+    ``kinds`` says where they came from.  Only sound records are read;
+    SoundDiver's settings and global data are not an import.
+    """
+    sounds: List[SourceSound] = []
+    seen: Set[bytes] = set()
+    for raw in lib.read_lib(path):
+        if raw in seen:
+            continue
+        seen.add(raw)
+        sounds.append(SourceSound(index=len(sounds), name=_name_of(raw), raw=raw))
+    if not sounds:
+        raise ValueError(f"{path} holds no sounds this program recognises")
+    return ImportSource(path=path, sounds=sounds, device=None, kinds=("sounddiver",))
+
+
 def read_import(path: str) -> ImportSource:
     """Read a dump file into source sounds, ready for an import.
 
     An all-sounds dump (80 sounds) wins when the file has one; a file
     that only carries single sounds is read as such and enumerated from
-    0.  A SoundQuest ``.sqs`` file is read by its own decoder first, and
-    its banks are flattened into one list.  A file that carries neither
-    is an error, not an empty bank: the user pointed at something that
-    was not a sound file, and an empty import would overwrite nothing and
-    confirm nothing, which is a lie.
+    0.  A SoundQuest ``.sqs`` file or a SoundDiver ``.lib`` library is
+    read by its own decoder first, and its records are flattened into one
+    list.  A file that carries neither is an error, not an empty bank:
+    the user pointed at something that was not a sound file, and an empty
+    import would overwrite nothing and confirm nothing, which is a lie.
     """
     if sqs.is_sqs_path(path):
         return _read_sqs_import(path)
-    lib = dumps.read_file(path)
-    if lib.sounds:
+    if lib.is_lib_path(path):
+        return _read_lib_import(path)
+    library = dumps.read_file(path)
+    if library.sounds:
         sounds = [
             SourceSound(index=number, name=_name_of(record), raw=record)
-            for number, record in sorted(lib.sounds.items())
+            for number, record in sorted(library.sounds.items())
         ]
         kinds: Tuple[str, ...] = ("all-sounds",)
-    elif lib.singles:
+    elif library.singles:
         sounds = [
             SourceSound(index=index, name=_name_of(record), raw=record)
-            for index, record in enumerate(lib.singles)
+            for index, record in enumerate(library.singles)
         ]
         kinds = ("single-sound",)
     else:
@@ -140,7 +169,7 @@ def read_import(path: str) -> ImportSource:
     return ImportSource(
         path=path,
         sounds=sounds,
-        device=lib.device,
+        device=library.device,
         kinds=kinds,
     )
 

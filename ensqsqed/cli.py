@@ -27,6 +27,7 @@ from sq import catalog as cat
 from sq import config
 from sq import dumps
 from sq import importer
+from sq import lib
 from sq import messages as m
 from sq import preset_labels
 from sq import presets as p
@@ -345,7 +346,7 @@ def _describe_program_change(pc: int) -> str:
 
 def _cmd_read(_device, args) -> None:
     """Read a dump file (no hardware)."""
-    if sqs.is_sqs_path(args.file):
+    if sqs.is_sqs_path(args.file) or lib.is_lib_path(args.file):
         source = importer.read_import(args.file)
         print(f"{args.file}: {source.summary()}")
         rows = [
@@ -732,6 +733,13 @@ def _cmd_restore(device, args) -> None:
     if sqs.is_sqs_path(filepath):
         raise SystemExit(
             "error: restore from a .sqs file is not supported; use "
+            "`sqcli read` and import in ensqsqed, or restore to Internal "
+            "from the app"
+        )
+
+    if lib.is_lib_path(filepath):
+        raise SystemExit(
+            "error: restore from a .lib file is not supported; use "
             "`sqcli read` and import in ensqsqed, or restore to Internal "
             "from the app"
         )

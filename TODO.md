@@ -244,6 +244,14 @@ nanosyned and this one alike.
 **Blocked on:** the native 32648-byte body, and whether other projects'
 `.sqs` files use the same variant.
 
+### SoundDiver `.LIB` — resolved 2026-10-26
+
+`sq/lib.py` now reads SoundDiver `.LIB` libraries: each `TNEL` chunk
+yields one 204-byte SQ sound record, in file order. The import browser,
+`sqcli read` and the `.sqs` import path accept `.lib` alongside `.sqs`;
+only sound records are imported. SoundDiver's settings and global data
+are not read, and are not part of an import.
+
 ---
 
 # External code review — GLM-5.3-Flash (2026-09-20)

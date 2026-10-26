@@ -132,6 +132,32 @@ async def test_a_sqs_file_sorts_with_the_other_import_extensions(
         assert _listing(screen) == ["..", "bank.sqs", "song.mid", "notes.txt"]
 
 
+async def test_a_lib_file_sorts_with_the_other_import_extensions(
+    tmp_path: Path,
+) -> None:
+    """SoundDiver libraries are listed, and ahead of unrelated files."""
+    (tmp_path / "library.lib").write_bytes(b"MROF")
+    (tmp_path / "bank.sqs").write_bytes(b"LIST")
+    (tmp_path / "song.mid").write_bytes(b"\x90\x40\x7f")
+    (tmp_path / "notes.txt").write_text("not a dump", encoding="utf-8")
+
+    assert ".lib" in PRIORITY_SUFFIXES
+
+    app = _Host()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = FilePickerScreen(start=str(tmp_path))
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        assert _listing(screen) == [
+            "..",
+            "bank.sqs",
+            "library.lib",
+            "song.mid",
+            "notes.txt",
+        ]
+
+
 async def test_enter_on_a_directory_navigates_in_place(folder: Path) -> None:
     """``⏎`` on a directory rebuilds the table and keeps the screen open."""
     app = _Host()
