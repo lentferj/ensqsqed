@@ -84,16 +84,17 @@ ensqsqed --allow-write                # start with the write gate armed
 ```
 
 `sqcli` is the same program's command line, for scripting and one-shot
-reads and writes:
+reads and writes. If the environment is not active, use
+`.venv/bin/sqcli`; `python -m ensqsqed.cli` is the same entry point.
 
 ```sh
-python -m ensqsqed.cli groups            # the groups and their selectors
-python -m ensqsqed.cli list ROM          # every sound in a group
-python -m ensqsqed.cli select INT 42 --dry-run   # what a DAW must send
-python -m ensqsqed.cli select INT 42 --yes      # send it to the unit
-python -m ensqsqed.cli read dump.syx     # read a .syx or .mid dump
-python -m ensqsqed.cli status            # ask the unit what it is on
-python -m ensqsqed.cli names             # all 80 internal names (silent)
+sqcli groups            # the groups and their selectors
+sqcli list ROM          # every sound in a group
+sqcli select INT 42 --dry-run   # what a DAW must send
+sqcli select INT 42 --yes      # send it to the unit
+sqcli read dump.syx     # read a .syx or .mid dump
+sqcli status            # ask the unit what it is on
+sqcli names             # all 80 internal names (silent)
 ```
 
 The browser and the `status`/`names` commands need the instrument.
