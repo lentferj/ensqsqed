@@ -20,7 +20,7 @@ import os
 
 import pytest
 
-from textual.widgets import Label
+from textual.widgets import DataTable, Label
 from vinsynlib.ui.confirm import ConfirmScreen
 
 from sq import banks
@@ -43,6 +43,31 @@ class TestStartup:
             await pilot.pause()
             assert app.query_one("#bank-table").row_count == len(banks.GROUPS)
             assert app.query_one("#slot-table").row_count == banks.SOUNDS_PER_GROUP
+
+
+class TestSlotBrowserColumns:
+    async def test_has_pc_column_with_key_pc(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#slot-table")
+            keys = [c.key.value for c in table.ordered_columns]
+            assert "pc" in keys
+            assert "num" in keys
+            assert "sel" in keys
+
+    async def test_internal_row_shows_program_change(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#slot-table")
+            assert table.get_cell("INT:001", "pc") == "00"
+
+    async def test_drum_kit_row_shows_80(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._fill("DRUM")
+            await pilot.pause()
+            table = app.query_one("#slot-table")
+            assert table.get_cell("DRUM:001", "pc") == "80"
 
 
 class TestTheConfirmationsFitTheirDialog:

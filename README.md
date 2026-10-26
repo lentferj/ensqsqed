@@ -119,12 +119,14 @@ favourites database with ratings, tags and notes.
   The SQ-R has no Bank Select. The group is chosen with a program change
   (124=Internal, 125=ROM, 126=Card A, 127=Card B), and every later
   program change means whatever that one said until the next. The browser
-  always sends the selector first, and the slot pane's `#` is the number
-  the unit displays — **00–79, two digits, counted from zero** — which
-  is also the MIDI program change. A `sel` column carries the group
-  selector — this instrument's replacement for the siblings' LSB/MSB
-  columns — and shows `—` for a drum kit, whose program change is
-  absolute.
+  always sends the selector first. The slot pane now shows `#` (the
+  slot's position in its group, counted from 1), `PC` (the actual MIDI
+  program change the unit sends — **00–79** for sounds, **80–99** for
+  drum kits, which is also the number the unit's own display prints)
+  and `sel` (the group selector — this instrument's replacement for
+  the siblings' LSB/MSB columns, `—` for a drum kit, whose program
+  change is absolute). Screenshots in this README predate the restored
+  `PC` column.
 
 - **Only Internal can be read.** `r` reads all eighty internal sounds in
   one silent message and takes their names out of it. The same read runs

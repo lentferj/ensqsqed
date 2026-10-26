@@ -1085,19 +1085,22 @@ class EnsqsqedApp(App):
         # depending on data that has nothing to do with it -- and the row
         # you just rated would jump sideways as it appeared.
         #
-        # ``#`` is the number the unit's own display prints: two digits,
-        # counted from zero, which is also the program change it sends
-        # (measured 2026-10-24: "00 - Dynamic Grand" for the first sound).
-        # ``sel`` is this instrument's answer to the siblings' LSB/MSB
-        # columns: the SQ-R has no Bank Select, so the other number that
-        # selects a sound is the group selector (124-127). A drum kit has
-        # no selector -- its program change is absolute -- and shows "—".
+        # ``#`` is the slot's position in its group, counted from 1
+        # (the bank index the cursor moves by); it is NOT the program
+        # change. ``PC`` is the actual MIDI program change the unit
+        # sends (00-79 for sounds, 80-99 for drum kits) -- the number
+        # the unit's own display prints. ``sel`` is this instrument's
+        # answer to the siblings' LSB/MSB columns: the SQ-R has no Bank
+        # Select, so the other number that selects a sound is the group
+        # selector (124-127). A drum kit has no selector -- its program
+        # change is absolute -- and shows "—".
         for label, key, width in (
             ("♥", "fav", None),
             ("#", "num", None),
             ("name", "name", None),
             ("★", "rating", 5),
             ("sel", "sel", None),
+            ("PC", "pc", None),
         ):
             slots.add_column(label, key=key, width=width)
 
@@ -1725,13 +1728,14 @@ class EnsqsqedApp(App):
                 )
                 table.add_row(
                     "[b]♥[/b]" if entry.number in here else "",
-                    f"{entry.program_change:02d}",
+                    f"{entry.number:03d}",
                     shown,
                     rating_cell(ratings.get(entry.key, 0)),
                     # This instrument's answer to LSB/MSB: the group
                     # selector is the only other number a program change
                     # needs, and a drum kit has none.
                     "—" if entry.group.selector is None else str(entry.group.selector),
+                    f"{entry.program_change:02d}",
                     key=entry.key,
                 )
         finally:
