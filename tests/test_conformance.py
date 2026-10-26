@@ -21,7 +21,7 @@ in the library: what drifted was never a bug anyone chose, it was a copy
 that nobody had a second copy to compare against.
 """
 
-from ensqsqed.app import KEY_HINTS, EnsqsqedApp, build_parser
+from ensqsqed.app import _HELP, KEY_HINTS, EnsqsqedApp, build_parser
 from sq.terms import TERMS
 from vinsynlib import conformance
 
@@ -76,6 +76,7 @@ def test_keys_match_the_family() -> None:
 # own test, and none of these renames one.
 _EXTRAS = (
     "I import",
+    "b backup",
     "M mode",
     "m multi",
     "x fx",
@@ -90,6 +91,12 @@ _EXTRAS = (
     "Z undo all",
     "w write gate",
 )
+
+
+def test_backup_and_restore_are_findable() -> None:
+    assert "b backup" in KEY_HINTS
+    assert "b         back up" in _HELP
+    assert "sqcli restore" in _HELP
 
 
 def test_the_legend_matches_the_family() -> None:

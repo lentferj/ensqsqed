@@ -428,6 +428,7 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
 #: that.
 WRITE_HINTS: tuple[str, ...] = (
     "I import",
+    "b backup",
     "M mode",
     "m multi",
     "x fx",
@@ -5218,9 +5219,10 @@ Enter sends the selector first, every time, and says both numbers. A
 drum kit takes no selector: its program change is absolute.
 
 The unit shows sounds as 00-79: two digits, counted from zero, which is
-also the program change it sends. The slot pane's `#` is that number, and
-`sel` is the group selector -- the SQ-R's replacement for the siblings'
-LSB/MSB columns. A drum kit shows `—` there.
+also the program change it sends. The slot pane's `#` is the slot's
+position, `PC` is that program change, and `sel` is the group selector --
+the SQ-R's replacement for the siblings' LSB/MSB columns. A drum kit
+shows `—` in `sel`.
 
 Names
 
@@ -5248,6 +5250,7 @@ Keys
   x         the preset's effect (FX editor)
   p         the list of the eighty presets
   I         import a bank or single sounds from a .syx / .mid
+  b         back up sounds, presets or everything
   M         toggle the unit: Select Sound / Select Preset
   z Z       undo, undo all
   w         toggle write gate (armed by --allow-write)
@@ -5290,6 +5293,17 @@ Importing sounds
   preset path: Internal RAM is read back and verified, but Card A and
   Card B cannot be dumped, so after a card write the pane is rebuilt from
   a per-slot scan and the write itself is unverified.
+
+Backing up and restoring
+
+  `b` opens the backup screen: choose sound groups and whether to back up
+  sounds, presets or all content. The app writes the files under the
+  configured backup folder and also copies the local preset labels.
+
+  Restore is the command line, not a key in this window:
+  `sqcli restore FILE --yes` writes a backup back; it asks for --yes and
+  verifies a preset read-back. A single preset slot can be restored with
+  `sqcli send SLOT.syx --yes` after selecting the slot on the unit.
 """
 
 
