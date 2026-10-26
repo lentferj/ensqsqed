@@ -76,7 +76,12 @@ from ensqsqed.multi import (
     PresetListScreen,
     SoundPickerScreen,
 )
-from ensqsqed.remote import PANEL_KEYS as _PANEL_KEYS, SELECT_PRESET, RemoteScreen
+from ensqsqed.remote import (
+    PANEL_KEYS as _PANEL_KEYS,
+    SELECT_PRESET,
+    SELECT_SOUND,
+    RemoteScreen,
+)
 from sq import banks
 from sq import catalog as cat
 from sq import config as cfg
@@ -4320,12 +4325,25 @@ class EnsqsqedApp(App):
                 "in turn and its current-sound record is read back. That "
                 "changes what the unit is playing while it runs, and takes a "
                 "minute or two. Internal is not scanned -- `r` reads it "
-                "silently in one message.\n\nPress ctrl+r again to stop early.",
+                "silently in one message.\n\nPress S again to stop early.",
                 confirm="Scan",
                 cancel="Cancel",
             ),
             start,
         )
+
+    def _scan_enter_sound_mode(self) -> None:
+        """Put the panel in Select Sound before the scan selects sounds.
+
+        The scan's program changes mean sounds only in that mode; after
+        preset work the unit can still be in Select Preset, where the same
+        messages select presets and every group reads as stuck.
+        """
+        if not hasattr(self.device, "tap_button"):
+            return
+        self.device.tap_button(SELECT_SOUND)
+        time.sleep(PRESET_SETTLE)
+        self._call_from_thread(self._set_remote_mode, "SOUND")
 
     @work(thread=True)
     def _scan_worker(self) -> None:
@@ -4342,10 +4360,11 @@ class EnsqsqedApp(App):
         stopped = False
         self._call_from_thread(
             self.notify_progress,
-            f"- scanning names: 0/{total} — ctrl+r stops",
+            f"- scanning names: 0/{total} — S stops",
         )
         try:
             with self._busy_gate, self._lock:
+                self._scan_enter_sound_mode()
                 # The scan is the moment the user expects every bank to be
                 # current.  INT is one fast dump, so read it here as well:
                 # a stale INT (from before an import) would otherwise look
@@ -4386,7 +4405,7 @@ class EnsqsqedApp(App):
                         self._call_from_thread(
                             self.notify_progress,
                             f"{spinner} scanning names: {done}/{total} "
-                            f"({slot.display}) — ctrl+r stops",
+                            f"({slot.display}) — S stops",
                         )
                     if stuck:
                         # The selector is not landing. Do not adopt partial

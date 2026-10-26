@@ -30,6 +30,7 @@ from sq import favorites as fav
 from ensqsqed.app import VIEW_ALL_FAVOURITES, EnsqsqedApp
 from ensqsqed.demo import DemoDevice
 from ensqsqed.fx import TYPE_CHANGE_WARNING
+from ensqsqed.remote import SELECT_SOUND
 
 
 @pytest.fixture
@@ -341,6 +342,8 @@ class TestTheScanRefreshesInternalToo:
 
         monkeypatch.setattr(app_module, "SCAN_SETTLE", 0.0)
         app.catalog.set_live_name("INT", 1, "stale before the scan")
+        taps = []
+        app.device.tap_button = lambda number, hold=0.12: taps.append(number)
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -354,6 +357,19 @@ class TestTheScanRefreshesInternalToo:
 
             assert not app._scanning
             assert app.catalog.live_name("INT", 1) == demo_name("INT", 0)
+            # The scan must leave Select Preset for Select Sound, or the
+            # program changes select presets and every group looks stuck.
+            assert taps[0] == SELECT_SOUND
+
+    async def test_scan_confirmation_names_S_as_the_stop_key(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_scan_device()
+            await pilot.pause()
+            prompt = app.screen.query_one("#confirm-prompt", Label)
+            text = str(prompt.render())
+            assert "Press S again" in text
+            assert "ctrl+r" not in text
 
 
 class _PresetStub:
