@@ -58,6 +58,13 @@ question below is adjusted accordingly
   current timing is 0.12 s hold / 0.4 s gap, ≈ 50 s per forced reload —
   the button path has been 8/8 reliable so far, so the sleeps may be
   conservative).
+- **Automate the selective restore's save.** The preset store now drives
+  the unit's Enter/Save sequence and verifies the slot, but the selective
+  restore path (the backup screen and `sqcli restore` of chosen
+  groups/content) still leaves the save to a panel step. Make it use the
+  same automated store path — three Enter/Save presses plus the read-back
+  verification — so a restore is one confirmed action, with the current
+  effect/name limits and the Card A/B write limits stated in the result.
 - **Fix the audio measurement rig.** `arecord -D hw:3,0` reported the
   same saturated level (peak 32767) for a note the owner heard and one
   he could not hear — it is not capturing the unit's output. Identify
