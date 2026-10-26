@@ -125,6 +125,31 @@ async def _assign(pilot, screen: SingleImportScreen, row: int, text: str) -> Non
 
 
 class TestWholeBankImport:
+    async def test_quitting_the_preview_returns_to_the_same_file_row(
+        self, tmp_path: Path
+    ):
+        _write_dump(tmp_path)
+        app = _app(DemoDevice())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._import_folder = str(tmp_path)
+            await _choose_kind(app, pilot, 0)
+            picker = app.screen
+            assert isinstance(picker, FilePickerScreen)
+            table = picker.query_one(f"#{FilePickerScreen.TABLE_ID}", DataTable)
+            table.focus()
+            row = table.row_count - 1
+            table.move_cursor(row=row)
+            await pilot.press("enter")
+            assert await _wait(lambda: isinstance(app.screen, BankImportScreen), pilot)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, FilePickerScreen)
+            assert str(app.screen.folder) == str(tmp_path)
+            reopened = app.screen.query_one(f"#{FilePickerScreen.TABLE_ID}", DataTable)
+            assert reopened.cursor_row == row
+
     async def test_the_whole_bank_is_written_after_two_confirmations(
         self, tmp_path: Path
     ):

@@ -801,6 +801,12 @@ class EnsqsqedApp(App):
         #: The folder the last import file came from.  The picker opens
         #: here next time; the *file* is never remembered.
         self._import_folder: Optional[str] = None
+        #: The row the last import file was picked from, so cancelling a
+        #: preview returns to the same place in the browser.
+        self._import_cursor: int = 0
+        #: 0 = whole bank, 1 = single sounds; used when reopening the
+        #: browser after a cancelled preview.
+        self._import_kind: int = 0
         #: The modal that covers a long bank read or write.
         self._wait_screen: Optional["WaitScreen"] = None
         if self._config_path is not None:
@@ -4567,18 +4573,38 @@ class EnsqsqedApp(App):
         """The first choice list answered: open the file browser."""
         if kind is None:
             return
-        self.push_screen(
-            FilePickerScreen(start=self._import_folder or ""),
-            lambda path: self._import_path_chosen(kind, path),
+        self._import_kind = kind
+        self._open_import_picker()
+
+    def _open_import_picker(self) -> None:
+        """Open the file browser at the last folder and file row."""
+        picker = FilePickerScreen(
+            start=self._import_folder or "",
+            start_row=self._import_cursor,
         )
+
+        def picked(path: Optional[str]) -> None:
+            if path:
+                self._import_folder = str(picker.folder)
+                self._import_cursor = picker.last_row
+                self._save_ui_state(import_folder=self._import_folder)
+            self._import_path_chosen(self._import_kind, path)
+
+        self.push_screen(picker, picked)
+
+    def _reopen_import_picker(self) -> None:
+        """A preview was cancelled: go back to the file browser."""
+        self._open_import_picker()
 
     def _import_path_chosen(self, kind: int, path: Optional[str]) -> None:
         """Read the file the user picked, or say why it cannot be read."""
         if not path:
             return
-        # Remember the folder, never the file.
-        self._import_folder = start_folder(path)
-        self._save_ui_state(import_folder=self._import_folder)
+        # The callback already remembered the folder and row; keep the
+        # fallback for direct callers.
+        if not self._import_folder:
+            self._import_folder = start_folder(path)
+            self._save_ui_state(import_folder=self._import_folder)
         try:
             source = importer.read_import(path)
         except (OSError, ValueError) as exc:
@@ -4616,6 +4642,7 @@ class EnsqsqedApp(App):
     ) -> None:
         """The preview answered: ask the first confirmation, gate first."""
         if target is None:
+            self._reopen_import_picker()
             return
         if not self._gate.armed:
             self.notify_status(self._gate.refuse("the import"), refused=True)
@@ -4811,6 +4838,7 @@ class EnsqsqedApp(App):
         """The map answered: turn it into a slot map and ask to write."""
         self._single_import_screen = None
         if result is None:
+            self._reopen_import_picker()
             return
         target, assignments = result
         if not assignments:

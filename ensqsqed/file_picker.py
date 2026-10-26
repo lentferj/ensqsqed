@@ -179,10 +179,17 @@ class FilePickerScreen(ModalScreen[Optional[str]]):
         *,
         start: str = "",
         title: str = "Open a MIDI / SysEx file",
+        start_row: int = 0,
     ) -> None:
         super().__init__()
         self._title = title
         self._folder = Path(start_folder(start))
+        #: The row to put the cursor on when the directory opens.  The
+        #: app uses this to return to the file it was on after a preview
+        #: was cancelled.
+        self._start_row = max(0, start_row)
+        #: The row a file was answered from, for the same return trip.
+        self._last_row = 0
         #: Rows in table order; index *i* is the row key ``str(i)``.
         self._entries: List[_Entry] = []
 
@@ -209,7 +216,7 @@ class FilePickerScreen(ModalScreen[Optional[str]]):
     def on_mount(self) -> None:
         table = self.query_one(f"#{self.TABLE_ID}", DataTable)
         table.add_column("name", key="name")
-        self._load(self._folder)
+        self._load(self._folder, self._start_row)
         table.focus()
 
     # --- reading and drawing ------------------------------------------
@@ -268,6 +275,7 @@ class FilePickerScreen(ModalScreen[Optional[str]]):
             return
         kind, path = self._entries[row]
         if kind == "file":
+            self._last_row = row
             self.dismiss(os.path.abspath(path))
             return
         # `..` and a directory both have a directory to open; a failed
@@ -308,6 +316,16 @@ class FilePickerScreen(ModalScreen[Optional[str]]):
         table = self.query_one(f"#{self.TABLE_ID}", DataTable)
         row = table.cursor_row if self._entries else 0
         self._load(self._folder, row)
+
+    @property
+    def folder(self) -> Path:
+        """The directory currently shown."""
+        return self._folder
+
+    @property
+    def last_row(self) -> int:
+        """The row the last file answer came from."""
+        return self._last_row
 
     def action_cancel(self) -> None:
         """``escape``/``q``: answer nothing."""

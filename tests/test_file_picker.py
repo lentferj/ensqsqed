@@ -83,6 +83,16 @@ def _status(screen: FilePickerScreen) -> str:
     return str(label.content)
 
 
+async def test_start_row_puts_the_cursor_back(folder: Path) -> None:
+    """The app reopens the browser on the row it was left on."""
+    app = _Host()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = FilePickerScreen(start=str(folder), start_row=2)
+        await app.push_screen(screen)
+        await pilot.pause()
+        assert _table(screen).cursor_row == 2
+
+
 async def test_the_listing_shows_parent_directories_and_files(folder: Path) -> None:
     """``..`` first, then directories, then files; every file is shown."""
     app = _Host()
