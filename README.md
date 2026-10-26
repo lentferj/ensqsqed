@@ -64,7 +64,18 @@ published version in this environment only:
 
 ## Running it
 
+The terminal browser itself — what most people want:
+
+```sh
+ensqsqed                              # the browser; remembers port and channel
+ensqsqed --demo                       # look around with no hardware attached
+ensqsqed --allow-write                # start with the write gate armed
 ```
+
+`sqcli` is the same program's command line, for scripting and one-shot
+reads and writes:
+
+```sh
 python -m ensqsqed.cli groups            # the groups and their selectors
 python -m ensqsqed.cli list ROM          # every sound in a group
 python -m ensqsqed.cli select INT 42 --dry-run   # what a DAW must send
@@ -74,8 +85,8 @@ python -m ensqsqed.cli status            # ask the unit what it is on
 python -m ensqsqed.cli names             # all 80 internal names (silent)
 ```
 
-`status` and `names` need the instrument. Pass `--port` and
-`--device-channel` the first time; both are remembered. If the unit's
+The browser and the `status`/`names` commands need the instrument.
+Pass `--port` and `--device-channel` the first time; both are remembered. If the unit's
 MIDI IN and MIDI OUT are on different ports of a multi-port interface —
 a crosswise cable — also pass `--recv-port`, or let the sweep find the
 pair (it listens on every input of an interface while each output
