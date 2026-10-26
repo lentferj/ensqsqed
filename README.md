@@ -521,20 +521,6 @@ ENTER/SAVE:
    confirm the name → pick the slot with the cursors → **ENTER/SAVE** →
    the display says *SAVED*.
 
-The owner's `.sqs` / `.syx` files remain the restore source for the
-memory as it was before the 2026-10-21 button-probe contamination
-(`docs/BUTTON-MAP.md` §8).
-
-**This unit's memory was changed by the button experiments of
-2026-10-21, and the owner should know it.** The blind button presses
-walked the unit's save dialog and a store completed: slots 2, 70 and 72
-now hold a near-copy of Preset-00 (23 bytes each differ from the run's
-backup), slot 0 differs by two bytes, and the unit's selection was left
-on Preset-02. The owner's own `.sqs` / `.syx` files are the restore
-source; the run's backup of the memory as it was at 20:35 that evening
-is in `~/temp/sqr_backup/20261021-203542/`. The details are in
-`docs/BUTTON-MAP.md` §8.
-
 ![Backup](docs/screenshots/backup.png)
 
 Backup screen.
