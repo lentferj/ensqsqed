@@ -371,6 +371,34 @@ class TestTheScanRefreshesInternalToo:
             assert "Press S again" in text
             assert "ctrl+r" not in text
 
+    async def test_r_on_a_group_without_a_dump_scans_just_that_group(
+        self, app, monkeypatch
+    ):
+        from ensqsqed import app as app_module
+
+        monkeypatch.setattr(app_module, "SCAN_SETTLE", 0.0)
+        app.catalog.set_live_name("INT", 1, "leave INT alone")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._fill("CARDA")
+            app.action_read_names()
+            await pilot.pause()
+            prompt = app.screen.query_one("#confirm-prompt", Label)
+            text = str(prompt.render())
+            assert "Card A" in text
+            assert "no bank dump request" in text
+
+            await pilot.press("y")
+            for _ in range(2000):
+                if not app._scanning:
+                    break
+                await pilot.pause()
+
+            assert not app._scanning
+            assert app.catalog.live_name("CARDA", 1) is not None
+            assert app.catalog.live_name("INT", 1) == "leave INT alone"
+
 
 class _PresetStub:
     """A device that only answers the all-presets read."""

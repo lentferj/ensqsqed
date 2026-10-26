@@ -128,12 +128,14 @@ favourites database with ratings, tags and notes.
   change is absolute). Screenshots in this README predate the restored
   `PC` column.
 
-- **Only Internal can be read.** `r` reads all eighty internal sounds in
-  one silent message and takes their names out of it. The same read runs
-  quietly at startup, so a fresh install shows names rather than blanks;
-  what it reads is kept in a sidecar beside the catalog, so the next
-  launch opens on them immediately. The other three groups have no dump
-  request of any kind, so their names come from a catalog or not at all.
+- **Only Internal has a bank dump.** `r` reads all eighty internal
+  sounds in one silent message and takes their names out of it. The same
+  read runs quietly at startup, so a fresh install shows names rather
+  than blanks; what it reads is kept in a sidecar beside the catalog, so
+  the next launch opens on them immediately. ROM, Card A/B and the drum
+  kits have no bank dump: `r` on those groups reads them the slow way,
+  one selected sound at a time, and asks first; `S` does the same for all
+  of them in one run.
 
 - **Favourites with ratings, tags and notes**, in a SQLite database in
   the platform's own application-data directory — so a `git clean` in a

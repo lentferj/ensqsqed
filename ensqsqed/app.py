@@ -35,10 +35,11 @@ whatever that said until the next one. So Enter always sends the group
 selector first, and the status line says both numbers it used. A drum kit
 needs no selector at all; its program change is absolute.
 
-**Only Internal can be read.** One Internal Sound Banks Dump Request
+**Only Internal has a bank dump.** One Internal Sound Banks Dump Request
 brings back all eighty sounds with their names in 32647 bytes. ROM, Card
-A and Card B have no dump request of any kind, so their names can only
-come from a catalog, and `r` says so rather than appearing to fail.
+A and Card B have no bank dump request; their names are read the slow
+way, by selecting each sound and reading its current-sound record. `S`
+does that for every such group; `r` does it for the group on screen.
 
 **The unit numbers from 1 and MIDI numbers from 0.** The manual says so
 itself. The slot pane shows both, because this is the family of bug these
@@ -1443,26 +1444,51 @@ class EnsqsqedApp(App):
         )
 
     def action_read_names(self) -> None:
-        """Read the highlighted bank's names off the synth, if it has an address.
+        """Read the highlighted bank's names off the synth.
 
-        Genuinely read-only -- nothing is selected and the instrument keeps
-        playing whatever it was playing -- so unlike scan it needs no
-        confirmation.
+        Internal has a bank dump and is genuinely read-only: nothing is
+        selected.  A group without a dump is read one sound at a time, so
+        that path asks first, exactly like `S` (it changes what the unit
+        is playing while it runs).
 
         Named ``read_names`` because that is what the family calls this key:
         ``r`` means *re-read from the device*, and it was bound to
         ``read_bank`` here, which said the same thing in a way no other tool
         in the family used.
         """
+        if self._scanning:
+            self.notify_status(
+                "a scan is already running; press S to stop it", refused=True
+            )
+            return
         if self._busy:
             self.notify_status("busy", refused=True)
             return
         entry = banks.group(self._current_bank)
         if not entry.readable:
-            self.notify_status(
-                f"{entry.label} has no dump request of any kind; only "
-                f"Internal can be read, and the rest come from a catalog",
-                refused=True,
+            # No bank dump, but the group can still be read the slow way:
+            # select each sound, read its current-sound record back.  That
+            # is exactly what `S` does for every such group; `r` does it
+            # for the group on screen, and asks first because it changes
+            # what the unit is playing while it runs.
+            def start(confirmed: bool | None) -> None:
+                if not confirmed:
+                    return
+                self._start_scan([entry.id])
+
+            self.push_screen(
+                ConfirmScreen(
+                    f"Read {entry.label}'s names?\n\n"
+                    f"{entry.label} has no bank dump request, so each sound "
+                    "is selected in turn and its current-sound record is read "
+                    "back. That changes what the unit is playing while it "
+                    "runs, and takes a minute or two for a full group. The "
+                    "write gate is not involved: nothing is stored.\n\n"
+                    "Press S to stop early.",
+                    confirm="Scan",
+                    cancel="Cancel",
+                ),
+                start,
             )
             return
         # Main thread; see action_select for why it is claimed here.
@@ -4307,17 +4333,8 @@ class EnsqsqedApp(App):
             return
 
         def start(confirmed: bool | None) -> None:
-            if not confirmed:
-                return
-            if self._busy:
-                self.notify_status("busy", refused=True)
-                return
-            if not self._exchange.acquire(blocking=False):
-                self.notify_status("busy", refused=True)
-                return
-            self._scan_cancel.clear()
-            self._scanning = True
-            self._scan_worker()
+            if confirmed:
+                self._start_scan(None)
 
         self.push_screen(
             ConfirmScreen(
@@ -4333,6 +4350,18 @@ class EnsqsqedApp(App):
             start,
         )
 
+    def _start_scan(self, group_ids: Optional[List[str]]) -> None:
+        """Claim the exchange and start a scan, all or selected groups."""
+        if self._busy:
+            self.notify_status("busy", refused=True)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("busy", refused=True)
+            return
+        self._scan_cancel.clear()
+        self._scanning = True
+        self._scan_worker(group_ids)
+
     def _scan_enter_sound_mode(self) -> None:
         """Put the panel in Select Sound before the scan selects sounds.
 
@@ -4346,16 +4375,27 @@ class EnsqsqedApp(App):
         time.sleep(PRESET_SETTLE)
         self._call_from_thread(self._set_remote_mode, "SOUND")
 
+    def _scan_groups(self, group_ids: Optional[List[str]]) -> List[banks.Group]:
+        """The non-dumpable groups a scan should visit."""
+        return [
+            group
+            for group in banks.groups()
+            if not group.readable and (group_ids is None or group.id in group_ids)
+        ]
+
     @work(thread=True)
-    def _scan_worker(self) -> None:
+    def _scan_worker(self, group_ids: Optional[List[str]] = None) -> None:  # noqa: C901
         """**MIDI only** -- names are adopted on the main thread.
 
         One select, one settle, one read per slot. The settle matters: a
         program change is not instantaneous, and reading too early returns
         the previous sound, which would attach every name to the slot
         before the one it belongs to.
+
+        ``group_ids`` narrows a scan to selected groups; ``None`` is the
+        full `S` scan.
         """
-        groups = [group for group in banks.groups() if not group.readable]
+        groups = self._scan_groups(group_ids)
         total = sum(group.count for group in groups)
         done = 0
         stopped = False
@@ -4366,13 +4406,15 @@ class EnsqsqedApp(App):
         try:
             with self._busy_gate, self._lock:
                 self._scan_enter_sound_mode()
-                # The scan is the moment the user expects every bank to be
-                # current.  INT is one fast dump, so read it here as well:
-                # a stale INT (from before an import) would otherwise look
-                # exactly like the factory ROM set and be mistaken for it.
-                internal = self._read_internal_for_scan()
-                if internal:
-                    self._call_from_thread(self._adopt_scanned, "INT", internal)
+                # A full scan is the moment the user expects every bank to
+                # be current.  INT is one fast dump, so read it here as
+                # well: a stale INT (from before an import) would otherwise
+                # look exactly like the factory ROM set and be mistaken for
+                # it.  A one-group `r` scan leaves INT alone.
+                if group_ids is None:
+                    internal = self._read_internal_for_scan()
+                    if internal:
+                        self._call_from_thread(self._adopt_scanned, "INT", internal)
                 for group in groups:
                     names: Dict[int, str] = {}
                     last_name: Optional[str] = None
@@ -4488,7 +4530,7 @@ class EnsqsqedApp(App):
                     "[b]Favourites, ratings, tags and notes are not "
                     "touched[/b] -- they live in the favourites database, "
                     "not here. After this the sounds show as numbers until "
-                    "the scan that follows puts names back."
+                    "`S` (or `r` on a group) reads the names back."
                 ),
                 rebuild,
             )
@@ -4497,9 +4539,9 @@ class EnsqsqedApp(App):
             ConfirmScreen(
                 "Discard the whole name catalog and rebuild it from the "
                 "synth?\n\n"
-                "Every name is forgotten and read back: Internal silently, "
-                "and Card/ROM banks have no dump request so their names "
-                "cannot be recovered. Favourites, ratings, tags and notes "
+                "Every name is forgotten and can be read back: Internal "
+                "silently with `r`, the other groups by scanning one sound "
+                "at a time with `S`. Favourites, ratings, tags and notes "
                 "are untouched."
             ),
             warn,
@@ -5229,15 +5271,16 @@ Names
 `r` reads all eighty internal sounds in one silent message and takes
 their names out of it. The same read runs quietly at startup, so a fresh
 install shows names rather than blanks; what it reads is kept beside the
-catalog for next time. The other three groups have no dump request of
-any kind, so their names come from a catalog or not at all.
+catalog for next time. ROM, Card A/B and the drum kits have no bank
+dump: `r` on those groups reads them one selected sound at a time and
+asks first; `S` does the same for all of them in one run.
 
 Keys
 
   up/down   move; this never sends anything
   tab       switch pane
   enter     select on the unit -- selector first, then the sound
-  r         read the internal names (silent, one message)
+  r         read this bank's names (Internal: one silent dump; others: scan)
   /         search the names
   [ ]       previous / next MIDI channel
   c         set the base MIDI channel
