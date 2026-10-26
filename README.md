@@ -480,6 +480,10 @@ put a single slot back, take it out on its own:
 sqcli multi --preset 12 --out slot-12.syx   # one slot, in the form `send` takes
 ```
 
+**Sounds restore to Internal only.** A card is copied from Internal on
+the front panel; the app deliberately does not offer Card A/B as a SysEx
+write target for imports or restores.
+
 **What a restore writes, and what it does not.** A dump stores the
 selected slot's **track/pile range, offsets 32–151** — that includes
 each track's pressure (the stored ON/OFF), so the arrangement is
@@ -539,21 +543,25 @@ Backup screen.
 
 `I` opens a **file browser** (it remembers the folder you last loaded
 from, never the file) and reads an **All-Sounds dump** — the 32647-byte
-`.syx`, or the `.mid` that carries the same SysEx. It offers two flows
-over the three writable groups: Internal (RAM), Card A or Card B.
-**`ctrl+s` starts either flow**; the preview screens show a progress
-line, and a long bank read or write is covered by a "please wait"
-screen.
+`.syx`, or the `.mid` that carries the same SysEx. It writes **Internal
+(RAM) only**: a card is copied from Internal on the front panel, not
+written by SysEx. **`ctrl+s` starts either flow**; the preview screens
+show a progress line, and a long bank read or write is covered by a
+"please wait" screen.
 
 - **Whole bank** previews every sound in the file by number and name,
-  then sends the chosen bank.
+  then sends it to Internal.
 - **Single sounds** opens a two-pane map. The left pane lists the file's
   sounds with a `target` slot beside each; `⏎` on a row (or typing a
   digit) asks for a target slot from `00` to `79`, and target slots must
   be unique — a duplicate or out-of-range slot is refused with a
-  sentence and nothing is written. `b` switches the target bank and the
-  right pane is read again; `ctrl+s` starts the import. Slots you do
-  not assign are left alone.
+  sentence and nothing is written. `ctrl+s` starts the import. Slots you
+  do not assign are left alone.
+
+**Cards are copied on the unit.** To put a bank on Card A or Card B,
+import or restore it into Internal first, make a current Internal backup,
+then use the front panel's card copy. The app deliberately does not offer
+a card as a SysEx write target.
 
 ![Import](docs/screenshots/import.png)
 
@@ -580,15 +588,14 @@ ALSA port here, so the whole-bank flow falls back to per-slot sends.
 The import therefore reports "loaded into the edit buffer, not stored"
 rather than claiming the bank changed.
 
-**After a whole-bank send the target bank is reread** — RAM by its one
-dump, a card by the per-slot scan — so the browser shows what is now on
-the unit without a restart.
+**After a whole-bank send Internal is reread** by its one dump, so the
+browser shows what is now in RAM without a restart.
 
 **Only Internal RAM is readable**, so an INT write is compared byte for
-byte and reports the difference; Card A and Card B are not dumpable, and
-their reread is a slow per-slot scan (select each sound, read it back)
-that changes what the unit is playing while it runs. Take a backup
-before importing over a bank you care about.
+byte and reports the difference. Card A and Card B are not dumpable and
+are not write targets here: read them for backup by selecting each sound,
+then copy a bank to a card on the unit's own panel. Take a backup before
+importing over Internal.
 
 The hardware suite pins the measured behaviour behind a second,
 destructive gate:

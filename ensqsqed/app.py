@@ -149,7 +149,7 @@ VIEW_LABELS = {
 #: The writable sound groups an import can target, in the order the target
 #: choice lists them. ``ROM`` and ``DRUM`` are not writable, so they are
 #: never offered.
-_IMPORT_BANKS = ("INT", "CARDA", "CARDB")
+_IMPORT_BANKS = ("INT",)
 
 #: The panel's words for each writable group.  The wire takes the group id;
 #: every sentence a person reads uses these.
@@ -298,7 +298,7 @@ class WaitScreen(ModalScreen[None]):
 #: The writable sound groups an import can target, in the order the target
 #: choice lists them. ``ROM`` and ``DRUM`` are not writable, so they are
 #: never offered.
-_IMPORT_BANKS = ("INT", "CARDA", "CARDB")
+_IMPORT_BANKS = ("INT",)
 
 #: The panel's words for each writable group.  The wire takes the group id;
 #: every sentence a person reads uses these.
@@ -4592,7 +4592,7 @@ class EnsqsqedApp(App):
     # --- whole-bank import --------------------------------------------------
 
     def _import_bank_start(self, source: importer.ImportSource) -> None:
-        """Preview the file and ask which bank it replaces."""
+        """Preview the file; it replaces Internal (RAM)."""
         if not source.is_full_bank:
             self.notify_status(
                 f"import: {source.summary()}; the whole-bank flow needs all "
@@ -4688,24 +4688,17 @@ class EnsqsqedApp(App):
     # --- single-sound import ------------------------------------------------
 
     def _import_single_start(self, source: importer.ImportSource) -> None:
-        """Ask which bank the single sounds go into, then read it.
+        """Read Internal and open the single-sound map.
 
-        ``ChoicePicker`` and not the raw shared ``ChoiceScreen``: the
-        latter's marker lags the focus and made the answer look wrong.
+        Only Internal accepts a SysEx write.  A card is copied from
+        Internal on the front panel, so there is no target choice here.
         """
-        self.push_screen(
-            ChoicePicker(
-                "Target bank",
-                [_IMPORT_LABELS[group] for group in _IMPORT_BANKS],
-                0,
-            ),
-            lambda index: self._single_bank_chosen(source, index),
-        )
+        self._single_bank_chosen(source, 0)
 
     def _single_bank_chosen(
         self, source: importer.ImportSource, index: Optional[int]
     ) -> None:
-        """The bank choice answered: read its names, then open the map."""
+        """Read Internal's names, then open the map."""
         if index is None:
             return
         target = _IMPORT_BANKS[index]
@@ -4715,8 +4708,8 @@ class EnsqsqedApp(App):
         if not self._exchange.acquire(blocking=False):
             self.notify_status("import: busy", refused=True)
             return
-        # The card read is a per-slot scan and can take a minute.  Cover
-        # the wait; the worker pops it when the map is ready.
+        # Internal is one bank dump; cover the wait while the worker
+        # reads it, then open the map.
         self._wait_screen = WaitScreen(
             f"Reading {_IMPORT_LABELS[target]}… this can take a minute"
         )
@@ -4736,7 +4729,7 @@ class EnsqsqedApp(App):
 
     @work(thread=True)
     def _open_single_worker(self, source: importer.ImportSource, target: str) -> None:
-        """**MIDI only** -- read the target bank's names for the right pane."""
+        """**MIDI only** -- read Internal's names for the right pane."""
         failure: Optional[BaseException] = None
         names: Optional[Dict[int, str]] = None
         try:
@@ -5326,16 +5319,15 @@ The preset editor
 Importing sounds
 
   `I` reads an All-Sounds dump -- a .syx or the .mid that carries the
-  same SysEx -- and writes it into a writable bank. "Whole bank" previews
-  all eighty sounds and replaces one of Internal (RAM), Card A or Card B
-  after two confirmations. "Single sounds" opens a two-pane map: assign a
-  target slot (00-79) to any number of the file's sounds, then ctrl+s.
+  same SysEx -- and writes it into Internal (RAM). "Whole bank" previews
+  all eighty sounds and replaces Internal after two confirmations.
+  "Single sounds" opens a two-pane map: assign a target slot (00-79) to
+  any number of the file's sounds, then ctrl+s.
 
   Every write needs the write gate armed (`w`), and both flows ask twice.
-  The sound-write path is new and best-effort, not measured like the
-  preset path: Internal RAM is read back and verified, but Card A and
-  Card B cannot be dumped, so after a card write the pane is rebuilt from
-  a per-slot scan and the write itself is unverified.
+  Internal RAM is read back and verified. Cards are not SysEx write
+  targets: import or restore into Internal, then copy to the card on the
+  unit's front panel.
 
 Backing up and restoring
 
@@ -5347,6 +5339,8 @@ Backing up and restoring
   `sqcli restore FILE --yes` writes a backup back; it asks for --yes and
   verifies a preset read-back. A single preset slot can be restored with
   `sqcli send SLOT.syx --yes` after selecting the slot on the unit.
+  Sounds restore to Internal only; to put a bank on Card A/B, restore it
+  to Internal, back Internal up, then copy on the unit's front panel.
 """
 
 

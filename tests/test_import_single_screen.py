@@ -284,55 +284,6 @@ async def test_a_locked_gate_refuses_ctrl_s_and_w_arms_it() -> None:
         assert answered == [("INT", {0: 5})]
 
 
-async def test_b_chooses_a_bank_and_calls_the_app() -> None:
-    called: List[str] = []
-    app = _Host()
-    async with app.run_test() as pilot:
-        screen = _screen(on_bank_change=called.append)
-        await app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("b")
-        await pilot.pause()
-        picker = app.screen
-        assert isinstance(picker, ChoiceScreen), "the family's choice list is up"
-
-        await pilot.press("down")
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert called == ["CARDA"]
-        assert "Card A" in str(screen.query_one("#bank-label", Label).content)
-        assert screen.target == "CARDA"
-
-        fresh = [(slot, f"Fresh {slot:02d}") for slot in range(80)]
-        screen.set_bank("CARDA", fresh)
-        await pilot.pause()
-        right = screen.query_one("#target-table", DataTable)
-        assert right.row_count == 80
-        assert right.get_cell("0", "name") == "Fresh 00"
-        assert right.get_cell("79", "name") == "Fresh 79"
-
-
-async def test_b_without_a_callback_clears_the_listing_and_says_so() -> None:
-    app = _Host()
-    async with app.run_test() as pilot:
-        screen = _screen()
-        await app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("b")
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert "Card A" in str(screen.query_one("#bank-label", Label).content)
-        right = screen.query_one("#target-table", DataTable)
-        assert right.row_count == 0, "the old bank's names are not left behind"
-        assert "has not read this bank" in _status(screen)
-
-
 async def test_a_bracket_in_a_name_is_literal() -> None:
     """A name is bytes, not markup: the screen draws it and does not raise."""
     app = _Host()

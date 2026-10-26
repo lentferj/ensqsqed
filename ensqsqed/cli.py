@@ -15,8 +15,6 @@
 
 """``sqcli`` -- the SQ-R's memory, and what it takes to reach a sound."""
 
-# ruff: noqa: F821
-
 from __future__ import annotations
 
 import argparse
@@ -738,59 +736,28 @@ def _cmd_restore(device, args) -> None:
 
         # --- Restore sounds ---
         if has_sounds:
+            if not args.yes:
+                print(
+                    f"about to restore the sounds in {filepath} into Internal "
+                    "(RAM). The unit's own SAVE SOUND is still needed, and a "
+                    "card must be copied from Internal on the panel."
+                )
+                if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+                    print("nothing sent")
+                    return
             source = importer.read_import(filepath)
-            if source.is_full_bank:
-                # Whole-bank import
-                def on_bank_chosen(target: int) -> None:
-                    existing = device.read_internal_bank()
-                    assignments = {
-                        i: sound.raw for i, sound in enumerate(source.sounds)
-                    }
-                    merged = importer.merge_bank(existing, assignments)
-                    device.send_sound_bank(merged, verified=False)
-                    device._exchange.release()
-                    notify_status(
-                        f"sounds restored from {source.summary()} into the "
-                        "edit buffer; "
-                        "press ENTER on the unit to store.",
-                        refused=False,
-                    )
-
-                self.push_screen(
-                    BankImportScreen(
-                        path=source.path,
-                        summary=source.summary(),
-                        names=[sound.name for sound in source.sounds],
-                        gate=self._gate,
-                    ),
-                    on_bank_chosen,
-                )
-            else:
-                # Single-sound import
-                def on_single_done(assignments: Dict[int, int]) -> None:
-                    existing = device.read_internal_bank()
-                    raw_assignments = {}
-                    for src_idx, _tgt_slot in assignments.items():
-                        if src_idx < len(source.sounds):
-                            raw_assignments[src_idx] = source.sounds[src_idx].raw
-                    merged = importer.merge_bank(existing, raw_assignments)
-                    device.send_sound_bank(merged, verified=False)
-                    device._exchange.release()
-                    notify_status(
-                        f"single sounds restored from {source.summary()} into "
-                        "the edit buffer; "
-                        "press ENTER on the unit to store.",
-                        refused=False,
-                    )
-
-                self.push_screen(
-                    SingleImportScreen(
-                        path=source.path,
-                        summary=source.summary(),
-                        gate=self._gate,
-                    ),
-                    on_single_done,
-                )
+            try:
+                existing = device.read_internal_bank()
+                assignments = {sound.index: sound.raw for sound in source.sounds}
+                merged = importer.merge_bank(existing, assignments)
+                device.send_sound_bank("INT", merged)
+            except Exception as exc:
+                raise SystemExit(f"error: restore failed: {exc}") from None
+            print(
+                f"restored {source.summary()} into Internal (RAM) — press "
+                "SAVE SOUND on the unit to store it; copy to a card from "
+                "Internal on the panel."
+            )
 
         # --- Restore presets ---
         if has_presets:

@@ -212,8 +212,6 @@ class TestSingleSoundImport:
             await _choose_kind(app, pilot, 1)
             await _pick_file(app, pilot, path)
             # The target bank: Internal (RAM), the first row.
-            assert isinstance(app.screen, ChoiceScreen)
-            await pilot.press("enter")
             assert await _wait(
                 lambda: isinstance(app.screen, SingleImportScreen), pilot
             )
@@ -264,8 +262,6 @@ class TestSingleSoundImport:
             app._import_folder = str(tmp_path)
             await _choose_kind(app, pilot, 1)
             await _pick_file(app, pilot, path)
-            assert isinstance(app.screen, ChoiceScreen)
-            await pilot.press("enter")
             assert await _wait(
                 lambda: isinstance(app.screen, SingleImportScreen), pilot
             )

@@ -101,14 +101,10 @@ def _screen(
     )
 
 
-def test_the_three_writable_banks_are_the_panels_words() -> None:
-    """Only the writable groups are offered, named as the panel names them."""
-    assert WRITABLE_BANKS == ("INT", "CARDA", "CARDB")
-    assert BANK_LABELS == {
-        "INT": "Internal (RAM)",
-        "CARDA": "Card A",
-        "CARDB": "Card B",
-    }
+def test_only_internal_is_writable_over_sysex() -> None:
+    """A card is copied from Internal on the panel, not written by SysEx."""
+    assert WRITABLE_BANKS == ("INT",)
+    assert BANK_LABELS["INT"] == "Internal (RAM)"
 
 
 def test_an_unwritable_target_falls_back_to_internal() -> None:
@@ -124,10 +120,10 @@ def test_the_start_key_is_ctrl_s_and_enter_is_not_bound() -> None:
     keys = {binding.key for binding in BankImportScreen.BINDINGS}
     assert "ctrl+s" in keys
     assert "enter" not in keys
-    assert {"escape", "q", "b", "w"} <= keys
+    assert {"escape", "q", "w"} <= keys
+    assert "b" not in keys
 
     assert "ctrl+s start" in HINT
-    assert "b target bank" in HINT
     assert "esc / q cancel" in HINT
 
 
@@ -166,50 +162,6 @@ async def test_the_target_starts_on_the_internal_bank_and_says_so() -> None:
         await pilot.pause()
         assert screen.target == "INT"
         assert "Internal (RAM)" in _target_line(screen)
-
-
-async def test_b_chooses_a_bank_and_ctrl_s_answers_it() -> None:
-    """``b`` opens the three banks; the chosen one is what ``ctrl+s`` answers."""
-    answered: List[Optional[str]] = []
-    app = _Host()
-    async with app.run_test(size=(100, 40)) as pilot:
-        screen = _screen(target="CARDB")
-        await app.push_screen(screen, answered.append)
-        await pilot.pause()
-
-        await pilot.press("b")
-        await pilot.pause()
-        picker = app.screen
-        assert isinstance(picker, ChoicePicker)
-
-        # CARDB -> CARDA, then confirm the choice.
-        await pilot.press("up")
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is screen
-        assert screen.target == "CARDA"
-        assert "Card A" in _target_line(screen)
-
-        # ctrl+s on the screen itself answers the bank it shows.
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert answered == ["CARDA"]
-
-
-async def test_a_cancelled_bank_choice_changes_nothing() -> None:
-    """Escape in the choice list leaves the target where it was."""
-    app = _Host()
-    async with app.run_test(size=(100, 40)) as pilot:
-        screen = _screen(target="CARDB")
-        await app.push_screen(screen)
-        await pilot.pause()
-        await pilot.press("b")
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        assert app.screen is screen
-        assert screen.target == "CARDB"
-        assert "Card B" in _target_line(screen)
 
 
 async def test_enter_does_not_answer() -> None:
@@ -270,7 +222,7 @@ async def test_w_arms_the_gate_and_then_ctrl_s_answers() -> None:
     gate = EditGate()
     app = _Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        screen = _screen(gate=gate, target="CARDB")
+        screen = _screen(gate=gate)
         await app.push_screen(screen, answered.append)
         await pilot.pause()
 
@@ -288,7 +240,7 @@ async def test_w_arms_the_gate_and_then_ctrl_s_answers() -> None:
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-        assert answered == ["CARDB"]
+        assert answered == ["INT"]
 
 
 async def test_w_without_a_gate_says_there_is_none() -> None:

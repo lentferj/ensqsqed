@@ -35,14 +35,10 @@ is asked again when ``ctrl+s`` starts the import, because the map is the
 thing that ships and both checks should agree.  Out-of-range targets are
 refused the same way, in the same place.
 
-**The bank on the right can change, and the app owns the reload.**  ``b``
-opens the family's choice list over the three writable groups.  The
-screen adopts the answer and says which bank it now names, but it does
-not read a card; it calls ``on_bank_change(group_id)`` and the app reads
-the bank in its worker and hands the fresh rows back through
-:meth:`SingleImportScreen.set_bank`.  A screen with no callback (a unit
-test, or a caller with nothing to reload) clears the right table and
-says so, rather than leaving another bank's names under the new label.
+**The bank on the right is Internal (RAM).**  Only Internal accepts a
+SysEx write; a card is copied from Internal on the front panel.  The
+screen still exposes :meth:`SingleImportScreen.set_bank` for a caller
+that has read a bank, but the import path no longer changes target.
 
 **Names are bytes, and a square bracket is not markup.**  Sound names
 come off a disk that may hold anything, so every name is escaped on the
@@ -67,16 +63,16 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Label, Static
 
-from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 from ensqsqed.multi import NumberPrompt
 from sq import banks, importer
 
 __all__ = ["BANK_LABELS", "WRITABLE_BANKS", "SingleImportScreen"]
 
-#: The groups a sound bank can be written into.  ``ROM`` and ``DRUM`` are
-#: not writable, so they are never offered here.
-WRITABLE_BANKS: Tuple[str, ...] = ("INT", "CARDA", "CARDB")
+#: The groups a sound bank can be written into over SysEx.  Only Internal
+#: (RAM) accepts one; a card is copied from Internal on the front panel.
+#: ``ROM`` and ``DRUM`` are not writable at all, so none is offered.
+WRITABLE_BANKS: Tuple[str, ...] = ("INT",)
 
 #: The panel's own words for each writable group.  The screen shows these;
 #: the answer is always the group id.
@@ -103,7 +99,7 @@ GATE_NOTE_ID = "gate-note"
 TARGET_STYLE = "bold yellow"
 
 #: What the bottom line says the keys do.
-HINT = "⏎ assign · 0-9 type · b bank · w gate · ctrl+s start · esc close"
+HINT = "⏎ assign · 0-9 type · w gate · ctrl+s start · esc close"
 
 
 def _literal(text: str) -> str:
@@ -163,7 +159,6 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("q", "cancel", "Cancel"),
-        Binding("b", "choose_bank", "Target bank"),
         # `w` is the app's key, served here because a modal screen cuts
         # the app's binding chain: the gate could otherwise only be armed
         # by closing the map, throwing the assignments away.
@@ -446,55 +441,6 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
             return
 
     # --- the bank ------------------------------------------------------
-
-    def action_choose_bank(self) -> None:
-        """``b``: pick one of the three writable target banks."""
-        label = BANK_LABELS.get(self._target, self._target)
-        current = (
-            WRITABLE_BANKS.index(self._target)
-            if (self._target in WRITABLE_BANKS)
-            else 0
-        )
-        self.app.push_screen(
-            ChoicePicker(
-                f"Import into which bank? (now {label})",
-                [BANK_LABELS[group] for group in WRITABLE_BANKS],
-                current,
-            ),
-            self._bank_chosen,
-        )
-
-    def _bank_chosen(self, chosen: Optional[int]) -> None:
-        """The choice list answered: adopt a valid row, ignore the rest."""
-        if chosen is None or not 0 <= chosen < len(WRITABLE_BANKS):
-            return
-        group_id = WRITABLE_BANKS[chosen]
-        self._target = group_id
-        self._show_bank()
-        if self._on_bank_change is not None:
-            # The app reads the bank in a worker and calls set_bank with
-            # the fresh rows.  Until then the old listing belongs to the
-            # bank the label no longer names, so it is not left there.
-            self._clear_target()
-            self.say(f"reading {BANK_LABELS[group_id]}…")
-            self._on_bank_change(group_id)
-            return
-        self._clear_target()
-        self.say(
-            f"{BANK_LABELS[group_id]} — the app has not read this bank, "
-            "so the slot listing is empty"
-        )
-
-    def _clear_target(self) -> None:
-        """Empty the right table without touching its columns."""
-        try:
-            table = self.query_one(f"#{TARGET_TABLE_ID}", DataTable)
-        except Exception:  # pragma: no cover - the screen closed under us
-            return
-        table.clear()
-        self._listing = []
-
-    # --- the gate ------------------------------------------------------
 
     def action_toggle_gate(self) -> None:
         """``w`` here: the app's own gate, toggled where it is shown.

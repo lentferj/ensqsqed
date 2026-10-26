@@ -23,11 +23,11 @@ chosen group id (or ``None`` when the user backs out).  The app owns the
 next step: two confirmations, the exchange and the paced send.  Keeping
 the split here is what makes the screen testable without a unit.
 
-**The three targets are the writable ones.**  ``INT`` is the internal
-RAM bank, ``CARDA`` and ``CARDB`` are the cards; ``ROM`` and ``DRUM``
-cannot be written, so they are not offered.  The panel's own words are
-used (``Internal (RAM)``, ``Card A``, ``Card B``) and the group id is
-what the screen answers, because that is what the bridge takes.
+**Internal is the only SysEx write target.**  ``ROM``, ``DRUM`` and the
+two cards cannot be written over SysEx; a card is copied from Internal
+on the front panel.  The panel's own words are used (``Internal (RAM)``)
+and the group id is what the screen answers, because that is what the
+bridge takes.
 
 **The gate is held, not copied.**  When the app hands its
 :class:`~ensqsqed.gate.EditGate` in, this screen toggles that object and
@@ -44,10 +44,9 @@ escaped on the way into the table, the same way :mod:`ensqsqed.multi`
 escapes preset names, and the path and summary are drawn with markup
 off.  A corrupt name is still a row somebody has to be able to look at.
 
-``b`` picks the target bank from a choice list; ``w`` toggles the write
-gate; ``ctrl+s`` answers with the target bank; ``escape`` and ``q``
-answer ``None``.  The table scrolls, because a full bank is eighty rows
-and a terminal is not.
+``w`` toggles the write gate; ``ctrl+s`` answers with Internal as the
+target; ``escape`` and ``q`` answer ``None``.  The table scrolls, because
+a full bank is eighty rows and a terminal is not.
 """
 
 from __future__ import annotations
@@ -60,15 +59,14 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Label, Static
 
-from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
 
 __all__ = ["BANK_LABELS", "WRITABLE_BANKS", "BankImportScreen"]
 
-#: The groups a sound bank can be written into.  ``ROM`` and ``DRUM``
-#: are deliberately absent: they are not writable, so they are not
-#: offered.
-WRITABLE_BANKS: Tuple[str, ...] = ("INT", "CARDA", "CARDB")
+#: The groups a sound bank can be written into over SysEx.  Only Internal
+#: (RAM) accepts one; a card is copied from Internal on the front panel.
+#: ``ROM`` and ``DRUM`` are not writable at all, so none is offered.
+WRITABLE_BANKS: Tuple[str, ...] = ("INT",)
 
 #: The panel's words for each writable group.  The screen shows these;
 #: the answer is the group id.
@@ -79,7 +77,7 @@ BANK_LABELS: Dict[str, str] = {
 }
 
 #: What the bottom line says the keys do.
-HINT = "b target bank · ctrl+s start · esc / q cancel"
+HINT = "ctrl+s start · esc / q cancel"
 
 
 def _literal(text: str) -> str:
@@ -100,10 +98,9 @@ class BankImportScreen(ModalScreen[Optional[str]]):
     per source sound, in file order.  The screen neither opens the file
     nor talks to a unit.
 
-    ``target`` is the bank the app suggests; anything that is not one
-    of :data:`WRITABLE_BANKS` falls back to ``INT`` rather than putting
-    an unwritable group on the wire.  ``b`` reopens the choice with the
-    current bank marked, and a cancelled choice changes nothing.
+    ``target`` is accepted for callers that still pass one; anything not
+    in :data:`WRITABLE_BANKS` falls back to ``INT``.  There is no target
+    choice: Internal is the only SysEx write target.
 
     ``gate`` is the app's own write gate, if the app hands it over.
     ``w`` toggles it and the note line says which state it is in;
@@ -142,7 +139,6 @@ class BankImportScreen(ModalScreen[Optional[str]]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("q", "cancel", "Cancel"),
-        Binding("b", "choose_bank", "Target bank"),
         Binding("w", "toggle_gate", "Write gate"),
         # ``ctrl+s`` starts the import, like every other screen in the
         # family.  Enter is deliberately absent: a focused DataTable
@@ -317,24 +313,6 @@ class BankImportScreen(ModalScreen[Optional[str]]):
         self.say(self._gate.describe())
 
     # --- answering -----------------------------------------------------
-
-    def action_choose_bank(self) -> None:
-        """``b``: pick one of the three writable banks."""
-        self.app.push_screen(
-            ChoicePicker(
-                "Import into which bank?",
-                [BANK_LABELS[group] for group in WRITABLE_BANKS],
-                WRITABLE_BANKS.index(self._target),
-            ),
-            self._bank_chosen,
-        )
-
-    def _bank_chosen(self, chosen: Optional[int]) -> None:
-        """The choice list answered: adopt a valid row, ignore the rest."""
-        if chosen is None or not 0 <= chosen < len(WRITABLE_BANKS):
-            return
-        self._target = WRITABLE_BANKS[chosen]
-        self._show_target()
 
     def action_confirm(self) -> None:
         """``ctrl+s``: answer the target bank, or say why not.
