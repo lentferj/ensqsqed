@@ -37,7 +37,13 @@ from ensqsqed.app import EnsqsqedApp
 from ensqsqed.multi import MultiScreen, PresetListScreen, SoundPickerScreen
 from sq import catalog as cat
 from sq import favorites as fav
-from sq.bridge import AllPresetsDump, CurrentPreset, PresetMismatch, PresetSent
+from sq.bridge import (
+    AllPresetsDump,
+    CurrentPreset,
+    DeviceError,
+    PresetMismatch,
+    PresetSent,
+)
 from sq.presets import Preset, split_single_dump
 from vinsynlib.ui.modals import ChoiceScreen
 from vinsynlib.undo import Record
@@ -190,6 +196,30 @@ class SelectingMultiDevice(FakeMultiDevice):
         return target_slot
 
 
+class RenameMultiDevice(FakeMultiDevice):
+    """A unit that can rename a preset on itself."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rename_calls: list = []
+        self.rename_fail: Optional[BaseException] = None
+
+    def rename_preset_on_unit(
+        self, slot, new_name, *, pending=False, timeout=None, progress=None
+    ) -> str:
+        if self.rename_fail is not None:
+            raise self.rename_fail
+        self.rename_calls.append((slot, new_name, pending))
+        from sq.presets import Preset
+
+        preset = Preset.from_bytes(self.current.preset_raw)
+        preset.name = new_name
+        self.current = CurrentPreset(
+            seq_blob=self.current.seq_blob, preset_raw=preset.to_bytes()
+        )
+        return new_name + " " * (16 - len(new_name))
+
+
 @pytest.fixture
 def device() -> FakeMultiDevice:
     return FakeMultiDevice()
@@ -198,6 +228,16 @@ def device() -> FakeMultiDevice:
 @pytest.fixture
 def app(device: FakeMultiDevice) -> EnsqsqedApp:
     return EnsqsqedApp(device, catalog=cat.empty())
+
+
+@pytest.fixture
+def rename_device() -> RenameMultiDevice:
+    return RenameMultiDevice()
+
+
+@pytest.fixture
+def rename_app(rename_device: RenameMultiDevice) -> EnsqsqedApp:
+    return EnsqsqedApp(rename_device, catalog=cat.empty())
 
 
 async def _wait(predicate: Callable[[], bool], pilot, *, tries: int = 200) -> bool:
@@ -1213,3 +1253,89 @@ class TestABurstOfEdits:
             # The second press changed the value again before the first
             # send finished, so the two dumps differ.
             assert device.sent[0][1] != device.sent[1][1]
+
+
+class TestRenameOnUnit:
+    async def test_happy_path_through_r_key(
+        self, rename_app: EnsqsqedApp, rename_device: RenameMultiDevice
+    ):
+        app = rename_app
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await pilot.press("R")
+            await pilot.pause()
+            await pilot.press("N", "E", "W")
+            await pilot.press("enter")
+            assert await _wait(lambda: "renamed on the unit" in _status(screen), pilot)
+            assert rename_device.rename_calls == [(0, "NEW", False)]
+
+    async def test_gate_refusal(
+        self, rename_app: EnsqsqedApp, rename_device: RenameMultiDevice
+    ):
+        app = rename_app
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            await pilot.press("R")
+            await pilot.pause()
+            await pilot.press("N", "E", "W")
+            await pilot.press("enter")
+            assert await _wait(
+                lambda: (
+                    "refused" in _status(screen).lower()
+                    or "gate" in _status(screen).lower()
+                ),
+                pilot,
+            )
+            assert rename_device.rename_calls == []
+
+    async def test_dirty_edit_uses_copy_path_and_clears(
+        self, rename_app: EnsqsqedApp, rename_device: RenameMultiDevice
+    ):
+        app = rename_app
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            app._edit_dirty = True
+            app._rename_current_preset_on_unit("NewName")
+            assert await _wait(lambda: "renamed on the unit" in _status(screen), pilot)
+            # The app's own edits are dumps: the save dialog still asks
+            # Replace edit preset?, so the copy path is the right one.
+            assert rename_device.rename_calls[0][2] is False
+            assert "current edit was stored too" in _status(screen)
+            assert app._edit_dirty is False
+
+    async def test_device_failure_keeps_dirty(
+        self, rename_app: EnsqsqedApp, rename_device: RenameMultiDevice
+    ):
+        app = rename_app
+        device = rename_device
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._gate.armed = True
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            app._edit_dirty = True
+            device.rename_fail = DeviceError("nope")
+            app._rename_current_preset_on_unit("NewName")
+            assert await _wait(
+                lambda: (
+                    "refused" in _status(screen).lower() or "nope" in _status(screen)
+                ),
+                pilot,
+            )
+            assert app._edit_dirty is True

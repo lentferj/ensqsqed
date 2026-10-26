@@ -1313,9 +1313,12 @@ class Preset:
         """Set the modeled name, leaving the unit's decoration alone.
 
         The text goes into the low seven bits; the high bits are kept.
+
         A dump never stores this field on the unit (the store commit
-        copies offsets 32-151 only), so this is a model/local-label
-        concern; see ``PresetLabels`` and the app's ``r`` key.
+        copies offsets 32-151 only), but the unit's save-dialog name
+        page can; the app's ``R`` rename path drives that dialog.  The
+        setter is the model's view of the name -- the app's ``R`` path
+        is the real rename.
         """
         encoded = value.encode("ascii", "replace")[:16]
         padded = encoded + b" " * (16 - len(encoded))

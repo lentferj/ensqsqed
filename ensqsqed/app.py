@@ -665,6 +665,10 @@ class EnsqsqedApp(App):
         #: is what a refused change is put back to, and what the undo
         #: record carries.
         self._edit_snapshot: Optional[Preset] = None
+        #: Whether the app has sent an edit to the unit that has not
+        #: been stored/committed yet -- a rename on the unit uses it
+        #: to decide whether to store the current edit too.
+        self._edit_dirty: bool = False
         #: The slot the loaded preset came from, when it came from the
         #: preset list. ``None`` when the unit's own current preset was
         #: read, because the unit does not say which slot it is on.
@@ -682,7 +686,8 @@ class EnsqsqedApp(App):
         self._reload_timer: Optional[Any] = None
         self._reload_t0: float = 0.0
         #: The user's own labels for preset slots.  Local to this app: the
-        #: unit keeps its own preset name, and a dump never writes it.
+        #: unit keeps its own preset name, and a dump never writes it; a
+        #: real rename on the unit is `_rename_current_preset_on_unit`.
         self._preset_labels: Dict[int, str] = preset_labels.load()
         #: The editor screens that are open, so that a worker that
         #: finishes after its screen closed still has somewhere to
@@ -2455,6 +2460,7 @@ class EnsqsqedApp(App):
         self._edit_seq_blob = current.seq_blob
         self._edit_preset_raw = current.preset_raw
         self._edit_snapshot = _copy_preset(preset)
+        self._edit_dirty = False
         self._edit_slot = None
         self._preset_loaded = True
         self._update_subtitle()
@@ -2599,15 +2605,17 @@ class EnsqsqedApp(App):
         self._preset_list_worker()
 
     def _rename_preset(self, slot: int, new_name: str) -> None:
-        """Give a preset slot a local label.
+        """Give a preset slot a local label (app-side only).
 
-        **The unit keeps its own preset name.**  The firmware's store
+        **This method is only the local label.**  The firmware's store
         copies only the live track-and-pile snapshot (preset offsets
-        32-151), so the name field (2-17) is never written by a dump and
-        no SysEx message renames a preset.  What this app can do is keep
-        its own label for the slot; the unit's name is unchanged, and the
-        label is shown in the preset list's "label" column and beside the
-        name in the multi editor.
+        32-151), so a dump never writes the name field (2-17).  A real
+        rename of the unit's own preset name is done by
+        ``_rename_current_preset_on_unit`` (the ``R`` key), which drives
+        the unit's save dialog.  What this app can also do is keep its
+        own label for the slot; the unit's name is unchanged by this
+        method, and the label is shown in the preset list's "label"
+        column and beside the name in the multi editor.
         """
         updated = preset_labels.set_label(self._preset_labels, slot, new_name)
         if updated == self._preset_labels:
@@ -2655,6 +2663,101 @@ class EnsqsqedApp(App):
             )
             return
         self._rename_preset(slot, new_name)
+
+    def _rename_current_preset_on_unit(self, new_name: str) -> None:
+        """Rename the preset on the unit itself (via the save dialog)."""
+        slot = self._slot_of_edit_preset()
+        if slot is None:
+            self._say_to_editor(
+                "this preset's slot is unknown; open the preset list with p "
+                "and pick it, then rename on the unit",
+                refused=True,
+            )
+            return
+        # Validate before touching the wire.
+        name = new_name
+        if len(name) > 16 or any(not (0x20 <= ord(ch) <= 0x7E) for ch in name):
+            self._say_to_editor(
+                "rename refused: a name is at most 16 printable ASCII characters",
+                refused=True,
+            )
+            return
+        if not self._gate.armed:
+            self._say_to_editor(self._gate.refuse("the rename"), refused=True)
+            return
+        if self._busy or not self._exchange.acquire(blocking=False):
+            self._say_to_editor("busy", refused=True)
+            return
+        had_edit = self._edit_dirty
+        if had_edit:
+            self._say_to_editor(
+                f"renaming P{slot:02d} on the unit and storing the current edit..."
+            )
+        else:
+            self._say_to_editor(f"renaming P{slot:02d} on the unit...")
+        self._rename_on_unit_worker(slot, name, had_edit)
+
+    @work(thread=True)
+    def _rename_on_unit_worker(self, slot: int, new_name: str, had_edit: bool) -> None:
+        """**MIDI only** -- the save-dialog name page, then the read-back.
+
+        A SysEx dump leaves the working preset changed but still presents
+        ``Replace edit preset?`` on Enter/Save (bench, P79: a volume edit
+        then the copy path renamed it).  The app's edits are dumps, so it
+        takes the copy path (``pending=False``) and Yes loads that working
+        preset into the edit buffer before the name page.
+        """
+        failure: Optional[BaseException] = None
+        observed = None
+        try:
+            with self._busy_gate, self._lock:
+                if hasattr(self.device, "rename_preset_on_unit"):
+                    observed = self.device.rename_preset_on_unit(
+                        slot, new_name, pending=False
+                    )
+                else:
+                    failure = RuntimeError(
+                        "this device cannot rename presets on the unit"
+                    )
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        except ValueError as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self._call_from_thread(
+            self._rename_on_unit_done, slot, had_edit, observed, failure
+        )
+
+    def _rename_on_unit_done(
+        self,
+        slot: int,
+        had_edit: bool,
+        observed,
+        failure: Optional[BaseException],
+    ) -> None:
+        if failure is not None:
+            self._say_to_editor(f"rename P{slot:02d}: {failure}", refused=True)
+            return
+        if observed is None:
+            self._say_to_editor(f"rename P{slot:02d}: no read-back", refused=True)
+            return
+        observed = str(observed)
+        if self._edit_preset is not None:
+            self._edit_preset.name = observed
+            self._edit_preset_raw = self._edit_preset.to_bytes()
+            self._edit_snapshot = _copy_preset(self._edit_preset)
+        self._edit_slot = slot
+        self._edit_dirty = False
+        self._update_subtitle()
+        if self._multi_screen is not None:
+            self._multi_screen.set_preset(self._edit_preset)
+        else:
+            self._redraw_screen(self._active_editor)
+        status = f"P{slot:02d} renamed on the unit to {observed.strip()!r}"
+        if had_edit:
+            status += " (the current edit was stored too)"
+        self._say_to_editor(status, success=True)
 
     def _preset_picked(self, slot: Optional[int]) -> None:
         """A preset was picked: select it on the unit, then load it.
@@ -2759,6 +2862,7 @@ class EnsqsqedApp(App):
         self._edit_seq_blob = current.seq_blob
         self._edit_preset_raw = current.preset_raw
         self._edit_snapshot = _copy_preset(preset)
+        self._edit_dirty = False
         self._edit_slot = observed
         self._preset_loaded = True
         if hasattr(self.device, "tap_button"):
@@ -2809,6 +2913,7 @@ class EnsqsqedApp(App):
         self._edit_seq_blob = seq_blob
         self._edit_preset_raw = preset.to_bytes()
         self._edit_snapshot = _copy_preset(preset)
+        self._edit_dirty = False
         self._edit_slot = slot
         self._preset_loaded = True
         self._update_subtitle()
@@ -2882,6 +2987,7 @@ class EnsqsqedApp(App):
             on_panel_button=self._remote_press,
             on_open_fx=self._push_fx_screen,
             on_rename=self._rename_current_preset_label,
+            on_rename_on_unit=self._rename_current_preset_on_unit,
             on_commit=self._commit_preset,
             local_label=(
                 self._preset_labels.get(self._edit_slot)
@@ -3139,6 +3245,9 @@ class EnsqsqedApp(App):
         self._edit_seq_blob = current.seq_blob
         self._edit_preset_raw = current.preset_raw
         self._edit_snapshot = _copy_preset(preset)
+        # A reload reads the working buffer; it does not store anything.
+        # An un-stored edit therefore stays un-stored; leave _edit_dirty
+        # alone so a later rename uses the pending-edit path.
         self._edit_slot = observed
         self._preset_loaded = True
         self._update_subtitle()
@@ -3479,6 +3588,7 @@ class EnsqsqedApp(App):
                     self._edit_preset = stored_preset
                     self._edit_preset_raw = reloaded
                     self._edit_snapshot = _copy_preset(stored_preset)
+                    self._edit_dirty = False
                     if self._multi_screen is not None:
                         self._multi_screen.set_preset(stored_preset)
                     else:
@@ -3772,6 +3882,7 @@ class EnsqsqedApp(App):
         if raw is not None:
             self._undo_log.push(Record(description, (self._edit_seq_blob, raw)))
         self._edit_snapshot = Preset.from_bytes(sent_raw)
+        self._edit_dirty = True
         self._tell_screen(
             screen, True, self._store_sentence(description), cell=self._changed_cell()
         )

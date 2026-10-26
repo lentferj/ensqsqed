@@ -45,6 +45,7 @@ from ensqsqed.multi import (
     NumberPrompt,
     PresetListScreen,
     SoundPickerScreen,
+    TextPrompt,
     _Column,
 )
 from sq import catalog as cat
@@ -257,6 +258,82 @@ class TestTheLocalLabel:
             await pilot.press("enter")
             await pilot.pause()
             assert calls == ["abc"]
+
+
+class TestTheRenameOnTheUnit:
+    """`R` asks for the unit's own name, and the app owns the sequence."""
+
+    @staticmethod
+    def _screen(preset, **kwargs) -> MultiScreen:
+        return MultiScreen(
+            preset,
+            on_apply=lambda live, description: None,
+            on_undo=lambda count: None,
+            on_sound_picked=lambda index, number: None,
+            **kwargs,
+        )
+
+    async def test_shift_r_asks_and_hands_the_name_to_the_app(self):
+        calls = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = self._screen(_preset(), on_rename_on_unit=calls.append)
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, TextPrompt)
+            await pilot.press("N", "E", "W", "N", "A", "M", "E")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["NEWNAME"]
+
+    async def test_without_a_callback_the_rename_is_refused(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = self._screen(_preset())
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert "rename on unit is not wired" in _status(screen)
+            assert isinstance(app.screen, MultiScreen), "no prompt was opened"
+
+    async def test_an_empty_name_calls_nothing(self):
+        calls = []
+        preset = _preset()
+        # A blank name field: the seed is spaces, which strip to nothing.
+        preset.name = ""
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = self._screen(preset, on_rename_on_unit=calls.append)
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == []
+
+    async def test_the_seed_is_the_units_name_not_the_local_label(self):
+        preset = _preset()
+        preset.name = "Preset-10"
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = self._screen(
+                preset,
+                on_rename_on_unit=lambda name: None,
+                local_label="TEST",
+                slot=10,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, TextPrompt)
+            assert prompt.query_one("#value", Input).value == "Preset-10"
+            assert "P10" in str(prompt.query_one(Label).render())
 
 
 class TestTheSoundPicker:

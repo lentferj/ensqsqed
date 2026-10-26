@@ -605,6 +605,11 @@ dead ends, all with a byte-for-byte read-back behind them):
 | the pile | a compact ordered list: the primary track first, and the unit compacts holes (a sent `01 00 03` reads back `01 03 00`) |
 | preset names | left-aligned and space-padded (the app strips the padding for display) |
 
+**Rename is dialog-side, not dump-side.** A whole-preset dump keeps the unit's
+own name — the name field is never taken from a dump — so the dump path cannot
+rename it; the unit's save-dialog **name page** can, and the app's `R` key in
+the multi editor drives that dialog.
+
 The one byte that drifted in the 21-byte global block between the backup and
 a later read — dump index 17957, value 0 → 2 — went 0 → 2 in the same run in
 which the unit's selection moved from Preset-00 to Preset-02. That is a
@@ -642,6 +647,9 @@ dump type 04, `SqBridge.send_preset`). Its address bytes were `46 0b`
 - **The name is never taken from a dump.** The read-back and the display
   kept "Preset-00", bit-7 decoration and all
   (`H3e_result.json`, `name_took: false`).
+- **The dialog's name page writes the name; a dump's name is ignored.** The
+  unit's save dialog edits the name on its name page, and the app's `R` drives
+  that page.
 - **Preset byte 30 and tracks 2–8 channel bytes (`0x80|n`) are rewritten**
   to the unit's current values; the probe's values there did not stick.
   Sending a slot's own backed-up bytes back is therefore idempotent for

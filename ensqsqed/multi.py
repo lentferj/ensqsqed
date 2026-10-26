@@ -276,6 +276,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "ctrl+r reload",
     "w write gate",
     "r label",
+    "R rename unit",
     "esc close",
 )
 
@@ -1078,9 +1079,11 @@ class PresetListScreen(ModalScreen[Optional[int]]):
     def action_rename(self) -> None:
         """``r``: set the app's local label for the preset under the cursor.
 
-        **The unit's name cannot be written over MIDI.**  The text is
+        **This is the local label, not the unit's name.**  The text is
         handed to the app through ``on_rename`` and kept in the sidecar;
-        it never leaves this program.
+        it never leaves this program.  The unit's own name is ``R`` in
+        the multi editor (``rename_on_unit``), which drives the save
+        dialog's name page.
         """
         if self._on_rename is None:
             self.app.notify("label is not wired", severity="warning")
@@ -1192,8 +1195,10 @@ class MultiScreen(ModalScreen[None]):
     ``ctrl+shift+s`` finds and confirms the backed-up bytes and hands them to
     the app, which does the gate, the send and the verified retry.  See
     the module docstring.  The ``r`` key asks for a **local label** for
-    the preset's slot; the unit's own preset name cannot be written
-    over MIDI (a dump never writes the name field).
+    the preset's slot; ``R`` asks for the **unit's own name**, which a
+    real rename can now write through the unit's save-dialog name page
+    -- the screen only asks for the text and the app runs that
+    sequence.
     """
 
     DEFAULT_CSS = """
@@ -1220,6 +1225,9 @@ class MultiScreen(ModalScreen[None]):
         Binding("escape", "close", "Close"),
         Binding("q", "close", "Close"),
         Binding("r", "rename", "Label"),
+        # The unit's own name, through its save dialog's name page.  The
+        # screen only asks for the text; the app owns the unit sequence.
+        Binding("R", "rename_on_unit", "Rename on unit", show=False),
         # Enter is NOT bound here.  A focused DataTable consumes it for
         # its own cell selection, so it arrives as CellSelected instead;
         # see on_data_table_cell_selected.
@@ -1304,6 +1312,7 @@ class MultiScreen(ModalScreen[None]):
         on_panel_button: Optional[Callable[[int], None]] = None,
         on_open_fx: Optional[Callable[[], None]] = None,
         on_rename: Optional[Callable[[str], None]] = None,
+        on_rename_on_unit: Optional[Callable[[str], None]] = None,
         on_commit: Optional[Callable[[], None]] = None,
         local_label: Optional[str] = None,
         slot: Optional[int] = None,
@@ -1372,9 +1381,14 @@ class MultiScreen(ModalScreen[None]):
         #: preset editor's own key row; the app owns the screen.
         self._on_open_fx = on_open_fx
         #: ``on_rename(text)`` -- the app stores a local label for the
-        #: preset slot.  The unit's own preset name cannot be written
-        #: over MIDI; see the class docstring.
+        #: preset slot; this is the sidecar, not the unit's name.  The
+        #: unit's own name is ``on_rename_on_unit`` below.
         self._on_rename = on_rename
+        #: ``on_rename_on_unit(name)`` -- rename the preset on the unit
+        #: itself through its save dialog's name page.  The screen asks
+        #: for the text only; the app owns the gate and the whole unit
+        #: sequence.
+        self._on_rename_on_unit = on_rename_on_unit
         #: ``on_commit()`` -- store the edit buffer with Enter/Save three
         #: times.  The app owns the presses, the walk and the verification.
         self._on_commit = on_commit
@@ -1671,9 +1685,10 @@ class MultiScreen(ModalScreen[None]):
 
         **This is a local label, not the unit's name.**  The firmware's
         store copies only preset offsets 32-151, so the name field is
-        never written by a dump and no SysEx message renames a preset.
-        The text is handed to the app, which keeps it for the preset's
-        slot and shows it in the preset list.
+        never written by a dump; a real rename is the unit's own name,
+        done as ``R``/``rename_on_unit``, which drives the save dialog's
+        name page.  The text is handed to the app, which keeps it for the
+        preset's slot and shows it in the preset list.
         """
         current = (self._local_label or self._preset.name).strip()
         if self._on_rename is None:
@@ -1691,6 +1706,40 @@ class MultiScreen(ModalScreen[None]):
 
         self.app.push_screen(
             TextPrompt("Local preset label:", current, select_all=True),
+            on_name,
+        )
+
+    def action_rename_on_unit(self) -> None:
+        """``R``: rename the preset on the unit itself.
+
+        **The unit's own name, not the local label.**  A real rename is
+        possible through the save dialog's name page, so this asks for
+        the text and hands it to the app, which owns the sequence, the
+        write gate and the verification.  The screen sends nothing.
+
+        The prompt is seeded with the unit's current name -- what the
+        preset says now -- and not with the local label: the label is a
+        sidecar, and typing over it must not become the new unit name.
+        """
+        if self._on_rename_on_unit is None:
+            self.say("rename on unit is not wired", refused=True)
+            return
+        prompt = (
+            f"Rename P{self._slot:02d} on the unit (max 16):"
+            if self._slot is not None
+            else "Rename this preset on the unit (max 16):"
+        )
+
+        def on_name(new_name: Optional[str]) -> None:
+            if new_name is None:
+                return
+            new_name = new_name.strip()
+            if not new_name:
+                return
+            self._on_rename_on_unit(new_name)
+
+        self.app.push_screen(
+            TextPrompt(prompt, self._preset.name.strip(), select_all=True),
             on_name,
         )
 

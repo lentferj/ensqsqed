@@ -301,6 +301,15 @@ then walks to the neighbouring slot only to read the stored bytes back, walks
 back and verifies the slot against the unit's edit buffer. `E` is not needed
 and is gone.
 
+**`R` renames on the unit.** The app asks for the new preset name — max 16
+printable ASCII — and drives the unit's save-dialog name page (cursor buttons
+and **Enter/Save**) and stores to the selected slot, storing the current edit
+too if there is one. The app's edits are SysEx dumps, so the save dialog asks
+`Replace edit preset?` and `R` loads the working preset first; if the panel
+itself has an un-stored edit, store it with `ctrl+s` first. **`r`** remains
+the app's local label for the preset, kept in the `preset_labels.json`
+sidecar.
+
 **`l` is the live switch.** The panel's two Track keys — buttons 10 and 12 —
 pressed together mute or unmute the track under the panel's cursor, and that is
 the control for what plays now. The app sends that chord; `o` and `p` send the
@@ -440,11 +449,14 @@ slot's **track/pile range, offsets 32–151** — that includes each track's
 pressure (the stored ON/OFF), so the arrangement is restored. It does **not**
 write the effect block (152–162) or the name (2–17): the unit keeps its own
 name, and the effect needs the panel's **ENTER/SAVE** (or the app's `ctrl+s`)
-to be stored from the working buffer. The app's local preset labels are a
-sidecar (`preset_labels.json`), not part of the unit dump, so a dump restore
-does not bring them back. A backup taken while the unit is on a slot with an
-un-stored edit captures that slot's working preset; take the backup with no
-un-stored edit, or store first. Any restore of the all-presets dump must use
+to be stored from the working buffer. A dump restore does not write the name —
+the unit keeps its own — but the app can now rename on the unit with `R` in the
+multi editor, which drives the unit's save dialog and stores to the selected
+slot. The app's local preset labels are a sidecar (`preset_labels.json`), not
+part of the unit dump, so a dump restore does not bring them back. A backup
+taken while the unit is on a slot with an un-stored edit captures that slot's
+working preset; take the backup with no un-stored edit, or store first. Any
+restore of the all-presets dump must use
 the dump's slot table (`slot = (idx + 70) % 80` on this unit), not
 `presets_raw[slot]`.
 
@@ -452,7 +464,9 @@ the dump's slot table (`slot = (idx + 70) % 80` on this unit), not
 `preset_labels_<stamp>.json` beside the dump (the app's backup screen and
 `sqcli backup` both do). Restore it with `sqcli restore preset_labels_….json`;
 that is app-side only and does not touch the unit. The unit's own preset names
-are still its own and are never part of a dump.
+are not written by a dump; a real rename of the unit is the app's `R` key in
+the multi editor, which drives the save dialog. Local labels are a separate
+sidecar from that name.
 
 **Putting a single preset back is cooperative.** The owner selects the slot
 on the unit's front panel; the app sends the backed-up bytes; the unit stores

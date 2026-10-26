@@ -102,6 +102,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from sq import banks
 from sq import config as cfg
 from sq import messages as m
+from sq.presets import Preset
 from vinsynlib import midi
 
 __all__ = [
@@ -141,6 +142,7 @@ __all__ = [
     "COMMIT_KEPT_OFFSETS",
     "COMMIT_LIVE_TRACK_BYTES",
     "preset_needs_write",
+    "preset_name_presses",
     "preset_commit_matches",
 ]
 
@@ -396,6 +398,42 @@ def preset_needs_write(target_raw: bytes, candidate_raw: bytes) -> bool:
         target_raw[index] != candidate_raw[index]
         for index in range(COMMIT_START, COMMIT_END)
     )
+
+
+def preset_name_presses(current: str, target: str, *, pending: bool) -> List[int]:
+    """Button presses that rename the preset on the unit's name page.
+
+    ``pending=True`` is for a save dialog that already holds an edit
+    buffer (a panel edit): Enter/Save opens ``Save Preset <name>?``
+    directly.  A SysEx dump updates the working preset but the dialog
+    still asks ``Replace edit preset?``; that is the ``pending=False``
+    copy path, where Yes (7) loads the working preset first.
+
+    The character order is **ASCII-adjacent as measured**: Up/Down move
+    by one code point (P->Q->R, r->s, R->Q), and a bench run also crossed
+    a space and digits (``Preset-79`` -> ``Preset 70`` and back).  A
+    glyph the unit's editor does not carry still fails the read-back; the
+    caller reports it rather than assuming the rename took.
+    """
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in target):
+        raise ValueError(
+            "the preset name may only contain printable ASCII characters (0x20-0x7E)"
+        )
+    current_padded = (current + " " * 16)[:16]
+    target_padded = (target + " " * 16)[:16]
+    presses: List[int] = [ENTER_SAVE_BUTTON]
+    if not pending:
+        presses.append(7)
+    for pos in range(16):
+        delta = ord(target_padded[pos]) - ord(current_padded[pos])
+        if delta > 0:
+            presses.extend([7] * delta)
+        elif delta < 0:
+            presses.extend([5] * (-delta))
+        if pos < 15:
+            presses.append(8)
+    presses.extend([ENTER_SAVE_BUTTON, ENTER_SAVE_BUTTON])
+    return presses
 
 
 #: One preset is 168 bytes: eight tracks, a pile, an effect, and the
@@ -2493,6 +2531,92 @@ class SqBridge:
         if diff_offsets:
             raise PresetMismatch(self._mismatch_sentence(diff_offsets), result)
         return result
+
+    def rename_preset_on_unit(  # noqa: C901
+        self,
+        slot: int,
+        new_name: str,
+        *,
+        pending: bool = False,
+        timeout: Optional[float] = None,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> str:
+        """Rename the preset currently on the unit, on the unit itself.
+
+        ``pending=True`` means the save dialog already holds an edit
+        buffer (a panel edit); Enter/Save opens the name page directly.
+        ``pending=False`` is the copy path: the unit asks ``Replace edit
+        preset?`` and Yes (7) loads the selected/working preset first.
+        **A SysEx dump takes this copy path** even though it changed the
+        working preset (bench, P79); the app's own edits are dumps.
+
+        The bit-7 decoration on the name bytes is destination-owned and is
+        not set here.
+        """
+        if not 0 <= slot <= 79:
+            raise ValueError(f"a preset slot is 0..79; this one was {slot}")
+        if len(new_name) > 16:
+            raise ValueError(
+                f"a preset name is at most 16 characters; this one was {len(new_name)}"
+            )
+        if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in new_name):
+            raise ValueError(
+                "the preset name may only contain printable ASCII characters "
+                "(0x20-0x7E)"
+            )
+        padded_target = new_name + " " * (16 - len(new_name))
+
+        current = self.read_current_preset()
+        if current.preset_raw[0] != slot:
+            raise DeviceError(
+                f"the unit is on preset {current.preset_raw[0]}, not {slot}"
+            )
+        current_name = Preset.from_bytes(current.preset_raw).name
+
+        presses = preset_name_presses(current_name, padded_target, pending=pending)
+
+        # Send the sequence, settling after the initial Enter/Save.
+        index = 0
+        self.tap_button(presses[index])
+        index += 1
+        time.sleep(PRESET_SETTLE)
+        if not pending:
+            self.tap_button(presses[index])
+            index += 1
+            # The copy prompt's Yes opens the name page; let it appear
+            # before the first character edit.
+            time.sleep(PRESET_SETTLE)
+
+        for pos in range(16):
+            if progress is not None:
+                progress(pos, 16)
+            while index < len(presses) and presses[index] in (5, 7):
+                self.tap_button(presses[index])
+                index += 1
+            if index < len(presses) and presses[index] == 8:
+                self.tap_button(presses[index])
+                index += 1
+
+        # Final saves: accept the name, wait for the slot page, save.
+        self.tap_button(presses[index])
+        index += 1
+        time.sleep(PRESET_SETTLE)
+        self.tap_button(presses[index])
+        index += 1
+        time.sleep(PRESET_SETTLE)
+
+        # Verify: walk away and back, then read.
+        neighbour = (slot + 1) % 80
+        self.select_preset_by_walk(neighbour, known_slot=slot)
+        self.select_preset_by_walk(slot, known_slot=neighbour)
+        read_back = self.read_current_preset(timeout=timeout)
+        observed = Preset.from_bytes(read_back.preset_raw).name
+        if observed != padded_target:
+            raise DeviceError(
+                f"the preset name on slot {slot} was expected to be "
+                f"{padded_target!r} but the unit holds {observed!r}"
+            )
+        return observed
 
     def send_current_preset(
         self,
