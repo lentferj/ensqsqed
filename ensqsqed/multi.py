@@ -44,8 +44,10 @@ stores it with the unit's Enter/Save three times.
 
 **The live mask is a separate RAM state.**  ``l`` sends the Track-pair
 chord (buttons 10 and 12) for the track under the unit's cursor, and
-``o``/``p`` move that cursor.  The screen cannot read the cursor or the
+``[``/``]`` move that cursor.  The screen cannot read the cursor or the
 mask, so a live sentence names the unit's track, not the app's row.
+``p`` opens the preset list, as it does in the main window; the screen
+asks the app to open it and never owns the browser or the selection.
 
 **Any track can be off, including all eight.**  Pressure 3 on every
 track is a valid stored state; there is no mandatory primary track or
@@ -263,8 +265,9 @@ def _literal(text: str) -> str:
 #: The same list in every tool of the family that has an editor over a
 #: table of values: the arrows move, ``tab`` changes what the columns
 #: are, ``⏎`` edits the cell under the cursor, a digit types, ``+`` and
-#: ``-`` nudge.  The Track pair's keys are this screen's own: ``o``/``p``
-#: move the unit's cursor and ``l`` sends its live-mute chord.
+#: ``-`` nudge.  The Track pair's keys are this screen's own: ``[``/``]``
+#: move the unit's cursor and ``l`` sends its live-mute chord.  ``p``
+#: opens the preset list, as it does in the main window.
 KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "↑↓ move",
     "tab columns",
@@ -273,6 +276,7 @@ KEY_HINTS_BLOCK: Tuple[str, ...] = (
     "+ - nudge",
     "space track on/off",
     "x fx",
+    "p presets",
     "ctrl+r reload",
     "w write gate",
     "r label",
@@ -1191,7 +1195,9 @@ class MultiScreen(ModalScreen[None]):
 
     **What is not here.**  The sound picker is the app's -- this screen
     says which track wants a sound and the app runs its own picker.
-    And the screen sends nothing itself, including the store assist:
+    The preset list is the app's too: ``p`` asks the app to open it, and
+    the app owns the browser and the selection.  And the screen sends
+    nothing itself, including the store assist:
     ``ctrl+shift+s`` finds and confirms the backed-up bytes and hands them to
     the app, which does the gate, the send and the verified retry.  See
     the module docstring.  The ``r`` key asks for a **local label** for
@@ -1270,11 +1276,14 @@ class MultiScreen(ModalScreen[None]):
         # moves its track number, so the owner can put `l` on the track
         # they mean.  The cursor cannot be read back; the unit is the
         # display for it.
-        Binding("o", "track_cursor(-1)", "Track left", show=False),
-        Binding("p", "track_cursor(1)", "Track right", show=False),
+        Binding("left_square_bracket", "track_cursor(-1)", "Track left", show=False),
+        Binding("right_square_bracket", "track_cursor(1)", "Track right", show=False),
         # The effect is part of this preset: its editor opens from here,
         # not only from the browser behind.
         Binding("x", "open_fx", "FX"),
+        # The preset list, where `p` opens it in the main window.  The
+        # app owns the browser and the selection; the screen only asks.
+        Binding("p", "open_preset_list", "Presets", show=False),
     ]
 
     # The ten digits, added after the list rather than into it: the
@@ -1311,6 +1320,7 @@ class MultiScreen(ModalScreen[None]):
         on_live_mute: Optional[Callable[[], None]] = None,
         on_panel_button: Optional[Callable[[int], None]] = None,
         on_open_fx: Optional[Callable[[], None]] = None,
+        on_open_preset_list: Optional[Callable[[], None]] = None,
         on_rename: Optional[Callable[[str], None]] = None,
         on_rename_on_unit: Optional[Callable[[str], None]] = None,
         on_commit: Optional[Callable[[], None]] = None,
@@ -1380,6 +1390,10 @@ class MultiScreen(ModalScreen[None]):
         #: The effect is part of the preset, so its editor belongs to the
         #: preset editor's own key row; the app owns the screen.
         self._on_open_fx = on_open_fx
+        #: ``on_open_preset_list()`` -- open the preset list that `p`
+        #: opens in the main window.  The app owns the browser, the
+        #: read-back and the selection; the screen only asks.
+        self._on_open_preset_list = on_open_preset_list
         #: ``on_rename(text)`` -- the app stores a local label for the
         #: preset slot; this is the sidecar, not the unit's name.  The
         #: unit's own name is ``on_rename_on_unit`` below.
@@ -2081,7 +2095,7 @@ class MultiScreen(ModalScreen[None]):
         self.say(f"track {index + 1} {'off' if wanted == PRESSURE_OFF else 'on'}")
 
     def action_track_cursor(self, direction: int) -> None:
-        """``o`` / ``p``: move the unit's own track cursor one step.
+        """``[`` / ``]``: move the unit's own track cursor one step.
 
         **The unit is the display for this cursor.**  The Track keys
         (buttons 10 and 12) move the blinking track number on the
@@ -2108,6 +2122,19 @@ class MultiScreen(ModalScreen[None]):
             self.say("the effect editor is not reachable from here", refused=True)
             return
         self._on_open_fx()
+
+    def action_open_preset_list(self) -> None:
+        """``p``: open the preset list, where the main window opens it.
+
+        The app owns the browser and the selection: the screen asks and
+        sends nothing itself.  ``None`` means there is no callback to
+        hand the request to, and the action says so rather than
+        pretending a browser opened.
+        """
+        if self._on_open_preset_list is None:
+            self.say("preset list is not wired", refused=True)
+            return
+        self._on_open_preset_list()
 
     # --- offering an edit --------------------------------------------------
 
@@ -2421,17 +2448,26 @@ class MultiScreen(ModalScreen[None]):
 
     # --- the app's seam ----------------------------------------------------
 
-    def set_preset(self, preset: Preset) -> None:
+    def set_preset(self, preset: Preset, slot: Optional[int] = None) -> None:
         """Adopt a preset read from the unit and draw it.
 
         The app's ``ctrl+r`` walks the unit and reads the slot back; this
         is where those bytes replace the model the table is showing.  The
         screen keeps one live preset object, so the reference is replaced
         and the table rebuilt from it.
+
+        ``slot`` is the panel number the preset came from, when the
+        caller knows it: selecting a preset in place changes the name
+        the title shows and the slot the reload and rename prompts
+        name.  ``None`` leaves the slot the screen already knows alone.
         """
         self._preset = preset
+        if slot is not None:
+            self._slot = slot
         self._pending.clear()
         self._build_table()
+        with contextlib.suppress(Exception):
+            self.query_one("#multi-title", Label).update(self._title())
 
     def redraw(self) -> None:
         """Draw the table again from the model.

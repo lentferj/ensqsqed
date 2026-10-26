@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import pytest
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Label, Static
 
 from ensqsqed.app import EnsqsqedApp
 from ensqsqed.multi import MultiScreen, PresetListScreen, SoundPickerScreen
@@ -1339,3 +1339,108 @@ class TestRenameOnUnit:
                 pilot,
             )
             assert app._edit_dirty is True
+
+    async def test_rename_refreshes_the_title_and_the_cached_browser(
+        self, rename_app: EnsqsqedApp, rename_device: RenameMultiDevice
+    ):
+        """A real rename is not a reason to wait for a reload."""
+        app = rename_app
+        device = rename_device
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._all_dump = device.dump
+            app._gate.armed = True
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+
+            await pilot.press("R")
+            await pilot.pause()
+            await pilot.press("D", "e", "f", "a", "u", "l", "t")
+            await pilot.press("enter")
+            assert await _wait(lambda: "renamed on the unit" in _status(screen), pilot)
+
+            title = str(screen.query_one("#multi-title", Label).render())
+            assert "Default" in title
+            assert app._edit_preset is not None
+            assert app._edit_preset.name.strip() == "Default"
+
+            dump = app._all_dump
+            assert dump is not None
+            raw = dump.presets_raw[dump.slot_offsets()[0]]
+            assert Preset.from_bytes(raw).name.strip() == "Default"
+
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            table = app.screen.query_one("#preset-table", DataTable)
+            assert table.get_cell("0", "name") == "Default"
+
+
+class TestThePresetListFromTheEditor:
+    """`p` inside MULTI: pick another preset without stacking editors."""
+
+    async def test_p_opens_the_list_and_a_pick_replaces_the_preset(self):
+        device = SelectingMultiDevice(start_slot=0)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._all_dump = device.dump
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            table = app.screen.query_one("#preset-table", DataTable)
+            table.move_cursor(row=5)
+            await pilot.pause()
+            await pilot.press("enter")
+            assert await _wait(lambda: app._edit_slot == 5, pilot)
+
+            assert app.screen is screen
+            assert app._multi_screen is screen
+            assert app._edit_preset_raw is not None
+            assert app._edit_preset_raw[0] == 5
+            assert device.pc_calls == [5]
+            assert app._preset_list_from_multi is False
+            assert app._preset_list_screen is None
+            assert "selected on the unit" in _status(screen)
+
+    async def test_cancelling_the_list_returns_to_the_editor(self):
+        device = SelectingMultiDevice(start_slot=0)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._all_dump = device.dump
+            await pilot.press("m")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is screen
+            assert app._preset_list_from_multi is False
+            assert app._preset_list_screen is None
+
+    async def test_p_opens_again_after_entering_from_the_list(self):
+        """A popped list must not leave a stale screen that p tries to refresh."""
+        device = SelectingMultiDevice(start_slot=0)
+        app = EnsqsqedApp(device, catalog=cat.empty())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._all_dump = device.dump
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)
+            await pilot.press("enter")
+            assert await _wait(lambda: app._multi_screen is not None, pilot)
+            screen = app._multi_screen
+            assert screen is not None
+            assert app._preset_list_screen is None
+
+            await pilot.press("p")
+            assert await _wait(lambda: isinstance(app.screen, PresetListScreen), pilot)

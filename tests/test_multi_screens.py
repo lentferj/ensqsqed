@@ -1954,7 +1954,7 @@ class TestTheLiveMute:
             await pilot.pause()
             assert called == [True]
 
-    async def test_o_and_p_move_the_units_own_track_cursor(self):
+    async def test_the_brackets_move_the_units_own_track_cursor(self):
         """The Track keys alone step the panel cursor, one at a time."""
         sent = []
         app = _Host()
@@ -1968,12 +1968,90 @@ class TestTheLiveMute:
             )
             await app.push_screen(screen)
             await pilot.pause()
-            await pilot.press("o")
-            await pilot.press("p")
+            await pilot.press("left_square_bracket")
+            await pilot.press("right_square_bracket")
             await pilot.pause()
             assert sent == [TRACK_LEFT_BUTTON, TRACK_RIGHT_BUTTON]
             said = str(screen.query_one(".status", Static).content)
             assert "watch the unit" in said
+
+
+class TestThePresetListFromHere:
+    """``p`` opens the list the main window opens, and the app owns it."""
+
+    async def test_p_opens_the_preset_list(self):
+        opened = []
+        sent = []
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_open_preset_list=lambda: opened.append(True),
+                on_panel_button=sent.append,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("p")
+            await pilot.pause()
+            # The screen only asks: no panel button went out.
+            assert opened == [True]
+            assert sent == []
+
+    async def test_without_a_callback_p_says_it_is_not_wired(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                _preset(),
+                on_apply=lambda preset, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("p")
+            await pilot.pause()
+            assert "preset list is not wired" in _status(screen)
+            assert isinstance(app.screen, MultiScreen), "nothing was opened"
+
+    async def test_set_preset_takes_a_slot_and_updates_the_title(self):
+        """Selecting a preset in place renames the title and the slot."""
+        preset = _preset()
+        preset.name = "A"
+        replacement = _preset()
+        replacement.name = "B"
+        replacement.tracks[0] = replacement.tracks[0].updated(midi_channel=5)
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+                on_rename_on_unit=lambda name: None,
+                slot=3,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            title = screen.query_one("#multi-title", Label)
+            assert "A" in str(title.render())
+
+            screen.set_preset(replacement, slot=10)
+            await pilot.pause()
+            # The title shows the new name, and the table was rebuilt
+            # from the new preset.
+            assert "B" in str(title.render())
+            table = screen.query_one("#track-table", DataTable)
+            assert table.get_cell("t1", "channel") == "6"
+
+            # `R` is the user-visible slot: the prompt names P10 now.
+            await pilot.press("R")
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, TextPrompt)
+            assert "P10" in str(prompt.query_one(Label).render())
 
 
 class TestTheEffectEditorFromHere:

@@ -263,7 +263,9 @@ channel, and a track that is off does not receive at all. Three keys reach it.
   stepping the selection with the panel's next/previous keys and verifies the
   slot byte. **The same bank is read once in the background after launch**
   (non-blocking, on a worker), so `p` usually opens on a warm list; a read
-  older than a minute is taken again.
+  older than a minute is taken again. **`p` also works inside the MULTI
+  editor**: the list opens over it, and a pick replaces the editor's preset
+  in place (cancelling returns to the editor).
 - **`m` — the eight-track editor.** The preset's eight tracks as a table.
   `⏎` on a track's sound opens a browser with **all five groups** — Internal,
   ROM, Card A, Card B and the drum kits — so a multi setup can mix sounds
@@ -308,11 +310,12 @@ too if there is one. The app's edits are SysEx dumps, so the save dialog asks
 `Replace edit preset?` and `R` loads the working preset first; if the panel
 itself has an un-stored edit, store it with `ctrl+s` first. **`r`** remains
 the app's local label for the preset, kept in the `preset_labels.json`
-sidecar.
+sidecar. A successful rename updates the MULTI title and the cached preset
+browser from the read-back immediately; no reload is needed.
 
 **`l` is the live switch.** The panel's two Track keys — buttons 10 and 12 —
 pressed together mute or unmute the track under the panel's cursor, and that is
-the control for what plays now. The app sends that chord; `o` and `p` send the
+the control for what plays now. The app sends that chord; `[` and `]` send the
 Track keys singly to move the panel's track cursor (the unit's display is the
 cursor's readout, which the app cannot see). The chord must leave as one
 gesture: the ordinary 300 ms pace between SysEx messages is seven panel scans,

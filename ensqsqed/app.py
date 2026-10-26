@@ -701,6 +701,10 @@ class EnsqsqedApp(App):
         #: When True, dismissing the multi screen should re-open the
         #: preset list rather than restoring a previous editor.
         self._multi_from_preset_list = False
+        #: Whether the preset list was opened from the MULTI editor (via
+        #: ``p``).  When True, picking a preset replaces the current
+        #: editor's preset in place instead of pushing a second screen.
+        self._preset_list_from_multi = False
         self._fx_screen: Optional[FxScreen] = None
         self._remote_screen: Optional[RemoteScreen] = None
         #: The panel mode the last ``M`` left the unit in.  The unit does
@@ -2399,6 +2403,9 @@ class EnsqsqedApp(App):
         from the cache; the cache is refreshed only after a change
         (rename).
         """
+        # This is the main window's entry; the MULTI editor has its own
+        # entry in `_open_preset_list_from_multi`.
+        self._preset_list_from_multi = False
         if self._all_dump is not None:
             self._show_preset_list(self._all_dump)
             return
@@ -2410,6 +2417,28 @@ class EnsqsqedApp(App):
             self.notify_status("busy", refused=True)
             return
         self.notify_status("reading 80 presets (about 12 s, silent)...")
+        self._preset_list_worker()
+
+    def _open_preset_list_from_multi(self) -> None:
+        """Open the preset browser over the MULTI editor (``p`` from MULTI).
+
+        The list is served from the cached dump when it exists; otherwise
+        it is read fresh, and the request is reported on the editor rather
+        than on the status line.
+        """
+        self._preset_list_from_multi = True
+        if self._all_dump is not None:
+            self._show_preset_list(self._all_dump)
+            return
+        if self._busy:
+            self._preset_list_from_multi = False
+            self._say_to_editor("preset list not read: busy", refused=True)
+            return
+        if not self._exchange.acquire(blocking=False):
+            self._preset_list_from_multi = False
+            self._say_to_editor("preset list not read: busy", refused=True)
+            return
+        self._say_to_editor("reading 80 presets (about 12 s, silent)...")
         self._preset_list_worker()
 
     def _read_preset(self, *, open_fx: bool) -> None:
@@ -2469,6 +2498,15 @@ class EnsqsqedApp(App):
         else:
             self._push_multi_screen()
 
+    def _preset_list_failed(self, failure) -> None:
+        """Main-thread handling of a failed preset list read."""
+        from_multi = self._preset_list_from_multi
+        self._preset_list_from_multi = False
+        if from_multi and self._multi_screen is not None:
+            self._say_to_editor(f"presets: {failure}", refused=True)
+        else:
+            self.notify_status(f"presets: {failure}", refused=True)
+
     @work(thread=True)
     def _preset_list_worker(self) -> None:
         """**MIDI only** -- the all-presets dump, about twelve seconds."""
@@ -2484,9 +2522,7 @@ class EnsqsqedApp(App):
         finally:
             self._exchange.release()
         if failure is not None:
-            self._call_from_thread(
-                self.notify_status, f"presets: {failure}", refused=True
-            )
+            self._call_from_thread(self._preset_list_failed, failure)
             return
         self._call_from_thread(self._save_preset_cache, dump)
         self._call_from_thread(self._show_preset_list, dump)
@@ -2747,6 +2783,7 @@ class EnsqsqedApp(App):
             self._edit_preset.name = observed
             self._edit_preset_raw = self._edit_preset.to_bytes()
             self._edit_snapshot = _copy_preset(self._edit_preset)
+            self._cache_slot_raw(slot, self._edit_preset.to_bytes())
         self._edit_slot = slot
         self._edit_dirty = False
         self._update_subtitle()
@@ -2778,14 +2815,27 @@ class EnsqsqedApp(App):
             # The screen was closed; clear the reference so a later reload
             # can push a fresh screen.
             self._preset_list_screen = None
+            self._preset_list_from_multi = False
             return
+        from_multi = self._preset_list_from_multi
         if hasattr(self.device, "select_preset_by_walk") and hasattr(
             self.device, "read_current_preset"
         ):
             if self._busy or not self._exchange.acquire(blocking=False):
-                self.notify_status("preset selection not sent: busy", refused=True)
+                self._preset_list_screen = None
+                if from_multi:
+                    self._say_to_editor("preset selection not sent: busy", refused=True)
+                else:
+                    self.notify_status("preset selection not sent: busy", refused=True)
+                self._preset_list_from_multi = False
                 return
-            self.notify_status(f"selecting P{slot:02d} on the unit...")
+            # The list has dismissed; do not leave a reference that a
+            # later `p` would try to refresh.
+            self._preset_list_screen = None
+            if from_multi:
+                self._say_to_editor(f"selecting P{slot:02d} on the unit...")
+            else:
+                self.notify_status(f"selecting P{slot:02d} on the unit...")
             self._select_preset_worker(slot)
             return
         self._load_preset_from_dump(slot)
@@ -2836,26 +2886,43 @@ class EnsqsqedApp(App):
             self._exchange.release()
         self._call_from_thread(self._preset_selected, slot, current, failure)
 
-    def _preset_selected(
+    def _preset_selected(  # noqa: C901
         self,
         slot: int,
         current,
         failure: Optional[BaseException],
     ) -> None:
         """The unit has moved: adopt its bytes and open the editor.  Main thread."""
+        from_multi = self._preset_list_from_multi and self._multi_screen is not None
         if failure is not None:
-            self.notify_status(f"P{slot:02d} not selected: {failure}", refused=True)
+            if from_multi:
+                self._say_to_editor(
+                    f"P{slot:02d} not selected: {failure}", refused=True
+                )
+            else:
+                self.notify_status(f"P{slot:02d} not selected: {failure}", refused=True)
+            self._preset_list_from_multi = False
+            self._preset_list_screen = None
             return
         if current is None or not current.preset_raw:
-            self.notify_status(
-                f"P{slot:02d} not selected: the unit sent no preset",
-                refused=True,
-            )
+            msg = f"P{slot:02d} not selected: the unit sent no preset"
+            if from_multi:
+                self._say_to_editor(msg, refused=True)
+            else:
+                self.notify_status(msg, refused=True)
+            self._preset_list_from_multi = False
+            self._preset_list_screen = None
             return
         try:
             preset = Preset.from_bytes(current.preset_raw)
         except ValueError as exc:
-            self.notify_status(f"P{slot:02d}: {exc}", refused=True)
+            msg = f"P{slot:02d}: {exc}"
+            if from_multi:
+                self._say_to_editor(msg, refused=True)
+            else:
+                self.notify_status(msg, refused=True)
+            self._preset_list_from_multi = False
+            self._preset_list_screen = None
             return
         observed = current.preset_raw[0]
         self._edit_preset = preset
@@ -2871,6 +2938,25 @@ class EnsqsqedApp(App):
             self._remote_mode = "PRESET"
             self._remote_mode_confirmed = True
         self._update_subtitle()
+        # The list has dismissed; a reference to it would make the next
+        # `p` try to refresh a screen that is no longer on the stack.
+        self._preset_list_screen = None
+        self._preset_list_from_multi = False
+        if from_multi:
+            if self._multi_screen is not None:
+                self._multi_screen.set_preset(preset, slot=observed)
+                self._multi_screen.set_local_label(self._preset_labels.get(observed))
+            if observed == slot:
+                self._say_to_editor(
+                    f"P{slot:02d} selected on the unit; the editor now shows it"
+                )
+            else:
+                self._say_to_editor(
+                    f"the unit reports P{observed:02d}, not P{slot:02d}; the editor "
+                    f"is open over what the unit holds",
+                    refused=True,
+                )
+            return
         # Remember that the multi screen came from the preset list, so
         # that dismissing it with `q` can pop back to the list instead of
         # dropping to the main window.
@@ -2893,9 +2979,18 @@ class EnsqsqedApp(App):
         The fallback for a device that cannot select a preset.  That load
         is not a write and the unit is untouched; the reader is told so.
         """
+        from_multi = self._preset_list_from_multi and self._multi_screen is not None
         dump = self._all_dump
         if dump is None:
-            self.notify_status("the preset list was read a long time ago", refused=True)
+            if from_multi:
+                self._say_to_editor(
+                    "the preset list was read a long time ago", refused=True
+                )
+            else:
+                self.notify_status(
+                    "the preset list was read a long time ago", refused=True
+                )
+            self._preset_list_from_multi = False
             return
         # The command line's own two helpers know how a slot in the
         # dump pairs with the sequence it plays, and that pairing is the
@@ -2917,6 +3012,19 @@ class EnsqsqedApp(App):
         self._edit_slot = slot
         self._preset_loaded = True
         self._update_subtitle()
+        # The list has dismissed; do not refresh a popped screen.
+        self._preset_list_screen = None
+        from_multi = self._preset_list_from_multi and self._multi_screen is not None
+        self._preset_list_from_multi = False
+        if from_multi:
+            if self._multi_screen is not None:
+                self._multi_screen.set_preset(preset, slot=slot)
+                self._multi_screen.set_local_label(self._preset_labels.get(slot))
+            self._say_to_editor(
+                f"preset {slot + 1} loaded into the editor — the unit is "
+                f"untouched until a change is applied"
+            )
+            return
         # Remember that the multi screen came from the preset list, so
         # that dismissing it with `q` can pop back to the list instead of
         # dropping to the main window.
@@ -2986,6 +3094,7 @@ class EnsqsqedApp(App):
             on_live_mute=self._live_mute,
             on_panel_button=self._remote_press,
             on_open_fx=self._push_fx_screen,
+            on_open_preset_list=self._open_preset_list_from_multi,
             on_rename=self._rename_current_preset_label,
             on_rename_on_unit=self._rename_current_preset_on_unit,
             on_commit=self._commit_preset,
@@ -3479,6 +3588,36 @@ class EnsqsqedApp(App):
             self._commit_preset_done, slot, failure, result, intended_raw
         )
 
+    def _cache_slot_raw(self, slot: int, raw: bytes) -> None:
+        """Replace one slot's bytes in the cached all-presets dump.
+
+        Updates ``_all_dump`` and its timestamp, and saves the cache file
+        with the usual suppressions.  Never indexes ``presets_raw[slot]``;
+        the slot-to-index mapping comes from ``slot_offsets()``.
+        """
+        if self._all_dump is None:
+            return
+        with contextlib.suppress(Exception):
+            offsets = self._all_dump.slot_offsets()
+            if slot not in offsets:
+                return
+            index = offsets[slot]
+            new_raw = list(self._all_dump.presets_raw)
+            new_raw[index] = raw
+            self._all_dump = AllPresetsDump(
+                count=self._all_dump.count,
+                alloc=self._all_dump.alloc,
+                track_table=self._all_dump.track_table,
+                track_blobs=self._all_dump.track_blobs,
+                preset_table=self._all_dump.preset_table,
+                preset_area_start=self._all_dump.preset_area_start,
+                presets_raw=tuple(new_raw),
+                globals=self._all_dump.globals,
+            )
+            self._all_dump_at = time.monotonic()
+            with contextlib.suppress(ValueError, AttributeError, OSError):
+                preset_cache.save(self._all_dump.to_bytes())
+
     def _commit_preset_done(  # noqa: C901
         self,
         slot: int,
@@ -3557,25 +3696,8 @@ class EnsqsqedApp(App):
         if not differing and not differ_after:
             # Refresh the cached all-presets dump so the preset browser
             # shows the committed sounds on the next selection.
-            if self._all_dump is not None and result.stored_raw is not None:
-                with contextlib.suppress(Exception):
-                    offsets = self._all_dump.slot_offsets()
-                    if slot in offsets:
-                        index = offsets[slot]
-                        new_raw = list(self._all_dump.presets_raw)
-                        new_raw[index] = result.stored_raw
-                        self._all_dump = AllPresetsDump(
-                            count=self._all_dump.count,
-                            alloc=self._all_dump.alloc,
-                            track_table=self._all_dump.track_table,
-                            track_blobs=self._all_dump.track_blobs,
-                            preset_table=self._all_dump.preset_table,
-                            preset_area_start=self._all_dump.preset_area_start,
-                            presets_raw=tuple(new_raw),
-                            globals=self._all_dump.globals,
-                        )
-                        with contextlib.suppress(ValueError, AttributeError, OSError):
-                            preset_cache.save(self._all_dump.to_bytes())
+            if result.stored_raw is not None:
+                self._cache_slot_raw(slot, result.stored_raw)
             # **Adopt the slot the unit actually stored.**  A panel edit
             # (the Track keys) is not in the app's model, so without this
             # the next send would carry the old pile/status back.
