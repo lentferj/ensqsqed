@@ -92,7 +92,7 @@ sqcli groups            # the groups and their selectors
 sqcli list ROM          # every sound in a group
 sqcli select INT 42 --dry-run   # what a DAW must send
 sqcli select INT 42 --yes      # send it to the unit
-sqcli read dump.syx     # read a .syx or .mid dump
+sqcli read dump.syx     # read a .syx, .mid or .sqs dump
 sqcli status            # ask the unit what it is on
 sqcli names             # all 80 internal names (silent)
 ```
@@ -106,8 +106,10 @@ sends). Without a remembered pair the sweep tries sixteen base channels
 on every port, which takes minutes; the channel given by
 `--device-channel` is tried first.
 
-`read` takes both, and deliberately: a `.mid` in this collection held a
-message its matching `.syx` did not.
+`read` takes all three, and the two dump formats deliberately: a `.mid`
+in this collection held a message its matching `.syx` did not. A `.sqs`
+file is the exception to "a dump": it is read for the Ensoniq SysEx
+sounds embedded in it.
 
 ## What it does
 
@@ -521,11 +523,14 @@ Backup screen.
 
 `I` opens a **file browser** (it remembers the folder you last loaded
 from, never the file) and reads an **All-Sounds dump** — the 32647-byte
-`.syx`, or the `.mid` that carries the same SysEx. It writes **Internal
-(RAM) only**: a card is copied from Internal on the front panel, not
-written by SysEx. **`ctrl+s` starts either flow**; the preview screens
-show a progress line, and a long bank read or write is covered by a
-"please wait" screen.
+`.syx`, the `.mid` that carries the same SysEx, or a SoundQuest `.sqs`
+favourite bank. A `.sqs` file contributes only the Ensoniq SysEx sounds
+embedded in it; its SoundQuest-native records are ignored, and the
+sounds from all its banks are collected into one import list. It writes
+**Internal (RAM) only**: a card is copied from Internal on the front
+panel, not written by SysEx. **`ctrl+s` starts either flow**; the preview
+screens show a progress line, and a long bank read or write is covered by
+a "please wait" screen.
 
 - **Whole bank** previews every sound in the file by number and name,
   then sends it to Internal.
@@ -596,7 +601,7 @@ sqcli fav --add INT:1   # the favourites database (also --remove/--tags/--note/-
 sqcli tags              # tags in use, with counts
 sqcli select INT 42 --dry-run   # what a DAW must send
 sqcli select INT 42 --yes      # send it to the unit
-sqcli read dump.syx     # read a .syx or .mid dump
+sqcli read dump.syx     # read a .syx, .mid or .sqs dump
 sqcli status            # ask the unit what it is on
 sqcli names             # all 80 internal names (silent)
 sqcli hardware          # what the unit reports about itself

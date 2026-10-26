@@ -36,9 +36,9 @@ sound whose name is not known, and it is filed under ``?``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from sq import banks, dumps
+from sq import banks, dumps, sqs
 from sq import messages as m
 
 __all__ = [
@@ -87,15 +87,41 @@ def _name_of(raw: bytes) -> str:
         return "?"
 
 
+def _read_sqs_import(path: str) -> ImportSource:
+    """Read a SoundQuest ``.sqs`` file into one flat import list.
+
+    Every non-empty slot of every bank is collected in file order.  A
+    repeated favourite is one row, not two: the bytes are compared exactly,
+    so an identical record is skipped.  The banks have no device of their
+    own, and the sounds were selected rather than dumped from one bank, so
+    ``device`` is :data:`None` and ``kinds`` says where they came from.
+    """
+    sounds: List[SourceSound] = []
+    seen: Set[bytes] = set()
+    for bank in sqs.read_sqs(path):
+        for raw in bank.slots:
+            if raw is None or raw in seen:
+                continue
+            seen.add(raw)
+            sounds.append(SourceSound(index=len(sounds), name=_name_of(raw), raw=raw))
+    if not sounds:
+        raise ValueError(f"{path} holds no sounds this program recognises")
+    return ImportSource(path=path, sounds=sounds, device=None, kinds=("sqs",))
+
+
 def read_import(path: str) -> ImportSource:
     """Read a dump file into source sounds, ready for an import.
 
     An all-sounds dump (80 sounds) wins when the file has one; a file
     that only carries single sounds is read as such and enumerated from
-    0.  A file that carries neither is an error, not an empty bank: the
-    user pointed at something that was not a sound file, and an empty
-    import would overwrite nothing and confirm nothing, which is a lie.
+    0.  A SoundQuest ``.sqs`` file is read by its own decoder first, and
+    its banks are flattened into one list.  A file that carries neither
+    is an error, not an empty bank: the user pointed at something that
+    was not a sound file, and an empty import would overwrite nothing and
+    confirm nothing, which is a lie.
     """
+    if sqs.is_sqs_path(path):
+        return _read_sqs_import(path)
     lib = dumps.read_file(path)
     if lib.sounds:
         sounds = [

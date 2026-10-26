@@ -221,18 +221,28 @@ their names have to come from somewhere. The same shape as nanosyned's:
 
 ## 6. The MidiQuest `.sqs` format is unread — shared across the projects
 
-**Status:** open, and not specific to this instrument.
+**Status:** partially resolved 2026-10-26 for ensqsqed; the native body
+is still unread.
 
 The SQ-R folder holds `.sqs` files beside the `.syx` ones, as every other
-instrument's folder does. They are MidiQuest's own bank format: an
-IFF-style chunked file with `LIST`, `FORM`, `BANK`, `CHNL`, `SHDR`,
+instrument's folder does. They are MidiQuest/SoundQuest's own bank format:
+an IFF-style chunked file with `LIST`, `FORM`, `BANK`, `CHNL`, `SHDR`,
 `FILE`, `TRAN`, `RECV`, `XTRA`, `MPIN`, `MPOT`, `BODY`, `AUDI`, `BDEF`
 and `TDEF` chunks, sizes big-endian, contents not the raw SysEx.
 
-Decoding it once would serve rxved, kwsed, p2ked, x5ded, nanosyned and
-this one alike.
+`sq/sqs.py` now reads the embedded Ensoniq SysEx bodies: an embedded
+All-Sounds frame (32648 bytes starting `F0 0F 06`), and 415-byte
+single-sound blocks in 33200/8300/416-byte bodies. `.sqs` is accepted by
+the import browser and `sqcli read`; its sounds are collected into one
+import list. The 32648-byte **native** body that does not start with a
+SysEx header is deliberately ignored: its 408-byte records do not decode
+to the SysEx sound layout and their semantics are unknown.
 
-**Blocked on:** nothing but the decoding.
+Decoding the native body once would serve rxved, kwsed, p2ked, x5ded,
+nanosyned and this one alike.
+
+**Blocked on:** the native 32648-byte body, and whether other projects'
+`.sqs` files use the same variant.
 
 ---
 

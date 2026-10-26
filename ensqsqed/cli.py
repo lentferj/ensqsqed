@@ -26,9 +26,11 @@ from sq import banks
 from sq import catalog as cat
 from sq import config
 from sq import dumps
+from sq import importer
 from sq import messages as m
 from sq import preset_labels
 from sq import presets as p
+from sq import sqs
 from sq import bridge as b
 from vinsynlib.cli import (
     add_common_arguments,
@@ -343,6 +345,16 @@ def _describe_program_change(pc: int) -> str:
 
 def _cmd_read(_device, args) -> None:
     """Read a dump file (no hardware)."""
+    if sqs.is_sqs_path(args.file):
+        source = importer.read_import(args.file)
+        print(f"{args.file}: {source.summary()}")
+        rows = [
+            [f"{sound.index + 1:03d}", str(sound.index), sound.name]
+            for sound in source.sounds
+        ]
+        print()
+        print(_table(rows, ["shown", "PC", "name"]))
+        return
     library = dumps.read_file(args.file)
     print(f"{args.file}: {library.summary()}")
     names = library.names()
@@ -716,6 +728,13 @@ def _cmd_restore(device, args) -> None:
             "the unit is untouched."
         )
         return
+
+    if sqs.is_sqs_path(filepath):
+        raise SystemExit(
+            "error: restore from a .sqs file is not supported; use "
+            "`sqcli read` and import in ensqsqed, or restore to Internal "
+            "from the app"
+        )
 
     # Read the backup file
     try:
