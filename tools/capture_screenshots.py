@@ -357,7 +357,7 @@ async def shot_single_import_preview(app: EnsqsqedApp, pilot: Any) -> None:
 async def shot_backup(app: EnsqsqedApp, pilot: Any) -> None:
     await wait_for_startup(app, pilot)
     await pilot.press("b")
-    await wait_for_text(app, pilot, "Select sound groups")
+    await wait_for_text(app, pilot, "Back up the SQ-R")
 
 
 async def shot_remote(app: EnsqsqedApp, pilot: Any) -> None:
@@ -439,7 +439,7 @@ SHOTS: list = [
             "MULTI",
         ],
     ),
-    ("backup", shot_backup, MODAL_SIZE, True, ["Select sound groups"]),
+    ("backup", shot_backup, MODAL_SIZE, True, ["Back up the SQ-R"]),
     ("remote", shot_remote, MODAL_SIZE, True, ["SELECT"]),
     ("multi", shot_multi, BROWSER_SIZE, False, ["Multi"]),
     ("preset-list", shot_preset_list, MODAL_SIZE, False, ["P00"]),

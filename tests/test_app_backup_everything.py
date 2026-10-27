@@ -76,6 +76,21 @@ async def test_full_dump_writes_everything_file(tmp_path: Path) -> None:
         assert bridge.backup_presets_calls == []
 
 
+async def test_separate_files_skips_the_combined_dump(tmp_path: Path) -> None:
+    bridge = _BridgeWithEverything(b"EVERYTHING-WIRE-BYTES")
+    app = EnsqsqedApp(bridge, catalog=cat.empty())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._do_backup({"INT"}, "all", str(tmp_path), separate_files=True)
+        await pilot.pause()
+        assert list(tmp_path.glob("everything_*.syx")) == []
+        assert list(tmp_path.glob("internal_sounds_*.bin"))
+        assert list(tmp_path.glob("internal_presets_*.bin"))
+        assert bridge.read_everything_calls == 0
+        assert bridge.backup_sounds_calls == ["INT"]
+        assert bridge.backup_presets_calls == ["INT"]
+
+
 async def test_fallback_without_read_everything(tmp_path: Path) -> None:
     bridge = _BridgeWithoutEverything()
     app = EnsqsqedApp(bridge, catalog=cat.empty())

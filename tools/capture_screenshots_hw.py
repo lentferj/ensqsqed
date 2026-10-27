@@ -202,7 +202,7 @@ async def shot_import(app: Any, pilot: Any) -> None:
 async def shot_backup(app: Any, pilot: Any) -> None:
     await wait_for_startup(app, pilot)
     await pilot.press("b")
-    await wait_for_text(app, pilot, "Select sound groups")
+    await wait_for_text(app, pilot, "Back up the SQ-R")
 
 
 async def shot_remote(app: Any, pilot: Any) -> None:
@@ -298,7 +298,7 @@ async def run(args: argparse.Namespace) -> int:
         ("favourites", shot_favourites, BROWSER_SIZE, ["favourite"]),
         ("rating-filter", shot_rating_filter, MODAL_SIZE, ["rating"]),
         ("import", shot_import, MODAL_SIZE, ["Import"]),
-        ("backup", shot_backup, MODAL_SIZE, ["Select sound groups"]),
+        ("backup", shot_backup, MODAL_SIZE, ["Back up the SQ-R"]),
         ("remote", shot_remote, MODAL_SIZE, ["SELECT"]),
         ("multi", shot_multi, BROWSER_SIZE, ["Multi"]),
         (

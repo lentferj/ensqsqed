@@ -182,8 +182,9 @@ favourites database with ratings, tags and notes.
   The browser always sends the selector first, so a channel change is
   heard on the next selection.
 
-- **Backup screen** (`b`): choose sound groups and content
-  (sounds/presets/all) and write the backup; restore is `sqcli restore`.
+- **Backup screen** (`b`): choose groups, content (sounds/presets/all)
+  and combined or separate files; `s` or `ctrl+s` starts, `esc`/`q`
+  leaves without reading anything. Restore is `sqcli restore`.
 
 - **Remote window** (`ctrl+o`): mirrors the panel, ungated — arrows,
   entry keys, System/Effects/Track pair, Select/Edit row and
@@ -509,6 +510,15 @@ slot's working preset; take the backup with no un-stored edit, or store
 first. Any restore of the all-presets dump must use the dump's slot
 table (`slot = (idx + 70) % 80` on this unit), not `presets_raw[slot]`.
 
+**The backup screen.** `b` opens it. Choose any combination of Internal,
+Card A and Card B; choose sounds, presets or all content; then choose
+**One combined Internal dump when possible** or **Separate files per
+group and content**. A combined dump uses the single command-05 read for
+Internal and writes one `everything_<stamp>.syx`; separate writes
+`internal_sounds`, `internal_presets`, and the card files individually.
+Cards are read only when fitted and readable. `s` or `ctrl+s` starts the
+backup; `esc` or `q` leaves without reading or writing anything.
+
 **Local labels are backed up too.** A presets/all backup writes
 `preset_labels_<stamp>.json` beside the dump (the app's backup screen
 and `sqcli backup` both do). Restore it with
@@ -532,7 +542,8 @@ ENTER/SAVE:
 
 ![Backup](docs/screenshots/backup.png)
 
-Backup screen.
+Backup screen: groups, content and file layout; `s`/`ctrl+s` starts,
+`esc`/`q` cancels.
 
 ## Importing banks and sounds
 

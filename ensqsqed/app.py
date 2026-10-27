@@ -61,9 +61,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Header, Input, ProgressBar, RadioSet, Static
+from textual.widgets import (
+    Checkbox,
+    DataTable,
+    Header,
+    Input,
+    Label,
+    ProgressBar,
+    RadioButton,
+    RadioSet,
+    Static,
+)
 
 from ensqsqed.choices import ChoicePicker
 from ensqsqed.file_picker import FilePickerScreen, start_folder
@@ -310,23 +320,43 @@ _IMPORT_LABELS = {
 
 
 class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
-    """Screen for selecting backup options.
+    """Choose what to back up, and how the files are laid out.
 
-    Let the user select which sound groups to back up (INT, CARDA, CARDB),
-    either individually or all at once, and what content to back up (sounds,
-    presets, or all content).  When the user confirms, the screen dismisses
-    with the selected options and the app performs the backup.
+    The screen only collects choices.  The app performs the read and writes
+    the files, so cancelling here sends nothing and a busy exchange is still
+    the app's business.
     """
 
     DEFAULT_CSS = """
     BackupSelectionScreen { align: center middle; }
     BackupSelectionScreen > Vertical {
-        width: 60; height: auto; border: thick $accent;
+        width: 66; height: auto; border: thick $accent;
         background: $surface; padding: 1 2;
     }
-    BackupSelectionScreen .label { margin: 1 0; }
+    BackupSelectionScreen .label { margin: 1 0 0 0; text-style: bold; }
     BackupSelectionScreen .note { height: auto; color: $text-muted; }
+    BackupSelectionScreen .status { height: auto; color: $text; }
+    BackupSelectionScreen .hint { height: auto; color: $text-muted; }
     """
+
+    BINDINGS = [
+        Binding("s", "start", "Start backup"),
+        Binding("ctrl+s", "start", "Start backup", show=False),
+        Binding("escape", "cancel", "Cancel"),
+        Binding("q", "cancel", "Cancel"),
+    ]
+
+    CONTENT_VALUES = ("sounds", "presets", "all")
+    GROUP_BY_ID = {
+        "backup-group-int": "INT",
+        "backup-group-carda": "CARDA",
+        "backup-group-cardb": "CARDB",
+    }
+    GROUPS = (
+        ("backup-group-int", "Internal (INT)"),
+        ("backup-group-carda", "Card A"),
+        ("backup-group-cardb", "Card B"),
+    )
 
     def __init__(
         self,
@@ -335,77 +365,86 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
     ) -> None:
         super().__init__()
         self._backup_root = backup_root
-        self._selected_groups: set[str] = set()
-        self._selected_content: str = "sounds"  # sounds, presets, all
+        #: Every group starts chosen: a backup that silently omitted one
+        #: would be worse than one that takes a little longer.
+        self._selected_groups: set[str] = set(self.GROUP_BY_ID.values())
+        self._selected_content = "sounds"
+        self._separate_files = False
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Vertical
-        from textual.widgets import Checkbox, DataTable, Label, RadioSet, Static
-
         with Vertical():
-            yield Label("Select sound groups to back up", classes="label")
+            yield Label("Back up the SQ-R", classes="title")
+            yield Label("Groups", classes="label")
+            for checkbox_id, label in self.GROUPS:
+                yield Checkbox(label, value=True, id=checkbox_id)
+            yield Label("Content", classes="label")
             yield RadioSet(
-                "All groups (INT, Card A, Card B)",
-                "Internal (INT)",
-                "Card A",
-                "Card B",
-                id="groups",
+                RadioButton("Sounds", value=True),
+                RadioButton("Presets"),
+                RadioButton("All content"),
+                id="backup-content",
             )
-            yield Label("Select content to back up", classes="label")
+            yield Label("Files — All content + Internal only", classes="label")
             yield RadioSet(
-                "Sounds",
-                "Presets",
-                "All content",
-                id="content",
+                RadioButton("One combined Internal dump when possible", value=True),
+                RadioButton("Separate files per group and content"),
+                id="backup-files",
             )
             yield Static(
-                "Note: CARDA/CARDB sounds/presets can only be backed up if "
-                "the card is present and the unit can read them. Preset names "
-                "are the unit's own and are not restored by a dump; local "
-                "labels are copied beside the dump as a sidecar. The effect "
-                "block needs the panel's ENTER/SAVE to be stored.",
+                "Cards are read only when fitted and readable. Preset dumps "
+                "store the track/pile data, not the unit's own names or "
+                "effect block; local labels are copied beside them.",
                 classes="note",
             )
-            yield Static("")  # spacer
-            yield Static("")  # spacer
+            yield Static(
+                "Combined writes one Internal sounds+presets dump. Separate "
+                "writes one file for each group and content.",
+                classes="note",
+            )
+            yield Static("", classes="status", id="backup-status")
+            yield Static(
+                "s or ctrl+s — start backup · esc or q — cancel",
+                classes="hint",
+            )
 
-    def on_radio_set_selected(self, event: RadioSet.Selected) -> None:
-        """Handle group and content selection changes."""
-        if event.region == "groups":
-            # "All groups" overrides individual selections
-            if event.pressed_label == "All groups (INT, Card A, Card B)":
-                self._selected_groups = {"INT", "CARDA", "CARDB"}
-            else:
-                # Individual group selection: determine which was pressed
-                label = event.pressed_label
-                if label == "Internal (INT)":
-                    self._selected_groups = {"INT"}
-                elif label == "Card A":
-                    self._selected_groups = {"CARDA"}
-                elif label == "Card B":
-                    self._selected_groups = {"CARDB"}
-                else:
-                    # If "All groups" was unselected and no individual is
-                    # pressed, clear selection
-                    self._selected_groups = set()
-        elif event.region == "content":
-            if event.pressed_label == "Sounds":
-                self._selected_content = "sounds"
-            elif event.pressed_label == "Presets":
-                self._selected_content = "presets"
-            elif event.pressed_label == "All content":
-                self._selected_content = "all"
+    def _say(self, message: str) -> None:
+        try:
+            self.query_one("#backup-status", Static).update(message)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
 
-    def action_button_press(self) -> None:
-        """Handle button presses (Enter or button click)."""
-        # The modal owns its own button handling; dismiss with selections
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        group = self.GROUP_BY_ID.get(event.checkbox.id or "")
+        if group is None:
+            return
+        if event.value:
+            self._selected_groups.add(group)
+        else:
+            self._selected_groups.discard(group)
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.radio_set.id == "backup-content":
+            if 0 <= event.index < len(self.CONTENT_VALUES):
+                self._selected_content = self.CONTENT_VALUES[event.index]
+        elif event.radio_set.id == "backup-files":
+            self._separate_files = event.index == 1
+
+    def action_start(self) -> None:
+        """Collect the choices and hand them back to the app."""
+        if not self._selected_groups:
+            self._say("Choose at least one group.")
+            return
         self.dismiss(
             {
                 "groups": self._selected_groups,
                 "content": self._selected_content,
+                "separate_files": self._separate_files,
                 "backup_root": self._backup_root,
             }
         )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 #: The legend. Every binding the app has, in the order somebody meets them.
@@ -881,7 +920,9 @@ class EnsqsqedApp(App):
     def action_backup(self) -> None:
         """``b``: open the backup selection screen."""
         self.push_screen(
-            BackupSelectionScreen(),
+            BackupSelectionScreen(
+                backup_root=self._backup_root or cfg.DEFAULT_BACKUP_ROOT
+            ),
             self._handle_backup_selection,
         )
 
@@ -898,16 +939,27 @@ class EnsqsqedApp(App):
 
         groups: set[str] = result["groups"]
         content: str = result["content"]
-        backup_root: str = result.get("backup_root", cfg.DEFAULT_BACKUP_ROOT)
+        separate_files = bool(result.get("separate_files", False))
+        backup_root: str = result.get("backup_root") or cfg.DEFAULT_BACKUP_ROOT
 
         self.notify_status(f"backup starting: groups={groups}, content={content}")
 
         # Run the backup in a worker thread
         self.run_worker(
-            lambda: self._do_backup(groups, content, backup_root), thread=True
+            lambda: self._do_backup(
+                groups, content, backup_root, separate_files=separate_files
+            ),
+            thread=True,
         )
 
-    def _do_backup(self, groups: set[str], content: str, backup_root: str) -> None:  # noqa: C901
+    def _do_backup(  # noqa: C901
+        self,
+        groups: set[str],
+        content: str,
+        backup_root: str,
+        *,
+        separate_files: bool = False,
+    ) -> None:
         """Perform the actual backup operation.
 
         This runs in a worker thread.  It uses the bridge's backup methods
@@ -935,6 +987,7 @@ class EnsqsqedApp(App):
             if (
                 content == "all"
                 and "INT" in groups
+                and not separate_files
                 and hasattr(bridge, "read_everything")
             ):
                 try:
@@ -5527,9 +5580,10 @@ Importing sounds
 
 Backing up and restoring
 
-  `b` opens the backup screen: choose sound groups and whether to back up
-  sounds, presets or all content. The app writes the files under the
-  configured backup folder and also copies the local preset labels.
+  `b` opens the backup screen: choose groups, content (sounds/presets/all)
+  and combined or separate files. `s` or `ctrl+s` starts; `esc`/`q` leaves
+  without reading. The app writes under the configured backup folder and
+  copies the local preset labels.
 
   Restore is the command line, not a key in this window:
   `sqcli restore FILE --yes` writes a backup back; it asks for --yes and
