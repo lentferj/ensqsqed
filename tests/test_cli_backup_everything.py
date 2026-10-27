@@ -212,6 +212,20 @@ def test_backup_writes_the_local_labels_next_to_the_dump(
     assert preset_labels.load(str(labels[0])) == {3: "BASS"}
 
 
+def test_restore_reads_an_app_raw_sound_bank(tmp_path, monkeypatch, capsys):
+    from ensqsqed.demo import DemoDevice
+
+    sounds = [bytes([index]) * m.SOUND_BYTES for index in range(80)]
+    path = tmp_path / "internal_sounds.bin"
+    path.write_bytes(b"".join(sounds))
+    demo = DemoDevice(channel=0)
+    monkeypatch.setattr(cli, "_connect", lambda *a, **k: demo)
+    rc = cli.main(["restore", "--yes", str(path)])
+    assert rc == 0
+    assert demo._banks["INT"][0] == sounds[0]
+    assert demo._banks["INT"][79] == sounds[79]
+
+
 def test_restore_a_labels_sidecar_without_the_unit(tmp_path, monkeypatch, capsys):
     """A .json restore is app-side only; it must not connect or touch the unit."""
     source = tmp_path / "labels.json"

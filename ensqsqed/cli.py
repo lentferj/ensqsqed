@@ -752,9 +752,8 @@ def _cmd_restore(device, args) -> None:
 
     # Determine what is in the backup
     has_sounds = library.is_full_bank
-    has_presets = bool(library.singles) or bool(library.sounds)
 
-    if has_sounds or has_presets:
+    if has_sounds:
         # --- Backup-format file: restore sounds and/or presets ---
         # Connect to the unit
         from vinsynlib.cli import validate_common
@@ -786,15 +785,9 @@ def _cmd_restore(device, args) -> None:
                 "Internal on the panel."
             )
 
-        # --- Restore presets ---
-        if has_presets:
-            print(
-                "Preset restore from backup: the all-presets dump would be sent "
-                "back via the preset handshake. For now, use the import flow for "
-                "sounds and the panel to re-enter preset edits."
-            )
-
-        # Done with backup-format file; return early.
+        # Done with backup-format file; return early.  Preset data is not
+        # represented by Library: a raw all-presets file and a sequence
+        # dump need the cooperative per-slot store, which the app owns.
         return
 
     # --- Fall through: this is a single-preset file (written by presets --out) ---

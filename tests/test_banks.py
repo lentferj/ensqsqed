@@ -169,6 +169,17 @@ class TestReadingDumps:
         assert len(library.sounds) == 80
         assert library.device == 13
 
+    def test_a_raw_backup_sound_bank_is_recognised(self, tmp_path):
+        raw = b"".join(
+            bytes([index]) * m.SOUND_BYTES for index in range(banks.SOUNDS_PER_GROUP)
+        )
+        path = tmp_path / "internal_sounds.bin"
+        path.write_bytes(raw)
+        library = dumps.read_file(str(path))
+        assert library.is_full_bank
+        assert library.sounds[0] == bytes([0]) * m.SOUND_BYTES
+        assert library.sounds[79] == bytes([79]) * m.SOUND_BYTES
+
     def test_a_single_sound_is_kept_apart(self):
         raw = m.frame(m.Function.SINGLE_SOUND_DUMP, m.to_nibbles(bytes(m.SOUND_BYTES)))
         library = dumps.read_bytes(raw)

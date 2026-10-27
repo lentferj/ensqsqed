@@ -525,6 +525,12 @@ backup; `esc` or `q` leaves without reading or writing anything. A
 report window then lists each file and the reason for any failure, and
 stays open until you close it.
 
+**Importing a backup.** A `.bin` sound bank is direct: choose `I` in the
+app and pick it, or run `sqcli restore FILE.bin --yes`. Sounds restore to
+Internal; copy a bank to a card from the front panel. A preset `.bin` is
+an all-presets snapshot, not a direct restore file; preset restores stay
+per-slot through the store assist and the panel.
+
 **Local labels are backed up too.** A presets/all backup writes
 `preset_labels_<stamp>.json` beside the dump (the app's backup screen
 and `sqcli backup` both do). Restore it with

@@ -206,7 +206,23 @@ def read_bytes(raw: bytes, *, smf: bool = False) -> Library:
 
 
 def read_file(path: str) -> Library:
-    """Load a ``.syx`` or a ``.mid``, deciding by content not by name."""
+    """Load a ``.syx``, a ``.mid``, or a raw sound-bank ``.bin``.
+
+    The app's backup writes sound banks as decoded 204-byte records in a
+    ``.bin``.  That is not a frame, so it has no ``F0`` for :func:`read_bytes`
+    to find; a full 16320-byte file is recognised here as the same thing.
+    Preset backups are decoded all-presets data and are not sound banks.
+    """
     with open(path, "rb") as handle:
         raw = handle.read()
+    if (
+        not raw.startswith(b"\xf0")
+        and raw[:4] != b"MThd"
+        and len(raw) == banks.SOUNDS_PER_GROUP * m.SOUND_BYTES
+    ):
+        sounds = {
+            number: raw[number * m.SOUND_BYTES : (number + 1) * m.SOUND_BYTES]
+            for number in range(banks.SOUNDS_PER_GROUP)
+        }
+        return Library(sounds=sounds)
     return read_bytes(raw, smf=raw[:4] == b"MThd")

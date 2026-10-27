@@ -61,6 +61,17 @@ def _smf(message: bytes) -> bytes:
 
 
 class TestReadImport:
+    def test_a_raw_backup_sound_bank_reads_as_a_full_bank(self, tmp_path):
+        path = tmp_path / "internal_sounds_20261027.bin"
+        path.write_bytes(b"".join(_record(f"Bak{slot:03d}") for slot in range(80)))
+
+        source = importer.read_import(str(path))
+
+        assert source.is_full_bank
+        assert source.kinds == ("all-sounds",)
+        assert source.sounds[0].name == "Bak000"
+        assert source.sounds[79].name == "Bak079"
+
     def test_an_all_sounds_dump_reads_as_a_full_bank(self, tmp_path):
         path = tmp_path / "favs.syx"
         path.write_bytes(_all_sounds_message())

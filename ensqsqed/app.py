@@ -511,7 +511,10 @@ class BackupReportScreen(ModalScreen[None]):
             yield Static("Starting…", id="backup-current", classes="status")
             with VerticalScroll(id="backup-scroll"):
                 yield Static("", id="backup-log", markup=False)
-            yield Static("esc or q — close after the report", classes="hint")
+            yield Static(
+                "esc or q — close · .bin sounds: I import or sqcli restore FILE --yes",
+                classes="hint",
+            )
 
     def set_current(self, message: str) -> None:
         try:
