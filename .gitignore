@@ -22,3 +22,6 @@ sq/data/*.livenames
 
 # A disposable cache of which port answered last.
 config.toml
+
+# Local agent workspace and planning prompts; not project source.
+.opencode/
