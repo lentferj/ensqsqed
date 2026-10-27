@@ -163,6 +163,12 @@ measurement. **Open:** find a store path (the panel's SAVE SOUND over virtual
 buttons, or a different inbound message) so the import can persist; **Card
 A/B remain unverified** and their reread is a per-slot scan.
 
+**Plan (2026-10-27):** automate SAVE SOUND with the same remote-panel
+primitives as the preset store (send type-02, selected slot, Enter/Save
+button 9, settle, stored-bank read-back). The exact sound-save sequence
+must be measured first; no production sequence is guessed. See
+`~/temp/ensqsqed_SOUND_save_plan.md`.
+
 
 ## 2. The four captured command messages — RESOLVED
 
