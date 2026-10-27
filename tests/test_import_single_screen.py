@@ -62,7 +62,11 @@ def _screen(
     target: str = "INT",
     on_bank_change: Optional[Callable[[str], None]] = None,
     on_preview: Optional[Callable[[int, bool], None]] = None,
+    on_options_change: Optional[Callable[[bool, bool, bool], None]] = None,
     gate: Optional[EditGate] = None,
+    store_permanently: bool = False,
+    autoload_preview: bool = False,
+    autoplay_preview: bool = False,
 ) -> SingleImportScreen:
     return SingleImportScreen(
         path="favs.syx",
@@ -72,7 +76,11 @@ def _screen(
         listing=_listing() if listing is None else listing,
         on_bank_change=on_bank_change,
         on_preview=on_preview,
+        on_options_change=on_options_change,
         gate=gate,
+        store_permanently=store_permanently,
+        autoload_preview=autoload_preview,
+        autoplay_preview=autoplay_preview,
     )
 
 
@@ -339,6 +347,42 @@ async def test_auto_load_and_autoplay_are_opt_in() -> None:
         await pilot.pause(0.3)
         await pilot.pause()
         assert calls == [(1, True)]
+
+
+async def test_saved_options_start_checked() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen(
+            store_permanently=True,
+            autoload_preview=True,
+            autoplay_preview=True,
+        )
+        await app.push_screen(screen)
+        await pilot.pause()
+        assert screen.store_permanently is True
+        assert screen.autoload_preview is True
+        assert screen.autoplay_preview is True
+        assert screen.query_one(f"#{STORE_CHECKBOX_ID}", Checkbox).value is True
+        assert screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox).value is True
+        assert screen.query_one(f"#{AUTOPLAY_CHECKBOX_ID}", Checkbox).value is True
+
+
+async def test_option_changes_report_all_three_choices() -> None:
+    calls = []
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen(
+            on_options_change=lambda store, auto, play: calls.append(
+                (store, auto, play)
+            )
+        )
+        await app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one(f"#{STORE_CHECKBOX_ID}", Checkbox).value = True
+        screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox).value = True
+        screen.query_one(f"#{AUTOPLAY_CHECKBOX_ID}", Checkbox).value = True
+        await pilot.pause()
+        assert calls[-1] == (True, True, True)
 
 
 async def test_auto_rehearsal_hint_names_poly_omni_and_multi() -> None:

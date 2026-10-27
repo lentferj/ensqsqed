@@ -35,9 +35,14 @@ from ensqsqed.app import EnsqsqedApp
 from ensqsqed.demo import DemoDevice
 from ensqsqed.file_picker import FilePickerScreen
 from ensqsqed.import_bank import BankImportScreen
-from ensqsqed.import_single import SingleImportScreen
+from ensqsqed.import_single import (
+    AUTOLOAD_CHECKBOX_ID,
+    AUTOPLAY_CHECKBOX_ID,
+    STORE_CHECKBOX_ID,
+    SingleImportScreen,
+)
 from ensqsqed.multi import NumberPrompt
-from sq import banks, importer
+from sq import banks, config, importer
 from sq import catalog as cat
 from sq import messages as m
 from vinsynlib.ui.confirm import ConfirmScreen
@@ -274,6 +279,45 @@ class TestSingleSoundImport:
             target_table = fresh.query_one("#target-table", DataTable)
             assert target_table.get_cell("5", "name") == source.sounds[0].name
             assert "the pane was reread" in _status(app)
+
+    async def test_single_import_options_open_from_config_and_save(
+        self, tmp_path: Path
+    ):
+        path = _write_dump(tmp_path)
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        config_path = str(cfg_dir / "config.toml")
+        config.save_ui_state(
+            path=config_path,
+            import_store_permanently=True,
+            import_autoload_preview=True,
+            import_autoplay_preview=True,
+        )
+        app = EnsqsqedApp(DemoDevice(), catalog=cat.empty(), config_path=config_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            app._import_folder = str(tmp_path)
+            await _choose_kind(app, pilot, 1)
+            await _pick_file(app, pilot, path)
+            assert await _wait(
+                lambda: isinstance(app.screen, SingleImportScreen), pilot
+            )
+            screen = app.screen
+            assert isinstance(screen, SingleImportScreen)
+            assert screen.query_one(f"#{STORE_CHECKBOX_ID}", Checkbox).value is True
+            assert screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox).value is True
+            assert screen.query_one(f"#{AUTOPLAY_CHECKBOX_ID}", Checkbox).value is True
+
+            screen.query_one(f"#{STORE_CHECKBOX_ID}", Checkbox).value = False
+            screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox).value = False
+            screen.query_one(f"#{AUTOPLAY_CHECKBOX_ID}", Checkbox).value = False
+            await pilot.pause()
+            saved = config.load_ui_state(config_path)
+            assert saved["import_store_permanently"] is False
+            assert saved["import_autoload_preview"] is False
+            assert saved["import_autoplay_preview"] is False
 
     async def test_manual_preview_sends_the_focused_sound_without_storing(
         self, tmp_path: Path

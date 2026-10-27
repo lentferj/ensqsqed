@@ -124,7 +124,8 @@ def load_backup_root(path: Optional[str] = None) -> str:
 
 def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:
     """Load UI state: bank index, slot cursor, view mode, categories,
-    rating filter and the remembered import folder."""
+    rating filter, the remembered import folder, and the single-import
+    opt-in choices."""
     data = _settings.read(path)[0]
     result: Dict[str, Any] = {}
     if "bank_index" in data and isinstance(data["bank_index"], int):
@@ -158,6 +159,17 @@ def load_ui_state(path: Optional[str] = None) -> Dict[str, Any]:
     import_folder = data.get("import_folder")
     if isinstance(import_folder, str):
         result["import_folder"] = import_folder
+    # The single-import choices are booleans.  A hand-edited 1 is not the
+    # same as a checkbox the user ticked, so reject anything that is not a
+    # real bool rather than letting TOML's integer widen it.
+    for key in (
+        "import_store_permanently",
+        "import_autoload_preview",
+        "import_autoplay_preview",
+    ):
+        value = data.get(key)
+        if type(value) is bool:
+            result[key] = value
     return result
 
 
@@ -172,6 +184,9 @@ def save_ui_state(
     rating_at_least: Any = UNSET,
     scan_offer_dismissed: Any = UNSET,
     import_folder: Any = UNSET,
+    import_store_permanently: Any = UNSET,
+    import_autoload_preview: Any = UNSET,
+    import_autoplay_preview: Any = UNSET,
 ) -> None:
     """Save UI state (bank position, slot cursor, view mode, categories).
 
@@ -191,6 +206,9 @@ def save_ui_state(
         ("rating_at_least", rating_at_least),
         ("scan_offer_dismissed", scan_offer_dismissed),
         ("import_folder", import_folder),
+        ("import_store_permanently", import_store_permanently),
+        ("import_autoload_preview", import_autoload_preview),
+        ("import_autoplay_preview", import_autoplay_preview),
     ):
         if value is not UNSET:
             changes[key] = value

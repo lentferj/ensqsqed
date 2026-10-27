@@ -170,7 +170,8 @@ favourites database with ratings, tags and notes.
   window's own status line.
 
 - **Persistent UI state**: bank position, slot cursor, view mode, rating
-  filter and category filter are remembered between runs.
+  filter, category filter and the single-import opt-in choices are
+  remembered between runs.
 
 - **Live names sidecar**: the names read off the synth are kept beside
   the catalog, so the next launch opens on them immediately.
@@ -553,8 +554,10 @@ covered by a "please wait" screen.
 **Preview while you assign.** The map can audition a source sound before
 any target is assigned. `l` sends the focused sound as a Single Sound
 Dump to the current **Edit Sound buffer**; it does not select a slot,
-write a bank, or change the stored Internal bank. Two options are opt-in
-and start off:
+write a bank, or change the stored Internal bank. The map remembers all
+three opt-in choices — **Store permanently**, **Auto-load on focus** and
+**Autoplay after preview load** — between runs; on a new install they
+start off. Two of them are preview options:
 
 - **Auto-load on focus** sends the focused sound after a short debounce
   as the cursor moves.
@@ -577,9 +580,10 @@ Import screen (single sounds, target slots).
 
 ![Single-sound preview options](docs/screenshots/single-import-preview.png)
 
-Single-sound map with the preview options. Both checkboxes start off;
-`l` previews the focused sound in the Edit Sound buffer without a target
-slot or a stored write.
+Single-sound map with the preview options. Its three opt-in choices are
+remembered between runs and start off on a new install; `l` previews the
+focused sound in the Edit Sound buffer without a target slot or a stored
+write.
 
 ![Rename prompt](docs/screenshots/rename-prompt.png)
 

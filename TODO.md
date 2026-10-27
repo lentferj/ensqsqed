@@ -65,10 +65,6 @@ question below is adjusted accordingly
   same automated store path — three Enter/Save presses plus the read-back
   verification — so a restore is one confirmed action, with the current
   effect/name limits and the Card A/B write limits stated in the result.
-- **Pre-listen checkbox state.** The single-sound map's auto-load and
-  autoplay choices are opt-in and currently start off each time the map
-  opens. Persisting them in the UI state is a small follow-up if it turns
-  out to be wanted.
 - **Fix the audio measurement rig.** `arecord -D hw:3,0` reported the
   same saturated level (peak 32767) for a note the owner heard and one
   he could not hear — it is not capturing the unit's output. Identify

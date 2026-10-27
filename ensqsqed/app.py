@@ -809,12 +809,19 @@ class EnsqsqedApp(App):
         #: 0 = whole bank, 1 = single sounds; used when reopening the
         #: browser after a cancelled preview.
         self._import_kind: int = 0
+        #: The single-import map's three opt-in choices, remembered in
+        #: the UI state: permanent store after import, auto-load on
+        #: focus, and autoplay after a preview load.
+        self._import_store_permanently = False
+        self._import_autoload_preview = False
+        self._import_autoplay_preview = False
         #: The modal that covers a long bank read or write.
         self._wait_screen: Optional["WaitScreen"] = None
         if self._config_path is not None:
             ui_state = cfg.load_ui_state(self._config_path)
             if "import_folder" in ui_state:
                 self._import_folder = ui_state["import_folder"]
+            self._restore_import_options(ui_state)
             if "bank_index" in ui_state:
                 idx = ui_state["bank_index"]
                 if 0 <= idx < len(self._bank_ids):
@@ -1838,6 +1845,16 @@ class EnsqsqedApp(App):
         if self._current:
             table.move_cursor(row=min(row, len(self._current) - 1))
 
+    def _restore_import_options(self, ui_state: Dict[str, Any]) -> None:
+        """Adopt the single-sound map's remembered opt-in choices."""
+        for key, attr in (
+            ("import_store_permanently", "_import_store_permanently"),
+            ("import_autoload_preview", "_import_autoload_preview"),
+            ("import_autoplay_preview", "_import_autoplay_preview"),
+        ):
+            if key in ui_state:
+                setattr(self, attr, bool(ui_state[key]))
+
     def _save_ui_state(  # noqa: C901
         self,
         *,
@@ -1848,6 +1865,9 @@ class EnsqsqedApp(App):
         rating_stars: Optional[int] = None,
         rating_at_least: Optional[bool] = None,
         import_folder: Optional[str] = None,
+        import_store_permanently: Optional[bool] = None,
+        import_autoload_preview: Optional[bool] = None,
+        import_autoplay_preview: Optional[bool] = None,
     ) -> None:
         """Persist UI state (bank position, slot cursor, view mode, categories).
 
@@ -1874,6 +1894,12 @@ class EnsqsqedApp(App):
                 changes["rating_at_least"] = rating_at_least
             if import_folder is not None:
                 changes["import_folder"] = import_folder
+            if import_store_permanently is not None:
+                changes["import_store_permanently"] = import_store_permanently
+            if import_autoload_preview is not None:
+                changes["import_autoload_preview"] = import_autoload_preview
+            if import_autoplay_preview is not None:
+                changes["import_autoplay_preview"] = import_autoplay_preview
             if changes:
                 cfg.save_ui_state(self._config_path, **changes)
         except OSError:
@@ -4790,13 +4816,30 @@ class EnsqsqedApp(App):
             listing=sorted((names or {}).items()),
             on_bank_change=self._single_bank_change,
             on_preview=self._single_preview,
+            on_options_change=self._single_options_changed,
             gate=self._gate,
+            store_permanently=self._import_store_permanently,
+            autoload_preview=self._import_autoload_preview,
+            autoplay_preview=self._import_autoplay_preview,
         )
         self._single_import_screen = screen
         self._single_import_source = source
         self.push_screen(
             screen,
             lambda result: self._single_start(source, result, screen.store_permanently),
+        )
+
+    def _single_options_changed(
+        self, store: bool, autoload: bool, autoplay: bool
+    ) -> None:
+        """Persist the three opt-in choices from the single-sound map."""
+        self._import_store_permanently = bool(store)
+        self._import_autoload_preview = bool(autoload)
+        self._import_autoplay_preview = bool(autoplay)
+        self._save_ui_state(
+            import_store_permanently=self._import_store_permanently,
+            import_autoload_preview=self._import_autoload_preview,
+            import_autoplay_preview=self._import_autoplay_preview,
         )
 
     def _single_preview(self, index: int, autoplay: bool) -> None:
@@ -5195,7 +5238,11 @@ class EnsqsqedApp(App):
             listing=sorted((names or {}).items()),
             on_bank_change=self._single_bank_change,
             on_preview=self._single_preview,
+            on_options_change=self._single_options_changed,
             gate=self._gate,
+            store_permanently=self._import_store_permanently,
+            autoload_preview=self._import_autoload_preview,
+            autoplay_preview=self._import_autoplay_preview,
         )
         self._single_import_screen = screen
         self._single_import_source = source

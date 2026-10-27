@@ -199,7 +199,11 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         listing: Sequence[Tuple[int, str]],
         on_bank_change: Optional[Callable[[str], None]] = None,
         on_preview: Optional[Callable[[int, bool], None]] = None,
+        on_options_change: Optional[Callable[[bool, bool, bool], None]] = None,
         gate: Optional[EditGate] = None,
+        store_permanently: bool = False,
+        autoload_preview: bool = False,
+        autoplay_preview: bool = False,
     ) -> None:
         super().__init__()
         #: The file the user picked, as it was named to the app.
@@ -223,6 +227,9 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: not need a target slot: it is not an import.  ``None`` means
         #: this screen has no device path and says so.
         self._on_preview = on_preview
+        #: ``on_options_change(store, autoload, autoplay)`` -- the app
+        #: persists the three opt-in choices when any of them changes.
+        self._on_options_change = on_options_change
         #: The app's own gate, when there is an app.  Held rather than
         #: copied so ``w`` toggles the object the write path checks, and
         #: the note line can be redrawn from it.
@@ -234,10 +241,10 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: Opt-in permanent store after the edit-buffer import.  The app
         #: reads this before the screen is gone; default is edit-buffer
         #: only, the non-destructive path.
-        self._store_permanently = False
+        self._store_permanently = bool(store_permanently)
         #: Preview settings; both are opt-in.
-        self._autoload_preview = False
-        self._autoplay_preview = False
+        self._autoload_preview = bool(autoload_preview)
+        self._autoplay_preview = bool(autoplay_preview)
         #: Pending debounce timer for auto-load, and the row last loaded.
         self._preview_timer: Optional[Any] = None
         self._previewed_index: Optional[int] = None
@@ -269,6 +276,17 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
                 self._cancel_preview_timer()
         elif event.checkbox.id == AUTOPLAY_CHECKBOX_ID:
             self._autoplay_preview = bool(event.value)
+        else:
+            return
+        self._notify_options()
+
+    def _notify_options(self) -> None:
+        if self._on_options_change is not None:
+            self._on_options_change(
+                self._store_permanently,
+                self._autoload_preview,
+                self._autoplay_preview,
+            )
 
     @property
     def autoload_preview(self) -> bool:
@@ -337,17 +355,17 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
             yield Static(self._gate_text(), id=GATE_NOTE_ID, classes="gate")
             yield Checkbox(
                 "Store permanently (SAVE SOUND x3)",
-                value=False,
+                value=self._store_permanently,
                 id=STORE_CHECKBOX_ID,
             )
             yield Checkbox(
                 "Auto-load focused sound for preview",
-                value=False,
+                value=self._autoload_preview,
                 id=AUTOLOAD_CHECKBOX_ID,
             )
             yield Checkbox(
                 "Autoplay notes after preview load",
-                value=False,
+                value=self._autoplay_preview,
                 id=AUTOPLAY_CHECKBOX_ID,
             )
             yield Static(

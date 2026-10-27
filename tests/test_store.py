@@ -204,6 +204,33 @@ class TestTheConfigIsWrittenSafely:
         config.save_ui_state(path=path, import_folder="/music/syx")
         assert config.load_ui_state(path)["import_folder"] == "/music/syx"
 
+    def test_single_import_options_round_trip(self, tmp_path):
+        path = str(tmp_path / "config.toml")
+        config.save_ui_state(
+            path=path,
+            import_store_permanently=True,
+            import_autoload_preview=False,
+            import_autoplay_preview=True,
+        )
+        state = config.load_ui_state(path)
+        assert state["import_store_permanently"] is True
+        assert state["import_autoload_preview"] is False
+        assert state["import_autoplay_preview"] is True
+
+    def test_single_import_options_must_be_booleans(self, tmp_path):
+        """A hand-edited 1 is not a checkbox the user ticked."""
+        path = str(tmp_path / "config.toml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "import_store_permanently = 1\n"
+                "import_autoload_preview = true\n"
+                'import_autoplay_preview = "yes"\n'
+            )
+        state = config.load_ui_state(path)
+        assert "import_store_permanently" not in state
+        assert state["import_autoload_preview"] is True
+        assert "import_autoplay_preview" not in state
+
     def test_an_import_folder_that_is_not_a_string_is_ignored(self, tmp_path):
         """`import_folder = true` is a hand edit, not a directory."""
         path = str(tmp_path / "config.toml")
