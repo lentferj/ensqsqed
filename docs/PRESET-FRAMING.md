@@ -339,11 +339,16 @@ print('byte6',dict(c))
 (21 bytes). **verified bytes.**
 
 The spec (§4.7) and the German manual (Part 8) do **not** document the field
-layout of this block. The manual Part 2 documents the system-bank parameters
-(MIDI Mode OMNI/POLY/MULTI/MONO A/MONO B; Base Channel 1..16; Retransmit;
-Preset Prog; MIDI Loop/XCtrl 1..95; Controllers/System Excl; Prog Change; All
-Note Off; Master Tune; Global Bend) but gives no byte mapping. Best-effort
-guesses below are single-data-point and **unverified**.
+layout of this block. The block is also **not a dump of the System bank**:
+on 2026-10-27 the unit was changed from MULTI to POLY and from base channel
+10 to 11, the all-presets dump was read again, and all 21 bytes were
+unchanged. In particular byte 8 is not MIDI Mode and byte 13 is not Base
+Channel; those earlier candidates are refuted. The manual Part 2 documents
+the system-bank parameters (MIDI Mode OMNI/POLY/MULTI/MONO A/MONO B; Base
+Channel 1..16; Retransmit; Preset Prog; MIDI Loop/XCtrl 1..95;
+Controllers/System Excl; Prog Change; All Note Off; Master Tune; Global
+Bend) but gives no byte mapping. Best-effort guesses below are
+single-data-point and **unverified**.
 
 | Idx | Hex | Dec | Best guess (low confidence) |
 |---|---|---|---|
@@ -354,12 +359,12 @@ guesses below are single-data-point and **unverified**.
 | 4-5 | 10 d4 | 4308 | echoes alert size / track-data end offset (structural) |
 | 6 | 7f | 127 | unknown (possibly master-tune offset or mask) |
 | 7 | 00 | 0 | reserved / zero |
-| 8 | 02 | 2 | candidate: MIDI Mode = MULTI (if 0=OMNI,1=POLY,2=MULTI,3=MONO A,4=MONO B) — matches unit config; unverified (other 2s at 10-12) |
+| 8 | 02 | 2 | **not MIDI Mode**: unchanged when the unit moved MULTI → POLY (2026-10-27); meaning unknown (other 2s at 10-12) |
 | 9 | 00 | 0 | reserved / zero |
 | 10 | 02 | 2 | unknown (same value as idx 8) |
 | 11 | 02 | 2 | unknown (same value as idx 8) |
 | 12 | 02 | 2 | unknown (same value as idx 8) |
-| 13 | 01 | 1 | candidate: Base Channel = 1 (0-based?) — conflicts with config base channel 10; alternatively a flag |
+| 13 | 01 | 1 | **not Base Channel**: unchanged when the base channel moved 10 → 11 (2026-10-27); meaning unknown |
 | 14 | 00 | 0 | reserved / zero |
 | 15 | 00 | 0 | reserved / zero |
 | 16 | 01 | 1 | candidate: Preset Prog / Retransmit / a boolean flag |
