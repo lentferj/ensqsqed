@@ -58,6 +58,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from ensqsqed.mode_hint import MIDI_MODE_HINT
+
 __all__ = [
     "MODE_BUTTONS",
     "MODE_LABELS",
@@ -160,6 +162,9 @@ class RemoteScreen(ModalScreen[None]):
     }
     RemoteScreen .gap { width: 4; }
     RemoteScreen .mode { width: auto; height: auto; padding: 0 1; text-style: bold; }
+    RemoteScreen .mode-hint {
+        width: 78; height: auto; color: $text-muted; padding: 0 1;
+    }
     RemoteScreen .hint {
         width: auto; color: $text-muted; padding: 0 1; height: auto;
     }
@@ -252,6 +257,7 @@ class RemoteScreen(ModalScreen[None]):
                 classes="mode",
                 markup=False,
             )
+            yield Static(MIDI_MODE_HINT, classes="mode-hint", markup=False)
             yield Static(
                 "esc — close · arrows also work · m — mode · space or o+p — live mute",
                 classes="hint",

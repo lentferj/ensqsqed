@@ -453,9 +453,16 @@ Two MULTI rules are worth knowing, and both live on the unit:
 
 - **MIDI Mode=MULTI is a setting in the unit's System bank**, not a
   message this program can send. Set it on the unit; the screen says so
-  where it matters.
+  where it matters. The preset list, the MULTI and FX editors, and the
+  remote window carry the track-display hint.
 - **Never put a track on the base channel while Preset Prog is ON**, and
   give one track per channel — the lowest track number wins a channel.
+
+**In POLY or OMNI the panel shows only track 1.** Only track 1 runs in
+those modes, and the front-panel display shows just that track even when
+a preset has others on. Edits to tracks 2–8 still go through to the
+preset; switch the unit to MULTI to see them. That is the unit's display
+behaviour, not a lost edit.
 
 **What this deliberately does not do.** It does not decode the 21-byte
 global block or the trailing bytes of the ten 54-byte sequence blobs —

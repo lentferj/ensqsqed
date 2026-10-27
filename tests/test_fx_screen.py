@@ -850,6 +850,17 @@ class TestTheGateInTheScreen:
     def _note(screen) -> str:
         return str(screen.query_one(".note", Static).content)
 
+    async def test_the_screen_says_poly_and_omni_run_only_track_one(self):
+        preset = _preset()
+        screen = FxScreen(preset, on_apply=lambda p, d: None)
+        app = _Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            hint = str(screen.query_one(".mode-hint", Static).content)
+            assert "MIDI Mode must be MULTI" in hint
+            assert "POLY or OMNI" in hint
+            assert "only track 1 runs" in hint
+
     async def test_w_arms_and_locks_the_gate_the_app_checks(self):
         preset = _preset()
         gate = EditGate()

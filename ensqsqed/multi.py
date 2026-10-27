@@ -90,6 +90,7 @@ from textual.widgets import DataTable, Input, Label, Static
 
 from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
+from ensqsqed.mode_hint import MIDI_MODE_HINT
 from sq import banks
 from sq import messages as m
 from sq.bridge import (
@@ -948,6 +949,9 @@ class PresetListScreen(ModalScreen[Optional[int]]):
     }
     PresetListScreen DataTable { height: auto; }
     PresetListScreen .note { height: auto; color: $text-muted; padding-top: 1; }
+    PresetListScreen .mode-hint {
+        height: auto; color: $text-muted; padding-top: 1;
+    }
     PresetListScreen .hint { height: auto; color: $text-muted; }
     PresetListScreen .status { height: auto; color: $text; padding: 0 1; }
     """
@@ -1006,6 +1010,7 @@ class PresetListScreen(ModalScreen[Optional[int]]):
             yield Label("[b]Presets[/b]  [dim]· the eighty the unit holds[/dim]")
             if self._mode_note:
                 yield Static(_literal(self._mode_note), classes="note")
+            yield Static(_literal(MIDI_MODE_HINT), classes="mode-hint")
             if self._progress_note:
                 yield Static(_literal(self._progress_note), classes="note")
             yield DataTable(id=self.TABLE_ID, cursor_type="row", zebra_stripes=True)
@@ -1471,6 +1476,7 @@ class MultiScreen(ModalScreen[None]):
             "itself — this program cannot change it. In MULTI mode each "
             "track takes one MIDI channel, and the lowest track number "
             "wins a channel.[/dim]\n"
+            f"[dim]{MIDI_MODE_HINT}[/dim]\n"
             f"[dim]{state[0].upper()}{state[1:]} — {consequence}; {where}.[/dim]"
         )
 

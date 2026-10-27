@@ -762,6 +762,23 @@ class TestTheGateInTheScreen:
             assert gate.describe() == "write gate locked"
             assert "write gate locked" in self._note(screen).lower()
 
+    async def test_the_note_says_poly_and_omni_run_only_track_one(self):
+        preset = _preset()
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MultiScreen(
+                preset,
+                on_apply=lambda live, description: None,
+                on_undo=lambda count: None,
+                on_sound_picked=lambda index, number: None,
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            note = self._note(screen)
+            assert "MIDI Mode must be MULTI" in note
+            assert "POLY or OMNI" in note
+            assert "only track 1 runs" in note
+
     async def test_an_edit_after_w_goes_through(self):
         preset = _preset()
         applied = []
@@ -1840,6 +1857,17 @@ class TestTheColumnHelper:
 
 class TestThePresetListEdges:
     """The list, and the rows it cannot show."""
+
+    async def test_the_list_says_poly_and_omni_run_only_track_one(self):
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = PresetListScreen([(0, _preset().to_bytes())])
+            await app.push_screen(screen)
+            await pilot.pause()
+            hint = str(screen.query_one(".mode-hint", Static).content)
+            assert "MIDI Mode must be MULTI" in hint
+            assert "POLY or OMNI" in hint
+            assert "only track 1 runs" in hint
 
     async def test_the_list_says_where_it_came_from(self):
         app = _Host()

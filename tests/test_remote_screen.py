@@ -102,6 +102,18 @@ async def test_renders_entries_for_every_label() -> None:
             assert f"({entry.pc_key})" in rendered, entry.pc_key
 
 
+async def test_the_remote_says_poly_and_omni_run_only_track_one() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = RemoteScreen()
+        await app.push_screen(screen)
+        await pilot.pause()
+        hint = str(screen.query_one(".mode-hint", Static).content)
+        assert "MIDI Mode must be MULTI" in hint
+        assert "POLY or OMNI" in hint
+        assert "only track 1 runs" in hint
+
+
 async def test_pressing_the_system_key_sends_eleven() -> None:
     """The panel keys are never gated: pressing U sends System."""
     called: List[int] = []

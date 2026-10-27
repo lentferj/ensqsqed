@@ -91,6 +91,7 @@ from textual.widgets import DataTable, Input, Label, Static
 
 from ensqsqed.choices import ChoicePicker
 from ensqsqed.gate import EditGate
+from ensqsqed.mode_hint import MIDI_MODE_HINT
 from sq import presets
 from sq.presets import Effect, EffectParam, Preset
 from vinsynlib.keys import wrap_blocks
@@ -212,6 +213,7 @@ class FxScreen(ModalScreen[None]):
     }
     FxScreen DataTable { height: 1fr; }
     FxScreen .note { color: $text-muted; }
+    FxScreen .mode-hint { height: auto; color: $text-muted; }
     /* The refusal names the key that opens the gate, which does not fit
        on one line at this width; a fixed height clipped the remedy. */
     FxScreen .status { height: auto; padding: 0 1; }
@@ -303,6 +305,7 @@ class FxScreen(ModalScreen[None]):
         with Vertical():
             yield Label(self._title_text(), id="fx-title")
             yield Static(self._note_text(), classes="note")
+            yield Static(MIDI_MODE_HINT, classes="mode-hint", markup=False)
             yield Static(
                 "Effect changes are live. Store the preset by re-selecting "
                 "its slot from the multi window (ctrl+s). The unit keeps its "
