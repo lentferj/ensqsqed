@@ -25,6 +25,7 @@ RUFF      := $(PYTHON) -m ruff
 MYPY      := $(PYTHON) -m mypy
 VULTURE   := $(PYTHON) -m vulture
 PIP_AUDIT := $(PYTHON) -m pip_audit
+DEPTRY    := $(PYTHON) -m deptry
 DETECT    := $(PYTHON) -m detect_secrets
 DETECT_HOOK := $(PYTHON) -m detect_secrets.pre_commit_hook
 PRE_COMMIT  := $(PYTHON) -m pre_commit
@@ -126,7 +127,7 @@ audit-dead:
 	$(VULTURE) --min-confidence 80 $(VULTURE_SRC) $(WHITELIST)
 
 audit-deps:
-	$(VENV)/bin/deptry .
+	$(DEPTRY) .
 
 # NOTE: the check is detect-secrets-HOOK, not `scan --baseline`.
 # `detect-secrets scan --baseline <file>` does not check anything: in v1.5.0 it

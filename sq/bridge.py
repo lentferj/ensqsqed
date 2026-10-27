@@ -1002,7 +1002,11 @@ class PacedOut:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
-            time.sleep(min(remaining, 0.001))
+            # Leave the last two milliseconds to the spin: a timer with
+            # 10 ms or 15.6 ms granularity is longer than CHORD_GAP and
+            # would turn one chord into two gestures.
+            if remaining > 0.002:
+                time.sleep(min(remaining - 0.002, 0.001))
 
     def send_message(self, message) -> None:
         with self._lock:
@@ -1036,7 +1040,7 @@ class PacedOut:
                 self._sleep_until(deadline)
             for index, message in enumerate(messages):
                 if index:
-                    time.sleep(CHORD_GAP)
+                    self._sleep_until(time.monotonic() + CHORD_GAP)
                 self._port.send_message(message)
             self._last = time.monotonic()
 
