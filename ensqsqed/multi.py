@@ -85,6 +85,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
@@ -1539,8 +1540,18 @@ class MultiScreen(ModalScreen[None]):
             yield Static(wrap_blocks(KEY_HINTS_BLOCK, HINT_WIDTH), classes="hint")
 
     def on_mount(self) -> None:
-        self._build_table()
-        self.query_one(f"#{self.TABLE_ID}", DataTable).focus()
+        # Textual dispatches Mount before every child is guaranteed to be
+        # queryable on every platform.  Defer one refresh; if the table is
+        # still not there, try again on the timer rather than crashing the
+        # modal during startup.
+        self.call_after_refresh(self._mount_table)
+
+    def _mount_table(self) -> None:
+        try:
+            self._build_table()
+            self.query_one(f"#{self.TABLE_ID}", DataTable).focus()
+        except NoMatches:  # pragma: no cover - platform mount ordering
+            self.set_timer(0.01, self._mount_table)
 
     def _build_table(self) -> None:
         """The table, in the current view.

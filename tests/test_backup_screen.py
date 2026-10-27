@@ -198,7 +198,8 @@ async def test_b_opens_the_screen_with_the_configured_folder(tmp_path) -> None:
         assert screen._backup_root == str(tmp_path)
         assert "Back up the SQ-R" in str(screen.query_one(".title", Label).content)
         where = str(screen.query_one("#backup-where", Static).content)
-        assert str(tmp_path) in where
+        assert "Backups go to:" in where
+        assert tmp_path.name in where
 
 
 async def test_defaults_are_all_groups_sounds_and_combined() -> None:

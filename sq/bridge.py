@@ -989,12 +989,28 @@ class PacedOut:
         #: instrumentation: "slow" and "throttled" are not the same.
         self.throttled_seconds = 0.0
 
+    @staticmethod
+    def _sleep_until(deadline: float) -> None:
+        """Sleep to *deadline*, then hold the last fraction with a spin.
+
+        Windows' timer granularity can make ``time.sleep(0.002)`` return
+        early, so a paced sender that trusted sleep could put two frames
+        closer together than the configured gap.  The spin is only the
+        last few milliseconds.
+        """
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.001))
+
     def send_message(self, message) -> None:
         with self._lock:
-            wait = self._gap - (time.monotonic() - self._last)
-            if wait > 0:
-                self.throttled_seconds += wait
-                time.sleep(wait)
+            deadline = self._last + self._gap
+            now = time.monotonic()
+            if deadline > now:
+                self.throttled_seconds += deadline - now
+                self._sleep_until(deadline)
             self._port.send_message(message)
             self._last = time.monotonic()
 
@@ -1013,10 +1029,11 @@ class PacedOut:
         slip a frame between the chord's halves.
         """
         with self._lock:
-            wait = self._gap - (time.monotonic() - self._last)
-            if wait > 0:
-                self.throttled_seconds += wait
-                time.sleep(wait)
+            deadline = self._last + self._gap
+            now = time.monotonic()
+            if deadline > now:
+                self.throttled_seconds += deadline - now
+                self._sleep_until(deadline)
             for index, message in enumerate(messages):
                 if index:
                     time.sleep(CHORD_GAP)
