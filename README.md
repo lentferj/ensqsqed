@@ -347,7 +347,7 @@ starts that number, and `+`/`-` nudge it.
 front-panel store is Enter/Enter/Enter → *SAVED*; the app sends those
 three presses and then walks to the neighbouring slot only to read the
 stored bytes back, walks back and verifies the slot against the unit's
-edit buffer. `E` is not needed and is gone.
+edit buffer.
 
 **`ctrl+r` reloads from the unit.** It steps the selection through all
 80 presets (about a minute, audibly) and reselects the slot, so the
