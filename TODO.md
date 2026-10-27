@@ -65,6 +65,20 @@ question below is adjusted accordingly
   same automated store path — three Enter/Save presses plus the read-back
   verification — so a restore is one confirmed action, with the current
   effect/name limits and the Card A/B write limits stated in the result.
+- **Preset backup import is per-slot, not bulk.** A preset `.bin` is an
+  all-presets snapshot, not an importable preset bank. `I` and `sqcli
+  restore` handle sound banks; the protocol has no bulk preset upload —
+  the only preset write is one preset into the selected slot. Restoring one
+  preset is the store assist: open the MULTI editor, press `ctrl+shift+s`,
+  choose the backed-up slot, and confirm. It walks to that slot and sends
+  the preset; repeat for another slot. The backup currently writes
+  `internal_presets_*.bin`, while the store assist looks for
+  `<stamp>/all_presets_dump.bin`; align the export with the assist (or make
+  the assist accept the exported file directly). A bulk restore would mean
+  walking and sending all 80 slots, verifying each, and deciding what to do
+  with sequence data, names and the effect block; it is destructive, slow
+  and unverified. Decide whether to build that gated bulk path or keep the
+  documented per-slot route.
 - **Card layout and sound-only reads.** The browser currently treats CARDA
   and CARDB as two 80-sound banks. A card is not necessarily that: an MC-32
   can hold sounds or preset data, and an MC-64 can hold CARD A sounds,
