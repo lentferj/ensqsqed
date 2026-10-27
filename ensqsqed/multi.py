@@ -1541,17 +1541,16 @@ class MultiScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         # Textual dispatches Mount before every child is guaranteed to be
-        # queryable on every platform.  Defer one refresh; if the table is
-        # still not there, try again on the timer rather than crashing the
-        # modal during startup.
-        self.call_after_refresh(self._mount_table)
+        # queryable on every platform.  Try now (the normal path), and retry
+        # on a zero-delay timer only when the table really is not there yet.
+        self._mount_table()
 
     def _mount_table(self) -> None:
         try:
             self._build_table()
             self.query_one(f"#{self.TABLE_ID}", DataTable).focus()
         except NoMatches:  # pragma: no cover - platform mount ordering
-            self.set_timer(0.01, self._mount_table)
+            self.set_timer(0, self._mount_table)
 
     def _build_table(self) -> None:
         """The table, in the current view.
