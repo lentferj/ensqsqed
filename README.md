@@ -6,10 +6,12 @@
 A terminal browser for the **Ensoniq SQ-R Plus** — its 340 sounds, and
 the reason a program change on this machine is not a program change.
 
-Sibling to [rxved](../rxved) (Roland XV-2020), [kwsed](../kwsed) (Korg
-Wavestation SR), [p2ked](../p2ked) (E-MU Proteus 2000),
-[x5ded](../x5ded) (Korg X5D/X5DR) and [nanosyned](../nanosyned) (Alesis
-NanoSynth), and it follows their conventions.
+Sibling to the released [rxved](https://github.com/lentferj/rxved)
+(Roland XV-2020), [p2ked](https://github.com/lentferj/p2ked) (E-MU
+Proteus 2000) and [emorphed](https://github.com/lentferj/emorphed)
+(E-mu Morpheus), and to kwsed (Korg Wavestation SR), x5ded (Korg
+X5D/X5DR) and nanosyned (Alesis NanoSynth); it follows the family's
+conventions.
 
 ## ⚠️ Use at your own risk — back up first
 
