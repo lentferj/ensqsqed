@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-FileCopyrightText: Copyright (C) 2026  ensqsqed contributors
+#
+# ensqsqed's checks on every platform the project claims to run on.  The
+# matrix is the platforms rather than the Python versions: this program talks
+# to a MIDI port, so where it runs matters more than which interpreter it
+# runs under.
+
+name: checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # GitHub's Windows images do not ship GNU make, and `make check` is
+      # the one entry point CI and developers share.  The Makefile's recipes
+      # are POSIX sh, so SHELL points at Git Bash on Windows.
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+
+      - name: Point make at a POSIX shell (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "SHELL=C:/Program Files/Git/usr/bin/bash.exe" >> "$GITHUB_ENV"
+          make --version
+
+      # python-rtmidi has no cp313 wheel; on Linux, building it from source
+      # needs ALSA's headers.  macOS and Windows build against CoreMIDI and
+      # WinMM and need nothing here.
+      - name: Install ALSA headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Create the virtualenv
+        run: python -m venv .venv
+
+      - name: Install the project and the checks
+        shell: bash
+        run: make bootstrap
+
+      - name: make check
+        shell: bash
+        run: make check
+
+  # A change to .pre-commit-config.yaml can break commits on every platform
+  # while `make check` stays green.  This is the sibling projects' separate
+  # promise that the hooks and the pipeline agree.
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Create the virtualenv the mypy hook runs in
+        run: |
+          python -m venv .venv
+          make bootstrap
+
+      - name: Run every hook over every file
+        uses: pre-commit/action@v3.0.1

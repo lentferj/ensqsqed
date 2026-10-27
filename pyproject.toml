@@ -9,7 +9,12 @@ description = "A terminal browser for the Ensoniq SQ-R Plus"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-2.0-or-later" }
-dependencies = ["textual>=0.40", "python-rtmidi>=1.4", "vinsynlib>=0.4.2"]
+dependencies = [
+    "rich>=13",
+    "textual>=0.40",
+    "python-rtmidi>=1.4",
+    "vinsynlib>=0.4.2",
+]
 
 [project.optional-dependencies]
 tools = ["cairosvg"]

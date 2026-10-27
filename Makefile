@@ -14,15 +14,20 @@
 #   make check       all of the above, in order, stopping at the first failure
 
 VENV      := .venv
-PYTHON    := $(VENV)/bin/python
-PIP       := $(VENV)/bin/pip
-RUFF      := $(VENV)/bin/ruff
-MYPY      := $(VENV)/bin/mypy
-VULTURE   := $(VENV)/bin/vulture
-PIP_AUDIT := $(VENV)/bin/pip-audit
-DETECT    := $(VENV)/bin/detect-secrets
-DETECT_HOOK := $(VENV)/bin/detect-secrets-hook
-PRE_COMMIT  := $(VENV)/bin/pre-commit
+# Windows venvs put console scripts under Scripts; everything else uses
+# bin.  CI runs this Makefile on all three platforms, so the layout must
+# not be assumed to be POSIX.  `-m` module invocations below keep working
+# even when an exact-version tool is supplied by --system-site-packages.
+VENV_BIN  := $(shell if [ -x .venv/Scripts/python.exe ]; then echo .venv/Scripts; else echo .venv/bin; fi)
+PYTHON    := $(VENV_BIN)/python
+PIP       := $(PYTHON) -m pip
+RUFF      := $(PYTHON) -m ruff
+MYPY      := $(PYTHON) -m mypy
+VULTURE   := $(PYTHON) -m vulture
+PIP_AUDIT := $(PYTHON) -m pip_audit
+DETECT    := $(PYTHON) -m detect_secrets
+DETECT_HOOK := $(PYTHON) -m detect_secrets.pre_commit_hook
+PRE_COMMIT  := $(PYTHON) -m pre_commit
 
 # Scanned source. sq/data is the generated name catalog and is excluded by
 # ruff's extend-exclude and by detect-secrets' own filters.

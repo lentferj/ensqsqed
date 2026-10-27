@@ -712,7 +712,9 @@ make check            # ruff, mypy, pytest + coverage, pip-audit, vulture,
 ```
 
 `make help` lists the individual targets (`lint`, `format`, `typecheck`,
-`test`, `audit`). `make check` fails on the first problem. It passes on
+`test`, `audit`). GitHub Actions runs the same `make check` on Ubuntu,
+macOS and Windows for Python 3.11–3.13, with a separate job for the
+pre-commit hooks. `make check` fails on the first problem. It passes on
 the current tree because every pre-existing finding is baselined or
 ignored narrowly rather than switched off: see
 `docs/QUALITY_CHECKS.md` for what is suppressed, why, and the few items

@@ -22,7 +22,7 @@ from sq import lib
 from sq import messages as m
 
 
-def _record(name: str, payload_seed: bytes = b"") -> bytes:
+def _record(name: str) -> bytes:
     """An invented 204-byte record carrying ``name``."""
     record = bytearray(m.SOUND_BYTES)
     # Fill non-name bytes deterministically so reconstruction is checkable.
