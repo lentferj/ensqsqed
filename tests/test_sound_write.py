@@ -186,6 +186,15 @@ def test_mismatch_reported_in_diff_slots() -> None:
     assert result.diff_slots == (0,)
 
 
+def test_backup_sounds_concatenates_the_internal_records() -> None:
+    unit = _FakeUnit()
+    bridge = _device(unit)
+    data = bridge.backup_sounds("INT")
+    assert len(data) == banks.SOUNDS_PER_GROUP * m.SOUND_BYTES
+    assert data[: m.SOUND_BYTES] == unit.stored["INT"][0]
+    assert data[-m.SOUND_BYTES :] == unit.stored["INT"][79]
+
+
 def test_send_sound_current_sends_only_the_dump() -> None:
     unit = _FakeUnit()
     bridge = _device(unit)

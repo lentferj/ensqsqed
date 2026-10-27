@@ -510,14 +510,20 @@ slot's working preset; take the backup with no un-stored edit, or store
 first. Any restore of the all-presets dump must use the dump's slot
 table (`slot = (idx + 70) % 80` on this unit), not `presets_raw[slot]`.
 
-**The backup screen.** `b` opens it. Choose any combination of Internal,
-Card A and Card B; choose sounds, presets or all content; then choose
+**The backup screen.** `b` opens it. Backups land in
+`~/temp/sqr_backup` by default, or in the `backup_root` configured in
+`config.toml`; the screen names the folder it will use. Choose any
+combination of Internal (selected by default), Card A and Card B; choose
+sounds, presets or all content; then choose
 **One combined Internal dump when possible** or **Separate files per
 group and content**. A combined dump uses the single command-05 read for
 Internal and writes one `everything_<stamp>.syx`; separate writes
 `internal_sounds`, `internal_presets`, and the card files individually.
-Cards are read only when fitted and readable. `s` or `ctrl+s` starts the
-backup; `esc` or `q` leaves without reading or writing anything.
+Card sounds are read only when fitted; card preset data is not directly
+readable, so card backups are sound-only. `s` or `ctrl+s` starts the
+backup; `esc` or `q` leaves without reading or writing anything. A
+report window then lists each file and the reason for any failure, and
+stays open until you close it.
 
 **Local labels are backed up too.** A presets/all backup writes
 `preset_labels_<stamp>.json` beside the dump (the app's backup screen

@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Checkbox,
@@ -365,22 +365,42 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
     ) -> None:
         super().__init__()
         self._backup_root = backup_root
-        #: Every group starts chosen: a backup that silently omitted one
-        #: would be worse than one that takes a little longer.
-        self._selected_groups: set[str] = set(self.GROUP_BY_ID.values())
+        #: Internal is always present; cards are opt-in because an empty
+        #: slot makes an otherwise good backup end in a red failure.
+        self._selected_groups: set[str] = {"INT"}
         self._selected_content = "sounds"
         self._separate_files = False
+
+    def _backup_where(self) -> str:
+        """The backup folder in the shortest honest form."""
+        path = self._backup_root or cfg.DEFAULT_BACKUP_ROOT
+        home = os.path.expanduser("~")
+        if path == home:
+            return "~"
+        prefix = home + os.sep
+        if path.startswith(prefix):
+            return "~" + path[len(home) :]
+        return path
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Back up the SQ-R", classes="title")
+            yield Static(
+                f"Backups go to: {self._backup_where()}",
+                id="backup-where",
+                classes="note",
+                markup=False,
+            )
             yield Label("Groups", classes="label")
             for checkbox_id, label in self.GROUPS:
-                yield Checkbox(label, value=True, id=checkbox_id)
+                group = self.GROUP_BY_ID[checkbox_id]
+                yield Checkbox(
+                    label, value=group in self._selected_groups, id=checkbox_id
+                )
             yield Label("Content", classes="label")
             yield RadioSet(
                 RadioButton("Sounds", value=True),
-                RadioButton("Presets"),
+                RadioButton("Presets (Internal only)"),
                 RadioButton("All content"),
                 id="backup-content",
             )
@@ -391,8 +411,9 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
                 id="backup-files",
             )
             yield Static(
-                "Cards are read only when fitted and readable. Preset dumps "
-                "store the track/pile data, not the unit's own names or "
+                "Card sounds can be read when fitted; card preset data is not "
+                "directly readable, so card backups are sound-only. Preset "
+                "dumps store track/pile data, not the unit's own names or "
                 "effect block; local labels are copied beside them.",
                 classes="note",
             )
@@ -434,6 +455,9 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
         if not self._selected_groups:
             self._say("Choose at least one group.")
             return
+        if self._selected_content == "presets" and "INT" not in self._selected_groups:
+            self._say("Preset data is Internal-only; select Internal.")
+            return
         self.dismiss(
             {
                 "groups": self._selected_groups,
@@ -444,6 +468,83 @@ class BackupSelectionScreen(ModalScreen[Optional[Dict[str, Any]]]):
         )
 
     def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class BackupReportScreen(ModalScreen[None]):
+    """A running log of one backup, and its closing report.
+
+    The status line can only say the last thing.  A backup has several
+    requests, and the useful question after one is not "how many" but
+    "which one failed, and where did the rest go?"  This screen keeps that
+    answer on screen until the user closes it.
+    """
+
+    DEFAULT_CSS = """
+    BackupReportScreen { align: center middle; }
+    BackupReportScreen > Vertical {
+        width: 88; height: 80%; border: thick $accent;
+        background: $surface; padding: 1 2;
+    }
+    BackupReportScreen .title { text-style: bold; }
+    BackupReportScreen .note { height: auto; color: $text-muted; }
+    BackupReportScreen .status { height: auto; color: $text; }
+    BackupReportScreen #backup-scroll { height: 1fr; }
+    BackupReportScreen #backup-log { height: auto; }
+    BackupReportScreen .hint { height: auto; color: $text-muted; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("q", "close", "Close"),
+    ]
+
+    def __init__(self, backup_root: str) -> None:
+        super().__init__()
+        self._backup_root = backup_root
+        self._lines: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Backup report", classes="title")
+            yield Static(f"Folder: {self._backup_root}", classes="note", markup=False)
+            yield Static("Starting…", id="backup-current", classes="status")
+            with VerticalScroll(id="backup-scroll"):
+                yield Static("", id="backup-log", markup=False)
+            yield Static("esc or q — close after the report", classes="hint")
+
+    def set_current(self, message: str) -> None:
+        try:
+            self.query_one("#backup-current", Static).update(message)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+
+    def add_result(self, ok: bool, label: str, detail: str = "") -> None:
+        line = ("OK      " if ok else "FAILED  ") + label
+        if detail:
+            line += "\n        " + detail
+        self._lines.append(line)
+        try:
+            self.query_one("#backup-log", Static).update("\n\n".join(self._lines))
+            self.query_one("#backup-scroll", VerticalScroll).scroll_end(animate=False)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+
+    def add_warning(self, label: str, detail: str = "") -> None:
+        line = "WARN    " + label
+        if detail:
+            line += "\n        " + detail
+        self._lines.append(line)
+        try:
+            self.query_one("#backup-log", Static).update("\n\n".join(self._lines))
+            self.query_one("#backup-scroll", VerticalScroll).scroll_end(animate=False)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+
+    def finish(self, summary: str) -> None:
+        self.set_current(summary)
+
+    def action_close(self) -> None:
         self.dismiss(None)
 
 
@@ -856,6 +957,8 @@ class EnsqsqedApp(App):
         self._import_autoplay_preview = False
         #: The modal that covers a long bank read or write.
         self._wait_screen: Optional["WaitScreen"] = None
+        #: The running backup report, while one is on screen.
+        self._backup_report: Optional["BackupReportScreen"] = None
         if self._config_path is not None:
             ui_state = cfg.load_ui_state(self._config_path)
             if "import_folder" in ui_state:
@@ -934,7 +1037,10 @@ class EnsqsqedApp(App):
         and ``backup_root`` when the user confirms.
         """
         if result is None:
-            self.notify_status("backup cancelled", refused=True)
+            # A deliberate cancel is not a refusal.  Clearing the line
+            # also keeps the red class from outliving the screen: opening
+            # the preset list or a modal does not necessarily replace it.
+            self.notify_status("")
             return
 
         groups: set[str] = result["groups"]
@@ -943,6 +1049,9 @@ class EnsqsqedApp(App):
         backup_root: str = result.get("backup_root") or cfg.DEFAULT_BACKUP_ROOT
 
         self.notify_status(f"backup starting: groups={groups}, content={content}")
+        report = BackupReportScreen(backup_root)
+        self._backup_report = report
+        self.push_screen(report, self._backup_report_closed)
 
         # Run the backup in a worker thread
         self.run_worker(
@@ -951,6 +1060,30 @@ class EnsqsqedApp(App):
             ),
             thread=True,
         )
+
+    def _backup_report_closed(self, _result=None) -> None:
+        """Forget a report the user has closed."""
+        self._backup_report = None
+
+    def _backup_say(self, message: str) -> None:
+        """Update the running report's current operation."""
+        if self._backup_report is not None:
+            self._backup_report.set_current(message)
+
+    def _backup_result(self, ok: bool, label: str, detail: str = "") -> None:
+        """Add one finished operation to the report."""
+        if self._backup_report is not None:
+            self._backup_report.add_result(ok, label, detail)
+
+    def _backup_warning(self, label: str, detail: str = "") -> None:
+        """Add a non-fatal fallback to the report."""
+        if self._backup_report is not None:
+            self._backup_report.add_warning(label, detail)
+
+    def _backup_finish(self, summary: str) -> None:
+        """Close the report with its final count."""
+        if self._backup_report is not None:
+            self._backup_report.finish(summary)
 
     def _do_backup(  # noqa: C901
         self,
@@ -969,10 +1102,26 @@ class EnsqsqedApp(App):
         import time
 
         # Ensure backup directory exists
-        os.makedirs(backup_root, exist_ok=True)
+        try:
+            os.makedirs(backup_root, exist_ok=True)
+        except OSError as exc:
+            self._call_from_thread(
+                self._backup_result, False, "Backup folder", str(exc)
+            )
+            self._call_from_thread(self._backup_finish, f"backup failed: {exc}")
+            self._call_from_thread(
+                self.notify_status, f"backup failed: {exc}", refused=True
+            )
+            return
 
         bridge = self.device  # type: ignore[attr-defined]
         if bridge is None:
+            self._call_from_thread(
+                self._backup_result, False, "Backup", "no device connected"
+            )
+            self._call_from_thread(
+                self._backup_finish, "backup failed: no device connected"
+            )
             self._call_from_thread(
                 self.notify_status, "no device connected", refused=True
             )
@@ -991,6 +1140,10 @@ class EnsqsqedApp(App):
                 and hasattr(bridge, "read_everything")
             ):
                 try:
+                    self._call_from_thread(
+                        self._backup_say,
+                        "Reading Internal sounds and presets (one command-05 dump)…",
+                    )
                     everything = bridge.read_everything()
                     filename = os.path.join(backup_root, f"everything_{stamp}.syx")
                     with open(filename, "wb") as f:
@@ -1003,8 +1156,19 @@ class EnsqsqedApp(App):
                         f"{filename} ({len(everything.wire())} bytes, "
                         f"one command-05 dump)",
                     )
+                    self._call_from_thread(
+                        self._backup_result,
+                        True,
+                        "Internal sounds + presets",
+                        f"{filename} ({len(everything.wire())} bytes, "
+                        f"one command-05 dump)",
+                    )
                 except Exception as exc:
-                    failed += 1
+                    self._call_from_thread(
+                        self._backup_warning,
+                        "Combined Internal dump",
+                        f"{exc}; falling back to separate reads",
+                    )
                     self._call_from_thread(
                         self.notify_status,
                         f"full dump failed ({exc}); falling back to separate reads",
@@ -1013,6 +1177,7 @@ class EnsqsqedApp(App):
             if "INT" in groups and not int_done:
                 if content in ("sounds", "all"):
                     # Backup internal sounds
+                    self._call_from_thread(self._backup_say, "Reading Internal sounds…")
                     data = bridge.backup_sounds("INT")
                     filename = os.path.join(backup_root, f"internal_sounds_{stamp}.bin")
                     with open(filename, "wb") as f:
@@ -1022,8 +1187,17 @@ class EnsqsqedApp(App):
                         self.notify_progress,
                         f"backed up INT sounds to {filename} ({len(data)} bytes)",
                     )
+                    self._call_from_thread(
+                        self._backup_result,
+                        True,
+                        "Internal sounds",
+                        f"{filename} ({len(data)} bytes)",
+                    )
                 if content in ("presets", "all"):
                     # Backup internal presets
+                    self._call_from_thread(
+                        self._backup_say, "Reading Internal presets…"
+                    )
                     try:
                         data = bridge.backup_presets("INT")
                         filename = os.path.join(
@@ -1036,61 +1210,80 @@ class EnsqsqedApp(App):
                             self.notify_progress,
                             f"backed up INT presets to {filename} ({len(data)} bytes)",
                         )
+                        self._call_from_thread(
+                            self._backup_result,
+                            True,
+                            "Internal presets",
+                            f"{filename} ({len(data)} bytes)",
+                        )
                     except ValueError as e:
                         failed += 1
+                        self._call_from_thread(
+                            self._backup_result,
+                            False,
+                            "Internal presets",
+                            str(e),
+                        )
                         self._call_from_thread(
                             self.notify_status,
                             f"failed to backup INT presets: {e}",
                             refused=True,
                         )
             for group in groups:
-                if group in ("CARDA", "CARDB"):
-                    if content in ("sounds", "all"):
-                        try:
-                            data = bridge.backup_sounds(group)
-                            filename = os.path.join(
-                                backup_root, f"{group.lower()}_sounds_{stamp}.bin"
-                            )
-                            with open(filename, "wb") as f:
-                                f.write(data)
-                            successful += 1
-                            self._call_from_thread(
-                                self.notify_progress,
-                                f"backed up {group} sounds to {filename} "
-                                f"({len(data)} bytes)",
-                            )
-                        except (ValueError, Exception) as e:
-                            failed += 1
-                            self._call_from_thread(
-                                self.notify_status,
-                                f"failed to backup {group} sounds: {e}",
-                                refused=True,
-                            )
-                    if content in ("presets", "all"):
-                        try:
-                            data = bridge.backup_presets(group)
-                            filename = os.path.join(
-                                backup_root, f"{group.lower()}_presets_{stamp}.bin"
-                            )
-                            with open(filename, "wb") as f:
-                                f.write(data)
-                            successful += 1
-                            self._call_from_thread(
-                                self.notify_progress,
-                                f"backed up {group} presets to {filename} "
-                                f"({len(data)} bytes)",
-                            )
-                        except ValueError as e:
-                            failed += 1
-                            self._call_from_thread(
-                                self.notify_status,
-                                f"failed to backup {group} presets: {e}",
-                                refused=True,
-                            )
+                if group not in ("CARDA", "CARDB") or content not in (
+                    "sounds",
+                    "all",
+                ):
+                    continue
+                self._call_from_thread(self._backup_say, f"Reading {group} sounds…")
+                try:
+                    data = bridge.backup_sounds(group)
+                    filename = os.path.join(
+                        backup_root, f"{group.lower()}_sounds_{stamp}.bin"
+                    )
+                    with open(filename, "wb") as f:
+                        f.write(data)
+                    successful += 1
+                    self._call_from_thread(
+                        self.notify_progress,
+                        f"backed up {group} sounds to {filename} ({len(data)} bytes)",
+                    )
+                    self._call_from_thread(
+                        self._backup_result,
+                        True,
+                        f"{group} sounds",
+                        f"{filename} ({len(data)} bytes)",
+                    )
+                except (ValueError, Exception) as e:
+                    failed += 1
+                    self._call_from_thread(
+                        self._backup_result,
+                        False,
+                        f"{group} sounds",
+                        str(e),
+                    )
+                    self._call_from_thread(
+                        self.notify_status,
+                        f"failed to backup {group} sounds: {e}",
+                        refused=True,
+                    )
+            # Card preset data has no direct dump path; it is copied back
+            # to Internal on the unit first.  Do not ask
+            # backup_presets(CARDA/B) and turn the documented limitation
+            # into a failed backup entry.
         except Exception as e:
             failed += 1
+            self._call_from_thread(self._backup_result, False, "Backup", str(e))
             self._call_from_thread(
                 self.notify_status, f"backup error: {e}", refused=True
+            )
+
+        if content in ("presets", "all") and groups & {"CARDA", "CARDB"}:
+            self._call_from_thread(
+                self._backup_warning,
+                "Card presets skipped",
+                "card preset data is not directly readable; only card sounds "
+                "were backed up",
             )
 
         # The app's local preset labels are user data too, and they are
@@ -1106,9 +1299,16 @@ class EnsqsqedApp(App):
                     self.notify_progress,
                     f"backed up {len(labels)} local preset label(s) to {labels_file}",
                 )
+                self._call_from_thread(
+                    self._backup_result,
+                    True,
+                    "Local preset labels",
+                    f"{labels_file} ({len(labels)} label(s))",
+                )
 
         # Summary
         summary = f"backup complete: {successful} success, {failed} failed"
+        self._call_from_thread(self._backup_finish, f"{summary}\nFolder: {backup_root}")
         self._call_from_thread(self.notify_status, summary)
 
     def compose(self) -> ComposeResult:
@@ -5581,9 +5781,11 @@ Importing sounds
 Backing up and restoring
 
   `b` opens the backup screen: choose groups, content (sounds/presets/all)
-  and combined or separate files. `s` or `ctrl+s` starts; `esc`/`q` leaves
-  without reading. The app writes under the configured backup folder and
-  copies the local preset labels.
+  and combined or separate files. Card sounds are read only when fitted;
+  card preset data is not directly readable, so card backups are
+  sound-only. `s` or `ctrl+s` starts; `esc`/`q` leaves without reading. A
+  report window lists each file and any failure reason. The app writes
+  under the configured backup folder and copies the local preset labels.
 
   Restore is the command line, not a key in this window:
   `sqcli restore FILE --yes` writes a backup back; it asks for --yes and

@@ -1618,8 +1618,8 @@ class SqBridge:
                     number * m.SOUND_BYTES_PACKED : (number + 1) * m.SOUND_BYTES_PACKED
                 ]
                 sounds.append(m.from_nibbles(chunk))
-            # Concatenate all sounds in slot order
-            return bytes(sounds[i] for i in range(banks.SOUNDS_PER_GROUP))
+            # Concatenate all 204-byte records in slot order.
+            return b"".join(sounds)
         elif group_id in ("CARDA", "CARDB"):
             out = bytearray()
             for slot_number in range(banks.SOUNDS_PER_GROUP):

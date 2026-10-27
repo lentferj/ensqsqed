@@ -42,6 +42,7 @@ from ensqsqed.multi import (  # noqa: E402
     SoundPickerScreen,
 )
 from sq import catalog as cat  # noqa: E402
+from sq import config as cfg  # noqa: E402
 from sq import favorites as fav  # noqa: E402
 from sq.bridge import (  # noqa: E402
     AllPresetsDump,
@@ -212,7 +213,7 @@ def make_app(tmp: Path, device: Any) -> EnsqsqedApp:
         config_path=str(tmp / "config" / "config.toml"),
         read_names_at_startup=True,
         allow_write=False,
-        backup_root=str(tmp / "backups"),
+        backup_root=cfg.DEFAULT_BACKUP_ROOT,
     )
 
 
