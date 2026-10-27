@@ -54,7 +54,8 @@ gate is locked.  ``escape`` and ``q`` answer ``None``.
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+import contextlib
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -98,12 +99,17 @@ GATE_NOTE_ID = "gate-note"
 #: the unit's SAVE SOUND dialog (three Enter/Save presses).
 STORE_CHECKBOX_ID = "store-permanently"
 
+#: Opt-in preview: load the focused sound into the edit buffer, and play
+#: a short note phrase after the load.  Both are off by default.
+AUTOLOAD_CHECKBOX_ID = "auto-load-preview"
+AUTOPLAY_CHECKBOX_ID = "autoplay-preview"
+
 #: The target cell's style: the one value the user is typing, drawn so
 #: it stands apart from the row it belongs to.
 TARGET_STYLE = "bold yellow"
 
 #: What the bottom line says the keys do.
-HINT = "⏎ assign · 0-9 type · w gate · ctrl+s start · esc close"
+HINT = "⏎ assign · 0-9 type · l preview · w gate · ctrl+s start · esc close"
 
 
 def _literal(text: str) -> str:
@@ -158,6 +164,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
     /* The write gate's state, on this screen's own line. */
     SingleImportScreen .gate { height: auto; color: $text-muted; }
     SingleImportScreen Checkbox { height: auto; }
+    SingleImportScreen .prelisten { height: auto; color: $text-muted; }
     SingleImportScreen .hint { height: auto; color: $text-muted; }
     """
 
@@ -169,6 +176,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         # by closing the map, throwing the assignments away.
         Binding("w", "toggle_gate", "Write gate"),
         Binding("ctrl+s", "start_import", "Start import"),
+        Binding("l", "load_preview", "Load preview", show=False),
         # Enter is NOT bound here.  A focused DataTable consumes it for
         # its own row selection, so it arrives as RowSelected instead;
         # see on_data_table_row_selected.
@@ -190,6 +198,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         target: str,
         listing: Sequence[Tuple[int, str]],
         on_bank_change: Optional[Callable[[str], None]] = None,
+        on_preview: Optional[Callable[[int, int, bool], None]] = None,
         gate: Optional[EditGate] = None,
     ) -> None:
         super().__init__()
@@ -209,6 +218,10 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: calls :meth:`set_bank` with fresh rows.  ``None`` means there
         #: is nobody to ask, and ``b`` clears the stale listing instead.
         self._on_bank_change = on_bank_change
+        #: ``on_preview(source_index, target_slot, autoplay)`` -- the app
+        #: owns the send and the optional note phrase.  ``None`` means
+        #: this screen has no device path and says so.
+        self._on_preview = on_preview
         #: The app's own gate, when there is an app.  Held rather than
         #: copied so ``w`` toggles the object the write path checks, and
         #: the note line can be redrawn from it.
@@ -221,6 +234,12 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: reads this before the screen is gone; default is edit-buffer
         #: only, the non-destructive path.
         self._store_permanently = False
+        #: Preview settings; both are opt-in.
+        self._autoload_preview = False
+        self._autoplay_preview = False
+        #: Pending debounce timer for auto-load, and the row last loaded.
+        self._preview_timer: Optional[Any] = None
+        self._previewed_index: Optional[int] = None
 
     # --- reading -------------------------------------------------------
 
@@ -240,9 +259,23 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         return f"Target bank: {label}  ·  b changes it"
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Remember the permanent-store choice for the app callback."""
+        """Remember the opt-in choices for the app callback."""
         if event.checkbox.id == STORE_CHECKBOX_ID:
             self._store_permanently = bool(event.value)
+        elif event.checkbox.id == AUTOLOAD_CHECKBOX_ID:
+            self._autoload_preview = bool(event.value)
+            if not self._autoload_preview:
+                self._cancel_preview_timer()
+        elif event.checkbox.id == AUTOPLAY_CHECKBOX_ID:
+            self._autoplay_preview = bool(event.value)
+
+    @property
+    def autoload_preview(self) -> bool:
+        return self._autoload_preview
+
+    @property
+    def autoplay_preview(self) -> bool:
+        return self._autoplay_preview
 
     @property
     def store_permanently(self) -> bool:
@@ -305,6 +338,22 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
                 "Store permanently (SAVE SOUND x3)",
                 value=False,
                 id=STORE_CHECKBOX_ID,
+            )
+            yield Checkbox(
+                "Auto-load focused sound for preview",
+                value=False,
+                id=AUTOLOAD_CHECKBOX_ID,
+            )
+            yield Checkbox(
+                "Autoplay notes after preview load",
+                value=False,
+                id=AUTOPLAY_CHECKBOX_ID,
+            )
+            yield Static(
+                "Auto-rehearsal needs the unit set to POLY or OMNI on its "
+                "System MIDI base channel, not MULTI. That setting is on "
+                "the unit; the app cannot read or change it.",
+                classes="prelisten",
             )
             # The screen's own status line.  The app's `#status` is the
             # dimmed backdrop behind this modal, which is exactly where
@@ -369,6 +418,60 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         self._fill_target()
 
     # --- assigning a target slot ---------------------------------------
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        """Auto-load the focused source row after a short debounce."""
+        if event.data_table.id != SOURCE_TABLE_ID:
+            return
+        self._cancel_preview_timer()
+        if not self._autoload_preview:
+            return
+        index = self._index_at(event.data_table.cursor_row)
+        if index is None or index not in self._assignments:
+            return
+        self._preview_timer = self.set_timer(
+            0.25, lambda: self._load_preview_index(index)
+        )
+
+    def _cancel_preview_timer(self) -> None:
+        if self._preview_timer is not None:
+            with contextlib.suppress(Exception):
+                self._preview_timer.stop()
+            self._preview_timer = None
+
+    def action_load_preview(self) -> None:
+        """``l``: load the focused source sound into the edit buffer."""
+        try:
+            table = self.query_one(f"#{SOURCE_TABLE_ID}", DataTable)
+        except Exception:  # pragma: no cover - the screen closed under us
+            return
+        index = self._index_at(table.cursor_row)
+        if index is not None:
+            self._cancel_preview_timer()
+            self._load_preview_index(index)
+
+    def _load_preview_index(self, index: int) -> None:
+        self._preview_timer = None
+        if self._on_preview is None:
+            self.say("preview is not wired", refused=True)
+            return
+        slot = self._assignments.get(index)
+        if slot is None:
+            self.say("assign a target slot first — the preview uses it", refused=True)
+            return
+        self.say("loading preview into the Edit Sound buffer…")
+        self._on_preview(index, slot, self._autoplay_preview)
+
+    def preview_loaded(self, index: int, message: str) -> None:
+        """The app reports a successful preview load (and autoplay)."""
+        self._previewed_index = index
+        self.say(message)
+
+    def preview_failed(self, message: str) -> None:
+        self.say(message, refused=True)
+
+    def on_unmount(self) -> None:
+        self._cancel_preview_timer()
 
     def on_data_table_row_selected(self, event) -> None:
         """``⏎`` on a source row: ask for its target slot.

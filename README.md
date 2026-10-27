@@ -543,7 +543,11 @@ covered by a "please wait" screen.
   digit) asks for a target slot from `00` to `79`, and target slots must
   be unique — a duplicate or out-of-range slot is refused with a
   sentence and nothing is written. `ctrl+s` starts the import. Slots you
-  do not assign are left alone.
+  do not assign are left alone. `l` previews the focused sound in the
+  **Edit Sound buffer** without storing it; **Auto-load on focus** and
+  **Autoplay after preview load** are opt-in. For auto-rehearsal, set the
+  unit to **POLY or OMNI on its System MIDI base channel, not MULTI**;
+  that is a unit setting, not an app setting.
 
 **Cards are copied on the unit.** To put a bank on Card A or Card B,
 import or restore it into Internal first, make a current Internal backup,

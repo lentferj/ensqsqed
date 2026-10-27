@@ -723,6 +723,8 @@ class EnsqsqedApp(App):
         #: that rereads the bank after a write reports back through this,
         #: and a screen that has already closed is ``None``.
         self._single_import_screen: Optional[SingleImportScreen] = None
+        #: The source behind the open single-sound map, for preview sends.
+        self._single_import_source: Optional[importer.ImportSource] = None
         self._active_editor: Optional[EditorScreen] = None
         self._previous_editor: Optional[EditorScreen] = None
         #: The remote window's press queue (the wire is paced, so bursts
@@ -4787,13 +4789,82 @@ class EnsqsqedApp(App):
             target=target,
             listing=sorted((names or {}).items()),
             on_bank_change=self._single_bank_change,
+            on_preview=self._single_preview,
             gate=self._gate,
         )
         self._single_import_screen = screen
+        self._single_import_source = source
         self.push_screen(
             screen,
             lambda result: self._single_start(source, result, screen.store_permanently),
         )
+
+    def _single_preview(self, index: int, slot: int, autoplay: bool) -> None:
+        """Load one source sound into the edit buffer, optionally audition it."""
+        source = self._single_import_source
+        screen = self._single_import_screen
+        if source is None or screen is None:
+            return
+        raw = next((sound.raw for sound in source.sounds if sound.index == index), None)
+        if raw is None:
+            screen.preview_failed("preview: that source sound is gone")
+            return
+        if self._busy or not self._exchange.acquire(blocking=False):
+            screen.preview_failed("preview: busy")
+            return
+        self._single_preview_worker(index, slot, raw, autoplay)
+
+    @work(thread=True)
+    def _single_preview_worker(
+        self, index: int, slot: int, raw: bytes, autoplay: bool
+    ) -> None:
+        """**MIDI only** -- edit-buffer send, optional note phrase."""
+        failure: Optional[BaseException] = None
+        autoplay_failure: Optional[BaseException] = None
+        try:
+            with self._busy_gate, self._lock:
+                self.device.send_sound_slots("INT", {slot: raw}, verify=False)
+                time.sleep(PRESET_SETTLE)
+                self.device.read_current_sound()
+                if autoplay:
+                    if hasattr(self.device, "audition_notes"):
+                        self.device.audition_notes()
+                    else:
+                        autoplay_failure = RuntimeError("this device has no note path")
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+        finally:
+            self._exchange.release()
+        self._call_from_thread(
+            self._single_preview_done,
+            index,
+            slot,
+            autoplay,
+            failure,
+            autoplay_failure,
+        )
+
+    def _single_preview_done(
+        self,
+        index: int,
+        slot: int,
+        autoplay: bool,
+        failure: Optional[BaseException],
+        autoplay_failure: Optional[BaseException],
+    ) -> None:
+        screen = self._single_import_screen
+        if screen is None:
+            return
+        if failure is not None:
+            screen.preview_failed(f"preview: {failure}")
+            return
+        message = f"P{slot:02d} preview loaded — edit buffer only, not stored"
+        if autoplay:
+            if autoplay_failure is not None:
+                message += f"; autoplay failed: {autoplay_failure}"
+            else:
+                message += "; notes played"
+        screen.preview_loaded(index, message)
 
     def _single_bank_change(self, target: str) -> None:
         """The screen's ``b``: read the newly chosen bank in a worker."""
@@ -4841,6 +4912,7 @@ class EnsqsqedApp(App):
     ) -> None:
         """The map answered: turn it into a slot map and ask to write."""
         self._single_import_screen = None
+        self._single_import_source = None
         if result is None:
             self._reopen_import_picker()
             return
@@ -5126,9 +5198,11 @@ class EnsqsqedApp(App):
             target=target,
             listing=sorted((names or {}).items()),
             on_bank_change=self._single_bank_change,
+            on_preview=self._single_preview,
             gate=self._gate,
         )
         self._single_import_screen = screen
+        self._single_import_source = source
         self.push_screen(
             screen,
             lambda result: self._single_start(source, result, screen.store_permanently),
@@ -5397,7 +5471,11 @@ Importing sounds
   same SysEx -- and writes it into Internal (RAM). "Whole bank" previews
   all eighty sounds and replaces Internal after two confirmations.
   "Single sounds" opens a two-pane map: assign a target slot (00-79) to
-  any number of the file's sounds, then ctrl+s.
+  any number of the file's sounds, then ctrl+s. `l` previews the focused
+  sound in the Edit Sound buffer without storing it; auto-load and
+  autoplay are opt-in. For auto-rehearsal the unit must be in POLY or
+  OMNI on its System MIDI base channel, not MULTI; that is set on the
+  unit, not by this app.
 
   Every write needs the write gate armed (`w`), and both flows ask twice.
   Internal RAM is read back and verified. Cards are not SysEx write

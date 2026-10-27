@@ -30,7 +30,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Checkbox, DataTable, Input, Label, Static
 
 from ensqsqed.gate import EditGate
-from ensqsqed.import_single import STORE_CHECKBOX_ID, SingleImportScreen
+from ensqsqed.import_single import (
+    AUTOLOAD_CHECKBOX_ID,
+    AUTOPLAY_CHECKBOX_ID,
+    STORE_CHECKBOX_ID,
+    SingleImportScreen,
+)
 from ensqsqed.multi import NumberPrompt
 from vinsynlib.ui.modals import ChoiceScreen
 
@@ -56,6 +61,7 @@ def _screen(
     listing: Optional[List[Tuple[int, str]]] = None,
     target: str = "INT",
     on_bank_change: Optional[Callable[[str], None]] = None,
+    on_preview: Optional[Callable[[int, int, bool], None]] = None,
     gate: Optional[EditGate] = None,
 ) -> SingleImportScreen:
     return SingleImportScreen(
@@ -65,6 +71,7 @@ def _screen(
         target=target,
         listing=_listing() if listing is None else listing,
         on_bank_change=on_bank_change,
+        on_preview=on_preview,
         gate=gate,
     )
 
@@ -296,6 +303,70 @@ async def test_the_permanent_store_checkbox_is_off_by_default_and_opt_in() -> No
         checkbox.value = True
         await pilot.pause()
         assert screen.store_permanently is True
+
+
+async def test_manual_preview_loads_the_assigned_slot() -> None:
+    calls = []
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen(on_preview=lambda i, s, a: calls.append((i, s, a)))
+        await app.push_screen(screen)
+        await pilot.pause()
+        table = screen.query_one("#source-table", DataTable)
+        await _assign(pilot, table, 0, "05")
+        await pilot.press("l")
+        await pilot.pause()
+        assert calls == [(0, 5, False)]
+        assert "loading preview" in _status(screen)
+
+
+async def test_preview_refuses_without_a_target_slot() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen(on_preview=lambda i, s, a: None)
+        await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert "assign a target slot first" in _status(screen)
+
+
+async def test_auto_load_and_autoplay_are_opt_in() -> None:
+    calls = []
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen(on_preview=lambda i, s, a: calls.append((i, s, a)))
+        await app.push_screen(screen)
+        await pilot.pause()
+        auto = screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox)
+        play = screen.query_one(f"#{AUTOPLAY_CHECKBOX_ID}", Checkbox)
+        assert auto.value is False and play.value is False
+        auto.value = True
+        play.value = True
+        await pilot.pause()
+        table = screen.query_one("#source-table", DataTable)
+        await _assign(pilot, table, 0, "05")
+        await _assign(pilot, table, 1, "06")
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+        table.move_cursor(row=1)
+        await pilot.pause(0.3)
+        await pilot.pause()
+        assert calls == [(1, 6, True)]
+
+
+async def test_auto_rehearsal_hint_names_poly_omni_and_multi() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen()
+        await app.push_screen(screen)
+        await pilot.pause()
+        hint = screen.query_one(".prelisten", Static)
+        text = str(hint.content)
+        assert "POLY" in text and "OMNI" in text
+        assert "MULTI" in text
+        assert "base channel" in text
 
 
 async def test_a_bracket_in_a_name_is_literal() -> None:

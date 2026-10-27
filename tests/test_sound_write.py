@@ -186,6 +186,18 @@ def test_mismatch_reported_in_diff_slots() -> None:
     assert result.diff_slots == (0,)
 
 
+def test_audition_notes_ends_with_note_offs_and_all_notes_off(monkeypatch) -> None:
+    unit = _FakeUnit()
+    bridge = _device(unit)
+    monkeypatch.setattr(b.time, "sleep", lambda _seconds: None)
+    bridge.audition_notes(notes=(60, 64), hold=0.01, gap=0.01)
+    messages = [bytes(message) for message in bridge._out._port.sent]
+    assert bytes([0x90, 60, 100]) in messages
+    assert bytes([0x80, 60, 0]) in messages
+    assert bytes([0x80, 64, 0]) in messages
+    assert messages[-1] == bytes([0xB0, 123, 0])
+
+
 def test_store_sound_slots_presses_enter_save_three_times(monkeypatch) -> None:
     unit = _FakeUnit()
     bridge = _device(unit)

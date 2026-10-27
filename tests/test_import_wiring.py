@@ -275,6 +275,49 @@ class TestSingleSoundImport:
             assert target_table.get_cell("5", "name") == source.sounds[0].name
             assert "the pane was reread" in _status(app)
 
+    async def test_manual_preview_sends_the_focused_sound_without_storing(
+        self, tmp_path: Path
+    ):
+        path = _write_dump(tmp_path)
+        source = importer.read_import(str(path))
+        demo = DemoDevice()
+        sends = []
+        stores = []
+
+        def send(group, writes, verify=True):
+            sends.append((group, dict(writes)))
+            return SimpleNamespace(verified=False, diff_slots=())
+
+        def store(group, writes):
+            stores.append((group, dict(writes)))
+            return SimpleNamespace(verified=True, diff_slots=())
+
+        demo.send_sound_slots = send
+        demo.store_sound_slots = store
+        app = _app(demo)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            app._import_folder = str(tmp_path)
+            await _choose_kind(app, pilot, 1)
+            await _pick_file(app, pilot, path)
+            assert await _wait(
+                lambda: isinstance(app.screen, SingleImportScreen), pilot
+            )
+            screen = app.screen
+            assert isinstance(screen, SingleImportScreen)
+            await _assign(pilot, screen, 0, "05")
+            await pilot.press("l")
+
+            def preview_status():
+                return str(screen.query_one(".status", Static).content)
+
+            assert await _wait(lambda: "preview loaded" in preview_status(), pilot)
+            assert sends == [("INT", {5: source.sounds[0].raw})]
+            assert stores == []
+            assert "not stored" in preview_status()
+
     async def test_the_permanent_store_option_calls_the_store_primitive(
         self, tmp_path: Path
     ):

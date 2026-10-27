@@ -65,27 +65,10 @@ question below is adjusted accordingly
   same automated store path — three Enter/Save presses plus the read-back
   verification — so a restore is one confirmed action, with the current
   effect/name limits and the Card A/B write limits stated in the result.
-- **Pre-listen while importing single sounds.** A Single Sound Dump
-  already loads the selected Internal slot's **Edit Sound buffer**: the
-  sound is playable immediately, and the stored bank is not changed until
-  the panel's SAVE SOUND. That is exactly the preview we want; no preset
-  scratch-slot dance is involved. The single-sound import list should let
-  the user hear the focused sound before assigning/writing anything
-  permanently. Three pieces, all opt-in except the manual action:
-  a) **Auto-load on focus** — send the focused sound to the Edit Sound
-     buffer as the cursor moves, debounced so a scroll does not flood the
-     wire. Off by default.
-  b) **Manual load** — a key that sends the focused sound to the Edit
-     Sound buffer on demand, for users who keep auto-load off.
-  c) **Autoplay after load** — once the load/read-back completes, send a
-     short note phrase over MIDI automatically. Off by default. VinSamLib
-     has a similar audition feature worth following for timing, note
-     choice and panic/note-off safety.
-  Loading is a send to the live edit buffer, not a store; do not call
-  SAVE SOUND or claim the bank changed. Decide the target slot/edit-buffer
-  semantics, the write gate (a send still needs the gate), how to show
-  the loaded sound in the list, and busy/failure behavior. Permanent save
-  remains a separate, explicit action.
+- **Pre-listen checkbox state.** The single-sound map's auto-load and
+  autoplay choices are opt-in and currently start off each time the map
+  opens. Persisting them in the UI state is a small follow-up if it turns
+  out to be wanted.
 - **Fix the audio measurement rig.** `arecord -D hw:3,0` reported the
   same saturated level (peak 32767) for a note the owner heard and one
   he could not hear — it is not capturing the unit's output. Identify

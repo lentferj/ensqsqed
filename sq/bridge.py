@@ -2329,6 +2329,43 @@ class SqBridge:
         )
         time.sleep(gap)
 
+    def audition_notes(
+        self,
+        *,
+        notes: Tuple[int, ...] = (60, 67, 72),
+        velocity: int = 100,
+        hold: float = 0.4,
+        gap: float = 0.1,
+        channel: Optional[int] = None,
+    ) -> None:
+        """Play a short note phrase for an import preview.
+
+        The unit must be in POLY or OMNI on its System MIDI base channel,
+        not MULTI; that setting is on the unit and cannot be read here.
+        Every path ends with note-offs and CC 123 (all notes off), so a
+        failed or interrupted phrase cannot leave a note hanging.
+        """
+        use = self.channel if channel is None else channel
+        if not 0 <= use <= 15:
+            raise ValueError(f"channel {use} is outside 0-15")
+        if not 1 <= velocity <= 127:
+            raise ValueError(f"velocity {velocity} is outside 1-127")
+        on = 0x90 | use
+        off = 0x80 | use
+        try:
+            for note in notes:
+                if not 0 <= note <= 127:
+                    raise ValueError(f"note {note} is outside 0-127")
+                self._out.send_message([on, note, velocity])
+                time.sleep(hold)
+                self._out.send_message([off, note, 0])
+                time.sleep(gap)
+        finally:
+            for note in notes:
+                if 0 <= note <= 127:
+                    self._out.send_message([off, note, 0])
+            self._out.send_message([0xB0 | use, 123, 0])
+
     def toggle_live_mute(self, *, hold: float = 0.30) -> None:
         """Toggle the live mute of the track under the panel's cursor.
 
