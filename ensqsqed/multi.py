@@ -1550,7 +1550,7 @@ class MultiScreen(ModalScreen[None]):
             self._build_table()
             self.query_one(f"#{self.TABLE_ID}", DataTable).focus()
         except NoMatches:  # pragma: no cover - platform mount ordering
-            self.set_timer(0, self._mount_table)
+            self.call_after_refresh(self._mount_table)
 
     def _build_table(self) -> None:
         """The table, in the current view.
