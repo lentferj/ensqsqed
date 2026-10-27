@@ -26,9 +26,10 @@ checked, and the bank the demo holds afterwards is the file's bytes.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Static
 
 from ensqsqed.app import EnsqsqedApp
 from ensqsqed.demo import DemoDevice
@@ -273,6 +274,47 @@ class TestSingleSoundImport:
             target_table = fresh.query_one("#target-table", DataTable)
             assert target_table.get_cell("5", "name") == source.sounds[0].name
             assert "the pane was reread" in _status(app)
+
+    async def test_the_permanent_store_option_calls_the_store_primitive(
+        self, tmp_path: Path
+    ):
+        path = _write_dump(tmp_path)
+        source = importer.read_import(str(path))
+        demo = DemoDevice()
+        calls = []
+
+        def store(group, writes):
+            calls.append((group, dict(writes)))
+            return SimpleNamespace(verified=True, diff_slots=())
+
+        demo.store_sound_slots = store
+        app = _app(demo)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            app._import_folder = str(tmp_path)
+            await _choose_kind(app, pilot, 1)
+            await _pick_file(app, pilot, path)
+            assert await _wait(
+                lambda: isinstance(app.screen, SingleImportScreen), pilot
+            )
+            screen = app.screen
+            assert isinstance(screen, SingleImportScreen)
+            checkbox = screen.query_one("#store-permanently", Checkbox)
+            checkbox.value = True
+            await pilot.pause()
+
+            await _assign(pilot, screen, 0, "05")
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.press("y")
+            assert await _wait(lambda: len(calls) == 1, pilot)
+            assert calls[0][0] == "INT"
+            assert calls[0][1] == {5: source.sounds[0].raw}
+            assert await _wait(lambda: "stored and verified" in _status(app), pilot)
 
     async def test_a_duplicate_target_is_refused(self, tmp_path: Path):
         path = _write_dump(tmp_path)

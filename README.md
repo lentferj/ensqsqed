@@ -565,14 +565,17 @@ it there and press `ctrl+s` again. The first confirmation names the bank
 and the number of sounds; the second names what is overwritten. The gate
 is checked again between the second answer and the wire.
 
-**Measured limit (2026-10-24): a dump does not store into the bank.** On
-this unit a type-02 Single Sound Dump sent to a selected Internal slot
-is accepted and changes the **edit buffer** — the sound is live — but
-the stored bank is unchanged; the panel's SAVE SOUND is still what
-stores it. The 32647-byte type-03 All Sounds Dump is rejected by the
-ALSA port here, so the whole-bank flow falls back to per-slot sends.
-The import therefore reports "loaded into the edit buffer, not stored"
-rather than claiming the bank changed.
+**Permanent store is opt-in.** By default a type-02 Single Sound Dump
+is accepted into the **edit buffer** — the sound is live — but the
+stored bank is unchanged. Check **Store permanently (SAVE SOUND x3)**
+in the single-sound map and the app sends each sound, then drives the
+unit's SAVE SOUND: **three Enter/Save presses**, verified by reading the
+stored Internal bank (measured 2026-10-27). The panel's SAVE SOUND is no
+longer needed for that path; without the checkbox the import still
+reports "loaded into the edit buffer, not stored".
+
+The 32647-byte type-03 All Sounds Dump is rejected by the ALSA port
+here, so the whole-bank flow falls back to per-slot sends.
 
 **After a whole-bank send Internal is reread** by its one dump, so the
 browser shows what is now in RAM without a restart.
@@ -591,8 +594,9 @@ ENSSQSQED_HW_BANK_WRITE=1 .venv/bin/python -m pytest tests/test_hardware.py \
     -k SoundBankWrite --hardware
 ```
 
-The edit-buffer write passes; "stored in the bank" is a **strict xfail**
-that will flag the day the unit starts storing.
+The dump-only edit-buffer write passes; "stored in the bank" by a dump alone
+is a **strict xfail**. The opt-in permanent store is the measured
+three-Enter/Save path and is verified separately against the stored bank.
 
 ## Command line
 

@@ -27,10 +27,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Input, Label, Static
+from textual.widgets import Checkbox, DataTable, Input, Label, Static
 
 from ensqsqed.gate import EditGate
-from ensqsqed.import_single import SingleImportScreen
+from ensqsqed.import_single import STORE_CHECKBOX_ID, SingleImportScreen
 from ensqsqed.multi import NumberPrompt
 from vinsynlib.ui.modals import ChoiceScreen
 
@@ -282,6 +282,20 @@ async def test_a_locked_gate_refuses_ctrl_s_and_w_arms_it() -> None:
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert answered == [("INT", {0: 5})]
+
+
+async def test_the_permanent_store_checkbox_is_off_by_default_and_opt_in() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        screen = _screen()
+        await app.push_screen(screen)
+        await pilot.pause()
+        checkbox = screen.query_one(f"#{STORE_CHECKBOX_ID}", Checkbox)
+        assert checkbox.value is False
+        assert screen.store_permanently is False
+        checkbox.value = True
+        await pilot.pause()
+        assert screen.store_permanently is True
 
 
 async def test_a_bracket_in_a_name_is_literal() -> None:

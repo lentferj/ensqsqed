@@ -4790,7 +4790,10 @@ class EnsqsqedApp(App):
             gate=self._gate,
         )
         self._single_import_screen = screen
-        self.push_screen(screen, lambda result: self._single_start(source, result))
+        self.push_screen(
+            screen,
+            lambda result: self._single_start(source, result, screen.store_permanently),
+        )
 
     def _single_bank_change(self, target: str) -> None:
         """The screen's ``b``: read the newly chosen bank in a worker."""
@@ -4834,6 +4837,7 @@ class EnsqsqedApp(App):
         self,
         source: importer.ImportSource,
         result: Optional[Tuple[str, Dict[int, int]]],
+        store_permanently: bool = False,
     ) -> None:
         """The map answered: turn it into a slot map and ask to write."""
         self._single_import_screen = None
@@ -4856,7 +4860,9 @@ class EnsqsqedApp(App):
                 cancel="Cancel",
                 danger=True,
             ),
-            lambda ok: self._single_confirm(source, target, writes, ok),
+            lambda ok: self._single_confirm(
+                source, target, writes, ok, store_permanently
+            ),
         )
 
     def _single_confirm(
@@ -4865,6 +4871,7 @@ class EnsqsqedApp(App):
         target: str,
         writes: Dict[int, bytes],
         ok: Optional[bool],
+        store_permanently: bool = False,
     ) -> None:
         """The first yes: ask again, naming the slots that are overwritten."""
         if not ok:
@@ -4877,7 +4884,7 @@ class EnsqsqedApp(App):
                 cancel="Cancel",
                 danger=True,
             ),
-            lambda ok2: self._single_go(source, target, writes, ok2),
+            lambda ok2: self._single_go(source, target, writes, ok2, store_permanently),
         )
 
     def _single_go(
@@ -4886,6 +4893,7 @@ class EnsqsqedApp(App):
         target: str,
         writes: Dict[int, bytes],
         ok: Optional[bool],
+        store_permanently: bool = False,
     ) -> None:
         """The second yes: gate, exchange, worker."""
         if not ok or not self._write_allowed_for_import():
@@ -4896,14 +4904,21 @@ class EnsqsqedApp(App):
                 refused=True,
             )
             return
+        if store_permanently and not hasattr(self.device, "store_sound_slots"):
+            self.notify_status(
+                "import not stored: this device has no permanent-save path",
+                refused=True,
+            )
+            return
         if not self._exchange.acquire(blocking=False):
             self.notify_status("import: busy", refused=True)
             return
+        what = "Sending and storing" if store_permanently else "Sending"
         self._wait_screen = WaitScreen(
-            f"Sending {len(writes)} sound(s) to {_IMPORT_LABELS[target]}…"
+            f"{what} {len(writes)} sound(s) to {_IMPORT_LABELS[target]}…"
         )
         self.push_screen(self._wait_screen)
-        self._import_worker("single", target, writes, source)
+        self._import_worker("single", target, writes, source, store_permanently)
 
     # --- the one import worker ----------------------------------------------
 
@@ -4914,6 +4929,7 @@ class EnsqsqedApp(App):
         target: str,
         writes: Dict[int, bytes],
         source: importer.ImportSource,
+        store_permanently: bool = False,
     ) -> None:
         """**MIDI only** -- the write, verified where the unit allows it."""
         failure: Optional[BaseException] = None
@@ -4922,6 +4938,8 @@ class EnsqsqedApp(App):
             with self._busy_gate, self._lock:
                 if mode == "bank":
                     result = self.device.send_sound_bank(target, writes)
+                elif store_permanently:
+                    result = self.device.store_sound_slots(target, writes)
                 else:
                     result = self.device.send_sound_slots(target, writes)
         except _BRIDGE_ERRORS as exc:
@@ -4929,7 +4947,14 @@ class EnsqsqedApp(App):
         finally:
             self._exchange.release()
         self._call_from_thread(
-            self._import_done, mode, target, writes, source, result, failure
+            self._import_done,
+            mode,
+            target,
+            writes,
+            source,
+            result,
+            failure,
+            store_permanently,
         )
 
     def _import_done(
@@ -4940,6 +4965,7 @@ class EnsqsqedApp(App):
         source: importer.ImportSource,
         result: Any,
         failure: Optional[BaseException],
+        store_permanently: bool = False,
     ) -> None:
         """Say what the import did, and reread a single-sound target.
 
@@ -4979,7 +5005,7 @@ class EnsqsqedApp(App):
                 refused=True,
             )
             return
-        self._reopen_after_import_worker(source, target, verified)
+        self._reopen_after_import_worker(source, target, verified, store_permanently)
 
     def _start_bank_refresh(self, target: str) -> None:
         """Reread an imported bank so the browser shows what is there now.
@@ -5049,7 +5075,11 @@ class EnsqsqedApp(App):
 
     @work(thread=True)
     def _reopen_after_import_worker(
-        self, source: importer.ImportSource, target: str, verified: bool
+        self,
+        source: importer.ImportSource,
+        target: str,
+        verified: bool,
+        store_permanently: bool = False,
     ) -> None:
         """**MIDI only** -- the fresh read behind the reopened map."""
         failure: Optional[BaseException] = None
@@ -5062,7 +5092,13 @@ class EnsqsqedApp(App):
         finally:
             self._exchange.release()
         self._call_from_thread(
-            self._reopen_after_import_done, source, target, names, failure, verified
+            self._reopen_after_import_done,
+            source,
+            target,
+            names,
+            failure,
+            verified,
+            store_permanently,
         )
 
     def _reopen_after_import_done(
@@ -5072,6 +5108,7 @@ class EnsqsqedApp(App):
         names: Optional[Dict[int, str]],
         failure: Optional[BaseException],
         verified: bool,
+        store_permanently: bool = False,
     ) -> None:
         """Open the map again over the bank as it now is.  Main thread."""
         self._pop_wait()
@@ -5092,8 +5129,18 @@ class EnsqsqedApp(App):
             gate=self._gate,
         )
         self._single_import_screen = screen
-        self.push_screen(screen, lambda result: self._single_start(source, result))
-        if verified:
+        self.push_screen(
+            screen,
+            lambda result: self._single_start(source, result, screen.store_permanently),
+        )
+        if store_permanently:
+            where = (
+                f"stored and verified in {_IMPORT_LABELS[target]}"
+                if verified
+                else f"sent, but the permanent store did not verify in "
+                f"{_IMPORT_LABELS[target]}"
+            )
+        elif verified:
             where = f"stored and verified in {_IMPORT_LABELS[target]}"
         else:
             where = (

@@ -61,7 +61,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Label, Static
+from textual.widgets import Checkbox, DataTable, Label, Static
 
 from ensqsqed.gate import EditGate
 from ensqsqed.multi import NumberPrompt
@@ -93,6 +93,10 @@ BANK_LABEL_ID = "bank-label"
 
 #: The line that says whether the write gate is armed.
 GATE_NOTE_ID = "gate-note"
+
+#: Opt-in: after the edit-buffer import, store each sound permanently with
+#: the unit's SAVE SOUND dialog (three Enter/Save presses).
+STORE_CHECKBOX_ID = "store-permanently"
 
 #: The target cell's style: the one value the user is typing, drawn so
 #: it stands apart from the row it belongs to.
@@ -153,6 +157,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
     }
     /* The write gate's state, on this screen's own line. */
     SingleImportScreen .gate { height: auto; color: $text-muted; }
+    SingleImportScreen Checkbox { height: auto; }
     SingleImportScreen .hint { height: auto; color: $text-muted; }
     """
 
@@ -212,6 +217,10 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: source index -> target slot, both zero-based.  A plain dict so
         #: the answer is a copy and the screen keeps its own.
         self._assignments: Dict[int, int] = {}
+        #: Opt-in permanent store after the edit-buffer import.  The app
+        #: reads this before the screen is gone; default is edit-buffer
+        #: only, the non-destructive path.
+        self._store_permanently = False
 
     # --- reading -------------------------------------------------------
 
@@ -229,6 +238,16 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         """The target bank in the panel's own words."""
         label = BANK_LABELS.get(self._target, self._target)
         return f"Target bank: {label}  ·  b changes it"
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Remember the permanent-store choice for the app callback."""
+        if event.checkbox.id == STORE_CHECKBOX_ID:
+            self._store_permanently = bool(event.value)
+
+    @property
+    def store_permanently(self) -> bool:
+        """Whether the user asked to save the imported sounds permanently."""
+        return self._store_permanently
 
     def _gate_text(self) -> str:
         """The write gate's state, in the family's own words.
@@ -282,6 +301,11 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
             # line is the dimmed backdrop, exactly where nobody looks
             # after `ctrl+s` has been refused.
             yield Static(self._gate_text(), id=GATE_NOTE_ID, classes="gate")
+            yield Checkbox(
+                "Store permanently (SAVE SOUND x3)",
+                value=False,
+                id=STORE_CHECKBOX_ID,
+            )
             # The screen's own status line.  The app's `#status` is the
             # dimmed backdrop behind this modal, which is exactly where
             # nobody is looking for a refusal.

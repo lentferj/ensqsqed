@@ -154,20 +154,18 @@ Sound Dump sent to a selected Internal slot is accepted and lands in the
 **edit buffer**, but the **stored bank is unchanged**; the type-03 All-Sounds
 message (32647 bytes) is **rejected by the ALSA port** on this rig, so the
 whole-bank send falls back to per-slot sends. A sound import therefore
-*loads* the sounds (the edit buffer holds them) and **still needs the panel's
-SAVE SOUND to store them**. The hardware suite pins this behind
+*loads* the sounds into the edit buffer; without the opt-in permanent store
+it does not change the stored bank. The hardware suite pins this behind
 `ENSQSQED_HW_BANK_WRITE=1` (`TestHardwareSoundBankWrite`): the edit-buffer
-write passes, the stored-bank write is a strict xfail, and the large message
-is recorded as rejected. `tools/probe_sound_write.py` reproduces the
-measurement. **Open:** find a store path (the panel's SAVE SOUND over virtual
-buttons, or a different inbound message) so the import can persist; **Card
-A/B remain unverified** and their reread is a per-slot scan.
-
-**Plan (2026-10-27):** automate SAVE SOUND with the same remote-panel
-primitives as the preset store (send type-02, selected slot, Enter/Save
-button 9, settle, stored-bank read-back). The exact sound-save sequence
-must be measured first; no production sequence is guessed. See
-`~/temp/ensqsqed_SOUND_save_plan.md`.
+write passes, and the dump-only stored-bank check remains a strict xfail;
+the large message is recorded as rejected. `tools/probe_sound_write.py`
+reproduces the measurement. **Resolved for Internal 2026-10-27:** the panel's SAVE SOUND
+is three Enter/Save presses (SAVE SOUND name page -> Save to INT <slot> ->
+stored); `store_sound_slots` drives it and verifies the stored bank by
+reading Internal. The app's single-sound map has an opt-in **Store
+permanently** checkbox; the default remains edit-buffer only. **Card A/B
+remain unverified** and are not write targets; their reread is a per-slot
+scan. See `~/temp/ensqsqed_SOUND_save_plan.md`.
 
 
 ## 2. The four captured command messages — RESOLVED
