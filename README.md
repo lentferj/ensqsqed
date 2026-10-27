@@ -244,6 +244,9 @@ are the unit's own. Track sound names read "(no name)" here because a
 fresh checkout has no sound catalog — names for the other groups come
 from a catalog file or not at all.
 
+The single-sound preview screenshot is a demo-mode capture, so its file
+names are invented; it is included to show the preview controls.
+
 ![Browser](docs/screenshots/browser.png)
 
 Browser view: groups on the left, that group's sounds on the right,
@@ -543,12 +546,23 @@ covered by a "please wait" screen.
   digit) asks for a target slot from `00` to `79`, and target slots must
   be unique — a duplicate or out-of-range slot is refused with a
   sentence and nothing is written. `ctrl+s` starts the import. Slots you
-  do not assign are left alone. `l` previews the focused sound in the
-  **Edit Sound buffer** without storing it and without needing a target
-  slot; **Auto-load on focus** and **Autoplay after preview load** are
-  opt-in. For auto-rehearsal, set the
-  unit to **POLY or OMNI on its System MIDI base channel, not MULTI**;
-  that is a unit setting, not an app setting.
+  do not assign are left alone.
+
+**Preview while you assign.** The map can audition a source sound before
+any target is assigned. `l` sends the focused sound as a Single Sound
+Dump to the current **Edit Sound buffer**; it does not select a slot,
+write a bank, or change the stored Internal bank. Two options are opt-in
+and start off:
+
+- **Auto-load on focus** sends the focused sound after a short debounce
+  as the cursor moves.
+- **Autoplay after preview load** plays a short three-note phrase after
+  the load. Note-offs and CC 123 are sent even if the phrase fails.
+
+For auto-rehearsal, set the unit to **POLY or OMNI on its System MIDI
+base channel, not MULTI**. The app cannot read or change that setting;
+it is set on the unit. Previewing is not a permanent import: assign
+targets and press `ctrl+s` when you are ready to write.
 
 **Cards are copied on the unit.** To put a bank on Card A or Card B,
 import or restore it into Internal first, make a current Internal backup,
@@ -558,6 +572,12 @@ a card as a SysEx write target.
 ![Import](docs/screenshots/import.png)
 
 Import screen (single sounds, target slots).
+
+![Single-sound preview options](docs/screenshots/single-import-preview.png)
+
+Single-sound map with the preview options. Both checkboxes start off;
+`l` previews the focused sound in the Edit Sound buffer without a target
+slot or a stored write.
 
 ![Rename prompt](docs/screenshots/rename-prompt.png)
 

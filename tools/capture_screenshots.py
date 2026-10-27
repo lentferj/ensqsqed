@@ -35,6 +35,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from ensqsqed.app import EnsqsqedApp  # noqa: E402
 from ensqsqed.demo import DemoDevice, demo_name  # noqa: E402
 from ensqsqed.fx import FxScreen  # noqa: E402
+from ensqsqed.import_single import SingleImportScreen  # noqa: E402
 from ensqsqed.multi import (  # noqa: E402
     MultiScreen,
     PresetListScreen,
@@ -330,6 +331,29 @@ async def shot_import(app: EnsqsqedApp, pilot: Any) -> None:
     await wait_for_text(app, pilot, "Import")
 
 
+async def shot_single_import_preview(app: EnsqsqedApp, pilot: Any) -> None:
+    """The single-sound map with the opt-in preview controls visible."""
+    await wait_for_startup(app, pilot)
+    sounds = [(index, demo_name("INT", index).strip()) for index in range(8)]
+    listing = [(index, demo_name("INT", index).strip()) for index in range(80)]
+    screen = SingleImportScreen(
+        path="~/sounds/demo-single.syx",
+        summary="8 sounds from demo-single.syx",
+        sounds=sounds,
+        target="INT",
+        listing=listing,
+        gate=app._gate,
+    )
+    app._single_import_screen = screen
+    app.push_screen(screen)
+    await wait_for_screen(app, pilot, SingleImportScreen)
+    await wait_for_text(app, pilot, "Auto-rehearsal")
+    table = screen.query_one("#source-table", DataTable)
+    table.focus()
+    table.move_cursor(row=2)
+    await pilot.pause()
+
+
 async def shot_backup(app: EnsqsqedApp, pilot: Any) -> None:
     await wait_for_startup(app, pilot)
     await pilot.press("b")
@@ -402,6 +426,19 @@ SHOTS: list = [
     ("favourites", shot_favourites, BROWSER_SIZE, True, ["favourite"]),
     ("rating-filter", shot_rating_filter, MODAL_SIZE, True, ["rating"]),
     ("import", shot_import, MODAL_SIZE, True, ["Import"]),
+    (
+        "single-import-preview",
+        shot_single_import_preview,
+        MODAL_SIZE,
+        True,
+        [
+            "Auto-load focused sound",
+            "Autoplay notes after preview load",
+            "Auto-rehearsal",
+            "POLY",
+            "MULTI",
+        ],
+    ),
     ("backup", shot_backup, MODAL_SIZE, True, ["Select sound groups"]),
     ("remote", shot_remote, MODAL_SIZE, True, ["SELECT"]),
     ("multi", shot_multi, BROWSER_SIZE, False, ["Multi"]),
