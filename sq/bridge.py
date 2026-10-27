@@ -660,14 +660,15 @@ class SoundBankWrite:
     read-back (INT only). ``read_back`` carries the re-read bank when
     verification ran.
 
-    **Measured 2026-10-24 on an SQ-R Plus (base channel 11):** a type-02
-    Single Sound Dump sent to a selected slot is accepted and lands in
-    the **edit buffer** -- ``read_current_sound`` returns the sent bytes
-    -- but the **stored** bank is unchanged. ``send_sound_slots`` reads
-    the stored bank for verification and therefore reports
-    ``verified=False`` with the slot in ``diff_slots``. Storing still
-    needs the panel's SAVE SOUND. The type-03 All Sounds Dump (32647
-    bytes) is rejected by the ALSA port on this rig, which is why
+    **Measured 2026-10-24 and 2026-10-27 on an SQ-R Plus (base channel
+    11):** a type-02 Single Sound Dump sent to a selected slot is accepted
+    and lands in the **edit buffer** -- ``read_current_sound`` returns the
+    sent bytes -- but the **stored** bank is unchanged. ``send_sound_slots``
+    reads the stored bank for verification and therefore reports
+    ``verified=False`` with the slot in ``diff_slots``. Storing needs the
+    panel's SAVE SOUND: the measured sequence is three Enter/Save presses
+    (`store_sound_slots`). The type-03 All Sounds Dump (32647 bytes) is
+    rejected by the ALSA port on this rig, which is why
     :meth:`SqBridge.send_sound_bank` falls back to per-slot sends.
     """
 
@@ -1743,6 +1744,110 @@ class SqBridge:
             verified=False,
             diff_slots=(),
             read_back=None,
+        )
+
+    def store_sound_slots(  # noqa: C901
+        self,
+        group_id: str,
+        assignments: Any,
+        *,
+        attempts: int = 3,
+        timeout: Optional[float] = None,
+    ) -> "SoundBankWrite":
+        """Permanently store single sounds in Internal with SAVE SOUND.
+
+        **Measured 2026-10-27:** after a type-02 dump, the panel's SAVE
+        SOUND is exactly three Enter/Save presses. The first shows
+        ``SAVE SOUND`` with the name, the second ``Save to INT <slot>``,
+        and the third stores and closes. No Edit Sound press is needed;
+        the stored Internal bank then contains the sent record byte for
+        byte (bench: sound 00, a changed name byte).
+
+        Each slot must be sent and saved before the next slot is selected:
+        the save dialog acts on the current edit buffer. The stored bank
+        is read once after the pass; mismatched slots are retried with the
+        same send-and-three-presses sequence. The dialog state is not
+        readable, so a dropped press is detected by the stored read, not
+        assumed away.
+
+        Only Internal is supported: Card A/B have no dump for verification
+        and are not write targets.
+        """
+        if group_id != "INT":
+            raise ValueError(
+                "permanent sound save is supported for Internal only; "
+                "copy a bank to a card on the front panel"
+            )
+        if attempts < 1:
+            raise ValueError(
+                f"a store needs at least one attempt; this one was given {attempts}"
+            )
+        if not isinstance(assignments, dict):
+            assignments = {
+                index: assignments[index] for index in range(len(assignments))
+            }
+        if not assignments:
+            raise ValueError("no sounds to store")
+        slots = tuple(sorted(assignments))
+        for slot in slots:
+            if not 0 <= slot < banks.SOUNDS_PER_GROUP:
+                raise ValueError(f"a sound slot is 0..79; this one was {slot}")
+            if len(assignments[slot]) != m.SOUND_BYTES:
+                raise ValueError(
+                    f"sound slot {slot} is {len(assignments[slot])} bytes, "
+                    f"not {m.SOUND_BYTES}"
+                )
+
+        remaining = slots
+        last: Optional[SoundBankWrite] = None
+        for _ in range(attempts):
+            for slot in remaining:
+                self.select(banks.slot(group_id, slot + 1))
+                self._out.send_message(
+                    list(
+                        m.frame(
+                            m.Function.SINGLE_SOUND_DUMP,
+                            m.to_nibbles(assignments[slot]),
+                            device=self.channel,
+                        )
+                    )
+                )
+                time.sleep(PRESET_SETTLE)
+                for _press in range(3):
+                    self._press_release(ENTER_SAVE_BUTTON, gap=0.6)
+                time.sleep(PRESET_SETTLE)
+
+            read_back = self.read_bank(group_id, timeout=timeout)
+            diff_slots = tuple(
+                slot for slot in slots if read_back.get(slot) != assignments[slot]
+            )
+            last = SoundBankWrite(
+                group=group_id,
+                slots_written=slots,
+                verified=not diff_slots,
+                diff_slots=diff_slots,
+                read_back=read_back,
+            )
+            if not diff_slots:
+                return last
+            remaining = diff_slots
+
+        if last is None:
+            raise DeviceError("the sound store produced no result")
+        return last
+
+    def store_sound_slot(
+        self,
+        group_id: str,
+        slot: int,
+        raw: bytes,
+        *,
+        attempts: int = 3,
+        timeout: Optional[float] = None,
+    ) -> "SoundBankWrite":
+        """Permanently store one single sound; see :meth:`store_sound_slots`."""
+        return self.store_sound_slots(
+            group_id, {slot: raw}, attempts=attempts, timeout=timeout
         )
 
     def _send_all_sounds_frame(self, frame: bytes) -> str:

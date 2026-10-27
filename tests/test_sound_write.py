@@ -186,6 +186,49 @@ def test_mismatch_reported_in_diff_slots() -> None:
     assert result.diff_slots == (0,)
 
 
+def test_store_sound_slots_presses_enter_save_three_times(monkeypatch) -> None:
+    unit = _FakeUnit()
+    bridge = _device(unit)
+    presses = []
+    monkeypatch.setattr(
+        bridge,
+        "_press_release",
+        lambda button, hold=0.12, gap=0.4: presses.append(button),
+    )
+    rec = bytes([0xAB]) * 204
+
+    result = bridge.store_sound_slots("INT", {5: rec})
+
+    assert presses == [b.ENTER_SAVE_BUTTON] * 3
+    assert result.verified is True
+    assert result.slots_written == (5,)
+    assert unit.stored["INT"][5] == rec
+
+
+def test_store_sound_slots_retries_only_the_failed_slot(monkeypatch) -> None:
+    unit = _FakeUnit(mismatch_slots={5})
+    bridge = _device(unit)
+    presses = []
+    monkeypatch.setattr(
+        bridge,
+        "_press_release",
+        lambda button, hold=0.12, gap=0.4: presses.append(button),
+    )
+
+    result = bridge.store_sound_slots("INT", {5: bytes([0xAB]) * 204}, attempts=2)
+
+    assert result.verified is False
+    assert result.diff_slots == (5,)
+    assert presses.count(b.ENTER_SAVE_BUTTON) == 6
+
+
+def test_store_sound_slots_refuses_cards() -> None:
+    unit = _FakeUnit()
+    bridge = _device(unit)
+    with pytest.raises(ValueError, match="Internal only"):
+        bridge.store_sound_slots("CARDA", {0: bytes(204)})
+
+
 def test_read_bank_int_returns_80() -> None:
     unit = _FakeUnit()
     bridge = _device(unit)
