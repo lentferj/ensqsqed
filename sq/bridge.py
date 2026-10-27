@@ -1693,6 +1693,37 @@ class SqBridge:
             return sounds[index]
         return sounds[index]
 
+    def send_sound_current(
+        self,
+        raw: bytes,
+        *,
+        verify: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Optional[bytes]:
+        """Load one Single Sound Dump into the current Edit Sound buffer.
+
+        **No slot is selected first.**  A dump with no preceding program
+        change belongs to whatever sound the unit is on, which is exactly
+        what a preview wants: it changes the edit buffer and leaves the
+        stored banks alone.  This is the preview primitive; it is not a
+        SAVE SOUND and does not write a bank slot.
+        """
+        if len(raw) != m.SOUND_BYTES:
+            raise ValueError(f"a sound record is {m.SOUND_BYTES} bytes, not {len(raw)}")
+        self._out.send_message(
+            list(
+                m.frame(
+                    m.Function.SINGLE_SOUND_DUMP,
+                    m.to_nibbles(raw),
+                    device=self.channel,
+                )
+            )
+        )
+        if not verify:
+            return None
+        time.sleep(SCAN_SETTLE)
+        return self.read_current_sound(timeout=timeout)
+
     def send_sound_slots(
         self,
         group_id: str,

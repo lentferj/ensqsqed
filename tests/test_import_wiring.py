@@ -284,15 +284,14 @@ class TestSingleSoundImport:
         sends = []
         stores = []
 
-        def send(group, writes, verify=True):
-            sends.append((group, dict(writes)))
-            return SimpleNamespace(verified=False, diff_slots=())
+        def send_current(raw, verify=False):
+            sends.append(bytes(raw))
 
         def store(group, writes):
             stores.append((group, dict(writes)))
             return SimpleNamespace(verified=True, diff_slots=())
 
-        demo.send_sound_slots = send
+        demo.send_sound_current = send_current
         demo.store_sound_slots = store
         app = _app(demo)
         async with app.run_test() as pilot:
@@ -307,14 +306,13 @@ class TestSingleSoundImport:
             )
             screen = app.screen
             assert isinstance(screen, SingleImportScreen)
-            await _assign(pilot, screen, 0, "05")
             await pilot.press("l")
 
             def preview_status():
                 return str(screen.query_one(".status", Static).content)
 
             assert await _wait(lambda: "preview loaded" in preview_status(), pilot)
-            assert sends == [("INT", {5: source.sounds[0].raw})]
+            assert sends == [source.sounds[0].raw]
             assert stores == []
             assert "not stored" in preview_status()
 

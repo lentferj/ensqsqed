@@ -173,6 +173,19 @@ class DemoDevice:
             for number, record in self.read_bank(group_id, timeout=timeout).items()
         }
 
+    def send_sound_current(
+        self,
+        raw: bytes,
+        *,
+        verify: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Optional[bytes]:
+        """Mirror a Single Sound Dump into the current edit slot."""
+        self._tick()
+        slot = self.selected or banks.slot("INT", 1)
+        self._banks[slot.group_id][slot.number - 1] = raw
+        return self.read_current_sound(timeout=timeout) if verify else None
+
     def send_sound_slots(
         self,
         group_id: str,

@@ -4799,7 +4799,7 @@ class EnsqsqedApp(App):
             lambda result: self._single_start(source, result, screen.store_permanently),
         )
 
-    def _single_preview(self, index: int, slot: int, autoplay: bool) -> None:
+    def _single_preview(self, index: int, autoplay: bool) -> None:
         """Load one source sound into the edit buffer, optionally audition it."""
         source = self._single_import_source
         screen = self._single_import_screen
@@ -4812,18 +4812,16 @@ class EnsqsqedApp(App):
         if self._busy or not self._exchange.acquire(blocking=False):
             screen.preview_failed("preview: busy")
             return
-        self._single_preview_worker(index, slot, raw, autoplay)
+        self._single_preview_worker(index, raw, autoplay)
 
     @work(thread=True)
-    def _single_preview_worker(
-        self, index: int, slot: int, raw: bytes, autoplay: bool
-    ) -> None:
+    def _single_preview_worker(self, index: int, raw: bytes, autoplay: bool) -> None:
         """**MIDI only** -- edit-buffer send, optional note phrase."""
         failure: Optional[BaseException] = None
         autoplay_failure: Optional[BaseException] = None
         try:
             with self._busy_gate, self._lock:
-                self.device.send_sound_slots("INT", {slot: raw}, verify=False)
+                self.device.send_sound_current(raw)
                 time.sleep(PRESET_SETTLE)
                 self.device.read_current_sound()
                 if autoplay:
@@ -4838,7 +4836,6 @@ class EnsqsqedApp(App):
         self._call_from_thread(
             self._single_preview_done,
             index,
-            slot,
             autoplay,
             failure,
             autoplay_failure,
@@ -4847,7 +4844,6 @@ class EnsqsqedApp(App):
     def _single_preview_done(
         self,
         index: int,
-        slot: int,
         autoplay: bool,
         failure: Optional[BaseException],
         autoplay_failure: Optional[BaseException],
@@ -4858,7 +4854,7 @@ class EnsqsqedApp(App):
         if failure is not None:
             screen.preview_failed(f"preview: {failure}")
             return
-        message = f"P{slot:02d} preview loaded — edit buffer only, not stored"
+        message = "preview loaded — Edit Sound buffer only, not stored"
         if autoplay:
             if autoplay_failure is not None:
                 message += f"; autoplay failed: {autoplay_failure}"
@@ -5472,10 +5468,10 @@ Importing sounds
   all eighty sounds and replaces Internal after two confirmations.
   "Single sounds" opens a two-pane map: assign a target slot (00-79) to
   any number of the file's sounds, then ctrl+s. `l` previews the focused
-  sound in the Edit Sound buffer without storing it; auto-load and
-  autoplay are opt-in. For auto-rehearsal the unit must be in POLY or
-  OMNI on its System MIDI base channel, not MULTI; that is set on the
-  unit, not by this app.
+  sound in the Edit Sound buffer without storing it or needing a target
+  slot; auto-load and autoplay are opt-in. For auto-rehearsal the unit
+  must be in POLY or OMNI on its System MIDI base channel, not MULTI;
+  that is set on the unit, not by this app.
 
   Every write needs the write gate armed (`w`), and both flows ask twice.
   Internal RAM is read back and verified. Cards are not SysEx write

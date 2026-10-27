@@ -61,7 +61,7 @@ def _screen(
     listing: Optional[List[Tuple[int, str]]] = None,
     target: str = "INT",
     on_bank_change: Optional[Callable[[str], None]] = None,
-    on_preview: Optional[Callable[[int, int, bool], None]] = None,
+    on_preview: Optional[Callable[[int, bool], None]] = None,
     gate: Optional[EditGate] = None,
 ) -> SingleImportScreen:
     return SingleImportScreen(
@@ -305,37 +305,24 @@ async def test_the_permanent_store_checkbox_is_off_by_default_and_opt_in() -> No
         assert screen.store_permanently is True
 
 
-async def test_manual_preview_loads_the_assigned_slot() -> None:
+async def test_manual_preview_does_not_need_a_target_slot() -> None:
     calls = []
     app = _Host()
     async with app.run_test() as pilot:
-        screen = _screen(on_preview=lambda i, s, a: calls.append((i, s, a)))
+        screen = _screen(on_preview=lambda i, a: calls.append((i, a)))
         await app.push_screen(screen)
         await pilot.pause()
-        table = screen.query_one("#source-table", DataTable)
-        await _assign(pilot, table, 0, "05")
         await pilot.press("l")
         await pilot.pause()
-        assert calls == [(0, 5, False)]
+        assert calls == [(0, False)]
         assert "loading preview" in _status(screen)
-
-
-async def test_preview_refuses_without_a_target_slot() -> None:
-    app = _Host()
-    async with app.run_test() as pilot:
-        screen = _screen(on_preview=lambda i, s, a: None)
-        await app.push_screen(screen)
-        await pilot.pause()
-        await pilot.press("l")
-        await pilot.pause()
-        assert "assign a target slot first" in _status(screen)
 
 
 async def test_auto_load_and_autoplay_are_opt_in() -> None:
     calls = []
     app = _Host()
     async with app.run_test() as pilot:
-        screen = _screen(on_preview=lambda i, s, a: calls.append((i, s, a)))
+        screen = _screen(on_preview=lambda i, a: calls.append((i, a)))
         await app.push_screen(screen)
         await pilot.pause()
         auto = screen.query_one(f"#{AUTOLOAD_CHECKBOX_ID}", Checkbox)
@@ -345,15 +332,13 @@ async def test_auto_load_and_autoplay_are_opt_in() -> None:
         play.value = True
         await pilot.pause()
         table = screen.query_one("#source-table", DataTable)
-        await _assign(pilot, table, 0, "05")
-        await _assign(pilot, table, 1, "06")
         table.focus()
         table.move_cursor(row=0)
         await pilot.pause()
         table.move_cursor(row=1)
         await pilot.pause(0.3)
         await pilot.pause()
-        assert calls == [(1, 6, True)]
+        assert calls == [(1, True)]
 
 
 async def test_auto_rehearsal_hint_names_poly_omni_and_multi() -> None:

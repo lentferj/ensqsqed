@@ -198,7 +198,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         target: str,
         listing: Sequence[Tuple[int, str]],
         on_bank_change: Optional[Callable[[str], None]] = None,
-        on_preview: Optional[Callable[[int, int, bool], None]] = None,
+        on_preview: Optional[Callable[[int, bool], None]] = None,
         gate: Optional[EditGate] = None,
     ) -> None:
         super().__init__()
@@ -218,8 +218,9 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         #: calls :meth:`set_bank` with fresh rows.  ``None`` means there
         #: is nobody to ask, and ``b`` clears the stale listing instead.
         self._on_bank_change = on_bank_change
-        #: ``on_preview(source_index, target_slot, autoplay)`` -- the app
-        #: owns the send and the optional note phrase.  ``None`` means
+        #: ``on_preview(source_index, autoplay)`` -- the app owns the
+        #: edit-buffer send and the optional note phrase.  Preview does
+        #: not need a target slot: it is not an import.  ``None`` means
         #: this screen has no device path and says so.
         self._on_preview = on_preview
         #: The app's own gate, when there is an app.  Held rather than
@@ -427,7 +428,7 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         if not self._autoload_preview:
             return
         index = self._index_at(event.data_table.cursor_row)
-        if index is None or index not in self._assignments:
+        if index is None:
             return
         self._preview_timer = self.set_timer(
             0.25, lambda: self._load_preview_index(index)
@@ -455,12 +456,8 @@ class SingleImportScreen(ModalScreen[Optional[Tuple[str, Dict[int, int]]]]):
         if self._on_preview is None:
             self.say("preview is not wired", refused=True)
             return
-        slot = self._assignments.get(index)
-        if slot is None:
-            self.say("assign a target slot first — the preview uses it", refused=True)
-            return
         self.say("loading preview into the Edit Sound buffer…")
-        self._on_preview(index, slot, self._autoplay_preview)
+        self._on_preview(index, self._autoplay_preview)
 
     def preview_loaded(self, index: int, message: str) -> None:
         """The app reports a successful preview load (and autoplay)."""

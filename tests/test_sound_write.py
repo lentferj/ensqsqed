@@ -186,6 +186,20 @@ def test_mismatch_reported_in_diff_slots() -> None:
     assert result.diff_slots == (0,)
 
 
+def test_send_sound_current_sends_only_the_dump() -> None:
+    unit = _FakeUnit()
+    bridge = _device(unit)
+    raw = bytes([0xA5]) * 204
+    bridge.send_sound_current(raw)
+    sent = [bytes(message) for message in bridge._out._port.sent]
+    assert len(sent) == 1
+    packet = m.parse(sent[0])
+    assert packet is not None
+    assert packet.function == m.Function.SINGLE_SOUND_DUMP
+    assert m.from_nibbles(packet.payload) == raw
+    assert not any(len(message) == 2 for message in sent)
+
+
 def test_audition_notes_ends_with_note_offs_and_all_notes_off(monkeypatch) -> None:
     unit = _FakeUnit()
     bridge = _device(unit)
