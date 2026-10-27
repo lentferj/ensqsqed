@@ -65,6 +65,18 @@ question below is adjusted accordingly
   same automated store path — three Enter/Save presses plus the read-back
   verification — so a restore is one confirmed action, with the current
   effect/name limits and the Card A/B write limits stated in the result.
+- **Card layout and sound-only reads.** The browser currently treats CARDA
+  and CARDB as two 80-sound banks. A card is not necessarily that: an MC-32
+  can hold sounds or preset data, and an MC-64 can hold CARD A sounds,
+  CARD B sounds and up to 32K of preset data on the same card. The first
+  copy onto an empty card chooses its format, and a card given preset data
+  while empty becomes a preset-only card. Today a preset-only card looks
+  like an empty sound card, and a mixed card's preset area is invisible;
+  the empty/card-absent message should say which case it is. **Card presets
+  are not directly addressable:** the manual says preset data must first be
+  copied back into the internal preset memory before it can be played. So
+  this is a content/layout refinement, not a card-preset browser or restore
+  path; direct card sound reads remain the useful path.
 - **Fix the audio measurement rig.** `arecord -D hw:3,0` reported the
   same saturated level (peak 32767) for a note the owner heard and one
   he could not hear — it is not capturing the unit's output. Identify
