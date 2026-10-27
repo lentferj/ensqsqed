@@ -124,9 +124,10 @@ favourites database with ratings, tags and notes.
   (124=Internal, 125=ROM, 126=Card A, 127=Card B), and every later
   program change means whatever that one said until the next. The browser
   always sends the selector first. The slot pane now shows `#` (the
-  slot's position in its group, counted from 1), `PC` (the actual MIDI
+  slot's position in its group, counted from 0, matching the panel's
+  **00–79** display; **00–19** for drum kits), `PC` (the actual MIDI
   program change the unit sends — **00–79** for sounds, **80–99** for
-  drum kits, which is also the number the unit's own display prints)
+  drum kits)
   and `sel` (the group selector — this instrument's replacement for
   the siblings' LSB/MSB columns, `—` for a drum kit, whose program
   change is absolute). Screenshots in this README predate the restored

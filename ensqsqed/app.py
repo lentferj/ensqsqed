@@ -1098,12 +1098,12 @@ class EnsqsqedApp(App):
         # depending on data that has nothing to do with it -- and the row
         # you just rated would jump sideways as it appeared.
         #
-        # ``#`` is the slot's position in its group, counted from 1
-        # (the bank index the cursor moves by); it is NOT the program
-        # change. ``PC`` is the actual MIDI program change the unit
-        # sends (00-79 for sounds, 80-99 for drum kits) -- the number
-        # the unit's own display prints. ``sel`` is this instrument's
-        # answer to the siblings' LSB/MSB columns: the SQ-R has no Bank
+        # ``#`` is the slot's position in its group, counted from 0 so
+        # it matches the panel's 00-79 display (00-19 for drum kits); it
+        # is NOT the program change. ``PC`` is the actual MIDI program
+        # change the unit sends (00-79 for sounds, 80-99 for drum kits).
+        # ``sel`` is this instrument's answer to the siblings' LSB/MSB
+        # columns: the SQ-R has no Bank
         # Select, so the other number that selects a sound is the group
         # selector (124-127). A drum kit has no selector -- its program
         # change is absolute -- and shows "—".
@@ -1766,7 +1766,7 @@ class EnsqsqedApp(App):
                 )
                 table.add_row(
                     "[b]♥[/b]" if entry.number in here else "",
-                    f"{entry.number:03d}",
+                    f"{entry.number - 1:02d}",
                     shown,
                     rating_cell(ratings.get(entry.key, 0)),
                     # This instrument's answer to LSB/MSB: the group

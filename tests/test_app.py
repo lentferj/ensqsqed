@@ -56,18 +56,20 @@ class TestSlotBrowserColumns:
             assert "num" in keys
             assert "sel" in keys
 
-    async def test_internal_row_shows_program_change(self, app):
+    async def test_internal_row_shows_zero_based_slot_and_program_change(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
             table = app.query_one("#slot-table")
+            assert table.get_cell("INT:001", "num") == "00"
             assert table.get_cell("INT:001", "pc") == "00"
 
-    async def test_drum_kit_row_shows_80(self, app):
+    async def test_drum_kit_row_shows_zero_based_slot_and_program_change(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
             app._fill("DRUM")
             await pilot.pause()
             table = app.query_one("#slot-table")
+            assert table.get_cell("DRUM:001", "num") == "00"
             assert table.get_cell("DRUM:001", "pc") == "80"
 
 
