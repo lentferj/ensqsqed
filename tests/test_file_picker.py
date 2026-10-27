@@ -236,7 +236,10 @@ def test_start_folder_falls_back_to_home(folder: Path) -> None:
     assert start_folder(str(folder / "missing.syx")) == str(Path.home())
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can read a mode-000 directory")
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="mode-000 needs POSIX permissions; root can read it anyway",
+)
 async def test_an_unreadable_directory_is_a_message_not_a_crash(
     tmp_path: Path,
 ) -> None:
