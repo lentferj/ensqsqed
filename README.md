@@ -497,13 +497,13 @@ write target for imports or restores.
 **What a restore writes, and what it does not.** A dump stores the
 selected slot's **track/pile range, offsets 32–151** — that includes
 each track's pressure (the stored ON/OFF), so the arrangement is
-restored. It does **not** write the effect block (152–162) or the name
-(2–17): the unit keeps its own name, and the effect needs the panel's
-**ENTER/SAVE** (or the app's `ctrl+s`) to be stored from the working
-buffer. A dump restore does not write the name — the unit keeps its own
-— but the app can now rename on the unit with `R` in the multi editor,
-which drives the unit's save dialog and stores to the selected slot. The
-app's local preset labels are a sidecar (`preset_labels.json`), not part
+restored. A plain dump does **not** write the effect block (152–162) or
+the name (2–17). The effect parameters are committed by leaving the slot
+and reselecting it; the full preset restore does that for every slot.
+The unit keeps its own name, so a dump never changes it — the app can
+rename on the unit with `R` in the multi editor, which drives the unit's
+save dialog and stores to the selected slot. The app's local preset
+labels are a sidecar (`preset_labels.json`), not part
 of the unit dump, so a dump restore does not bring them back. A backup
 taken while the unit is on a slot with an un-stored edit captures that
 slot's working preset; take the backup with no un-stored edit, or store
@@ -557,20 +557,21 @@ ENTER/SAVE:
 Backup screen: groups, content and file layout; `s`/`ctrl+s` starts,
 `esc`/`q` cancels.
 
-## Importing banks and sounds
+## Importing banks, sounds and presets
 
-`I` opens a **file browser** (it remembers the folder you last loaded
-from, never the file) and reads an **All-Sounds dump** — the 32647-byte
-`.syx`, the `.mid` that carries the same SysEx, a SoundQuest `.sqs`
-favourite bank, or a SoundDiver `.lib` sound library. A `.sqs` file
+`I` opens the import chooser. Its **file browser** (_it remembers the
+folder you last loaded from, never the file_) reads an **All-Sounds
+dump** — the 32647-byte `.syx`, the `.mid` that carries the same SysEx,
+a SoundQuest `.sqs` favourite bank, or a SoundDiver `.lib` sound library.
+A `.sqs` file
 contributes only the Ensoniq SysEx sounds embedded in it; its
 SoundQuest-native records are ignored, and the sounds from all its banks
 are collected into one import list. A `.lib` file contributes only its
 sound records; SoundDiver's settings and global data are not imported.
 It writes **Internal (RAM) only**: a card is copied from Internal on the
-front panel, not written by SysEx. **`ctrl+s` starts either flow**; the
-preview screens show a progress line, and a long bank read or write is
-covered by a "please wait" screen.
+front panel, not written by SysEx. The two sound flows start with
+**`ctrl+s`**; the preview screens show a progress line, and a long bank
+read or write is covered by a "please wait" screen.
 
 - **Whole bank** previews every sound in the file by number and name,
   then sends it to Internal.
@@ -580,6 +581,13 @@ covered by a "please wait" screen.
   be unique — a duplicate or out-of-range slot is refused with a
   sentence and nothing is written. `ctrl+s` starts the import. Slots you
   do not assign are left alone.
+- **Restore presets** reads the app's `internal_presets_*.bin` backup and
+  restores all 80 Internal preset slots, including their sequence data and
+  FX data through a send followed by the unit's selection-change commit.
+  A fresh pre-restore snapshot is written first, the write gate is required,
+  and two confirmations name the destination. The restore stops at the first failed
+  slot; the snapshot is the undo route. The unit keeps its own preset names;
+  a full restore cannot change those.
 
 **Preview while you assign.** The map can audition a source sound before
 any target is assigned. `l` sends the focused sound as a Single Sound

@@ -100,12 +100,14 @@ from sq import importer
 from sq import messages as msg
 from sq import preset_labels
 from sq import preset_cache
+from sq.preset_backup import PresetBackup, read_preset_backup
 from sq.bridge import (
     AllPresetsDump,
     DeviceError,
     PRESET_SETTLE,
     PresetAlert,
     PresetMismatch,
+    UNIT_KEPT_OFFSETS,
     preset_needs_write,
 )
 from sq.favorites import Favorites, Favorite
@@ -499,22 +501,31 @@ class BackupReportScreen(ModalScreen[None]):
         Binding("q", "close", "Close"),
     ]
 
-    def __init__(self, backup_root: str) -> None:
+    def __init__(
+        self,
+        backup_root: str,
+        *,
+        title: str = "Backup report",
+        hint: str = (
+            "esc or q — close · .bin sounds: I import or sqcli restore FILE --yes"
+        ),
+        closable: bool = True,
+    ) -> None:
         super().__init__()
         self._backup_root = backup_root
+        self._title_text = title
+        self._hint_text = hint
+        self._closable = closable
         self._lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Backup report", classes="title")
+            yield Label(self._title_text, classes="title")
             yield Static(f"Folder: {self._backup_root}", classes="note", markup=False)
             yield Static("Starting…", id="backup-current", classes="status")
             with VerticalScroll(id="backup-scroll"):
                 yield Static("", id="backup-log", markup=False)
-            yield Static(
-                "esc or q — close · .bin sounds: I import or sqcli restore FILE --yes",
-                classes="hint",
-            )
+            yield Static(self._hint_text, classes="hint", markup=False)
 
     def set_current(self, message: str) -> None:
         try:
@@ -545,9 +556,13 @@ class BackupReportScreen(ModalScreen[None]):
             return
 
     def finish(self, summary: str) -> None:
+        self._closable = True
         self.set_current(summary)
 
     def action_close(self) -> None:
+        if not self._closable:
+            self.set_current("restore is still running — wait for the report")
+            return
         self.dismiss(None)
 
 
@@ -962,6 +977,8 @@ class EnsqsqedApp(App):
         self._wait_screen: Optional["WaitScreen"] = None
         #: The running backup report, while one is on screen.
         self._backup_report: Optional["BackupReportScreen"] = None
+        #: The running full-preset-restore report.
+        self._preset_restore_report: Optional["BackupReportScreen"] = None
         if self._config_path is not None:
             ui_state = cfg.load_ui_state(self._config_path)
             if "import_folder" in ui_state:
@@ -4849,7 +4866,9 @@ class EnsqsqedApp(App):
         worker shape; they differ in what is sent.
         """
         self.push_screen(
-            ChoicePicker("Import", ["Whole bank", "Single sounds"], 0),
+            ChoicePicker(
+                "Import", ["Whole bank", "Single sounds", "Restore presets"], 0
+            ),
             self._import_kind_chosen,
         )
 
@@ -4889,6 +4908,9 @@ class EnsqsqedApp(App):
         if not self._import_folder:
             self._import_folder = start_folder(path)
             self._save_ui_state(import_folder=self._import_folder)
+        if kind == 2:
+            self._preset_restore_file_chosen(path)
+            return
         try:
             source = importer.read_import(path)
         except (OSError, ValueError) as exc:
@@ -4898,6 +4920,231 @@ class EnsqsqedApp(App):
             self._import_single_start(source)
         else:
             self._import_bank_start(source)
+
+    # --- full preset restore -----------------------------------------------
+
+    def _preset_restore_file_chosen(self, path: str) -> None:
+        """Validate a selected preset-bank backup and ask for confirmation."""
+        try:
+            backup = read_preset_backup(path)
+        except (OSError, ValueError) as exc:
+            self.notify_status(f"preset restore: {exc}", refused=True)
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Restore all {backup.count} Internal presets from "
+                f"{path}?\n\nThis overwrites every stored Internal preset. "
+                "The unit keeps its own names; sequence and FX data are "
+                "written where the unit accepts them.",
+                confirm="Continue",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok: self._preset_restore_confirm(backup, ok),
+        )
+
+    def _preset_restore_confirm(self, backup: PresetBackup, ok: Optional[bool]) -> None:
+        """The first yes: name the destructive write and the snapshot."""
+        if not ok:
+            self._reopen_import_picker()
+            return
+        self.push_screen(
+            ConfirmScreen(
+                "Restore all 80 preset slots now?\n\nA fresh all-presets "
+                "snapshot will be taken first, then each slot will be selected "
+                "and stored one at a time. A failure stops the restore at that "
+                "slot. The snapshot is the only undo.",
+                confirm="Restore all",
+                cancel="Cancel",
+                danger=True,
+            ),
+            lambda ok2: self._preset_restore_go(backup, ok2),
+        )
+
+    def _preset_restore_go(self, backup: PresetBackup, ok: Optional[bool]) -> None:
+        """The second yes: gate, report and worker."""
+        if not ok:
+            return
+        if not self._gate.armed:
+            self.notify_status(self._gate.refuse("the preset restore"), refused=True)
+            return
+        for method in (
+            "read_all_presets",
+            "read_current_preset",
+            "select_preset_by_walk",
+            "send_preset",
+        ):
+            if not hasattr(self.device, method):
+                self.notify_status(
+                    "preset restore not sent: this device has no preset-write path",
+                    refused=True,
+                )
+                return
+        if not self._exchange.acquire(blocking=False):
+            self.notify_status("preset restore: busy", refused=True)
+            return
+        report = BackupReportScreen(
+            self._backup_root or cfg.DEFAULT_BACKUP_ROOT,
+            title="Preset restore report",
+            hint="esc or q — close after the report · names stay the unit's own",
+            closable=False,
+        )
+        self._preset_restore_report = report
+        self.push_screen(report, self._preset_restore_report_closed)
+        self._preset_restore_worker(backup)
+
+    def _preset_restore_report_closed(self, _result=None) -> None:
+        self._preset_restore_report = None
+
+    def _preset_report_say(self, message: str) -> None:
+        if self._preset_restore_report is not None:
+            self._preset_restore_report.set_current(message)
+
+    def _preset_report_result(self, ok: bool, label: str, detail: str = "") -> None:
+        if self._preset_restore_report is not None:
+            self._preset_restore_report.add_result(ok, label, detail)
+
+    def _preset_report_finish(self, summary: str) -> None:
+        if self._preset_restore_report is not None:
+            self._preset_restore_report.finish(summary)
+
+    @work(thread=True)
+    def _preset_restore_worker(  # noqa: C901
+        self, backup: PresetBackup
+    ) -> None:
+        """**MIDI only** -- snapshot, then one slot at a time.
+
+        A plain ``send_preset`` commits only offsets 32-151.  The
+        documented selection-change commit stores the live snapshot,
+        including the effect parameters; this worker sends and then walks
+        to the neighbour and back for every slot.  The panel save dialog
+        is deliberately not used: it has been measured to revert a sent
+        effect.
+        """
+        import os
+        import time
+
+        restored = 0
+        failure: Optional[BaseException] = None
+        failed_slot: Optional[int] = None
+        snapshot: Optional[str] = None
+        item = None
+
+        def select_restore_slot(target: int, known: int) -> int:
+            """Retry a dropped panel walk without changing the send path."""
+            last: Optional[BaseException] = None
+            for _ in range(3):
+                try:
+                    return self.device.select_preset_by_walk(target, known_slot=known)
+                except _BRIDGE_ERRORS as exc:
+                    last = exc
+                    current = self.device.read_current_preset()
+                    if current.preset_raw:
+                        known = current.preset_raw[0]
+            if last is None:  # pragma: no cover - loop always raises once
+                raise RuntimeError("preset selection failed without a reason")
+            raise last
+
+        try:
+            with self._busy_gate, self._lock:
+                self._call_from_thread(
+                    self._preset_report_say,
+                    "Saving a pre-restore snapshot of the stored presets…",
+                )
+                current = self.device.read_current_preset()
+                current_slot = current.preset_raw[0]
+                # A stored read must be taken while the slot is unselected;
+                # the current slot's dump mirrors its working buffer.
+                neighbour = (current_slot + 1) % 80
+                self.device.select_preset_by_walk(neighbour, known_slot=current_slot)
+                stored = self.device.read_all_presets()
+                self.device.select_preset_by_walk(current_slot, known_slot=neighbour)
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                folder = os.path.join(
+                    self._backup_root or cfg.DEFAULT_BACKUP_ROOT,
+                    f"pre_restore_{stamp}",
+                )
+                os.makedirs(folder, exist_ok=True)
+                snapshot = os.path.join(folder, "all_presets_dump.bin")
+                with open(snapshot, "wb") as handle:
+                    handle.write(stored.to_bytes())
+                self._call_from_thread(
+                    self._preset_report_result,
+                    True,
+                    "Pre-restore snapshot",
+                    snapshot,
+                )
+                current_slot = current.preset_raw[0]
+                for item in backup.slots:
+                    self._call_from_thread(
+                        self._preset_report_say,
+                        f"Restoring P{item.slot:02d} of 79…",
+                    )
+                    if current_slot != item.slot:
+                        current_slot = select_restore_slot(item.slot, current_slot)
+                    # Send without the immediate read-back: that read sees
+                    # the working buffer before the reselect commit.  The
+                    # verification below happens after the commit.
+                    self.device.send_preset(item.sequence, item.preset, verify=False)
+                    # Leaving the slot is the stored commit; the second
+                    # walk returns the unit to the slot being restored.
+                    neighbour = (item.slot + 1) % 80
+                    current_slot = select_restore_slot(neighbour, item.slot)
+                    current_slot = select_restore_slot(item.slot, current_slot)
+                    actual = self.device.read_current_preset()
+                    if len(actual.seq_blob) != len(item.sequence):
+                        raise DeviceError(
+                            f"P{item.slot:02d} sequence is "
+                            f"{len(actual.seq_blob)} bytes, expected "
+                            f"{len(item.sequence)}"
+                        )
+                    expected = item.sequence + item.preset
+                    actual_bytes = actual.seq_blob + actual.preset_raw
+                    diff = tuple(
+                        index
+                        for index, (want, got) in enumerate(zip(expected, actual_bytes))
+                        if want != got
+                        and not (
+                            index >= len(item.sequence)
+                            and index - len(item.sequence) in UNIT_KEPT_OFFSETS
+                        )
+                    )
+                    if diff:
+                        raise DeviceError(
+                            f"P{item.slot:02d} read-back differs at "
+                            f"offset(s) {diff[:8]}"
+                        )
+                    restored += 1
+                    self._call_from_thread(
+                        self._preset_report_result,
+                        True,
+                        f"P{item.slot:02d}",
+                        "sequence + preset sent; reselect commit",
+                    )
+        except _BRIDGE_ERRORS as exc:
+            failure = exc
+            failed_slot = item.slot if item is not None else None
+        except Exception as exc:  # pragma: no cover - programming error guard
+            failure = exc
+            failed_slot = item.slot if item is not None else None
+        finally:
+            self._exchange.release()
+        if failure is not None:
+            where = f"P{failed_slot:02d}" if failed_slot is not None else "the snapshot"
+            summary = (
+                f"preset restore stopped at {where} after {restored} slot(s): {failure}"
+            )
+            if snapshot is not None:
+                summary += f"\nSnapshot: {snapshot}"
+            self._call_from_thread(
+                self._preset_report_result, False, where, str(failure)
+            )
+        else:
+            summary = f"preset restore complete: {restored}/80 slots"
+            if snapshot is not None:
+                summary += f"\nSnapshot: {snapshot}"
+        self._call_from_thread(self._preset_report_finish, summary)
+        self._call_from_thread(self.notify_status, summary)
 
     # --- whole-bank import --------------------------------------------------
 
@@ -5766,20 +6013,25 @@ The preset editor
 
 Importing sounds
 
-  `I` reads an All-Sounds dump -- a .syx or the .mid that carries the
-  same SysEx -- and writes it into Internal (RAM). "Whole bank" previews
-  all eighty sounds and replaces Internal after two confirmations.
-  "Single sounds" opens a two-pane map: assign a target slot (00-79) to
-  any number of the file's sounds, then ctrl+s. `l` previews the focused
-  sound in the Edit Sound buffer without storing it or needing a target
-  slot; auto-load and autoplay are opt-in. For auto-rehearsal the unit
-  must be in POLY or OMNI on its System MIDI base channel, not MULTI;
-  that is set on the unit, not by this app.
+  `I` opens the import chooser. "Whole bank" reads an All-Sounds dump --
+  a .syx or the .mid that carries the same SysEx -- previews all eighty
+  sounds and replaces Internal after two confirmations. "Single sounds"
+  opens a two-pane map: assign a target slot (00-79) to any number of the
+  file's sounds, then ctrl+s. "Restore presets" reads an
+  internal_presets_*.bin backup and restores all eighty Internal preset
+  slots, including sequences and FX through a send and the unit's
+  selection-change commit.
+  `l` previews the focused sound in the Edit Sound buffer without storing
+  it or needing a target slot; auto-load and autoplay are opt-in. For
+  auto-rehearsal the unit must be in POLY or OMNI on its System MIDI base
+  channel, not MULTI; that is set on the unit, not by this app.
 
-  Every write needs the write gate armed (`w`), and both flows ask twice.
-  Internal RAM is read back and verified. Cards are not SysEx write
-  targets: import or restore into Internal, then copy to the card on the
-  unit's front panel.
+  Every write needs the write gate armed (`w`), and the sound flows ask
+  twice. Restore presets takes a pre-restore snapshot, asks twice and stops
+  at the first failed slot; the unit keeps its own preset names. Internal
+  RAM is read back and verified. Cards are not SysEx write targets: import
+  or restore into Internal, then copy to the card on the unit's front
+  panel.
 
 Backing up and restoring
 
