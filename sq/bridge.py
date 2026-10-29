@@ -2354,6 +2354,37 @@ class SqBridge:
             observed_slot=last_observed,
         )
 
+    def select_preset_retry(
+        self,
+        target_slot: int,
+        *,
+        known_slot: int,
+        attempts: int = 3,
+    ) -> int:
+        """Walk to a slot, retrying a dropped panel press.
+
+        The walk is blind and one PREV/NEXT press can be dropped.  A
+        full restore must not mistake that for a wrong slot, so it retries
+        from the slot the unit actually reports.
+        """
+        if attempts < 1:
+            raise ValueError("a walk needs at least one attempt")
+        last: Optional[BaseException] = None
+        for _ in range(attempts):
+            try:
+                return self.select_preset_by_walk(target_slot, known_slot=known_slot)
+            except PresetSelectionError as exc:
+                last = exc
+                current = self.read_current_preset()
+                if current.preset_raw:
+                    known_slot = current.preset_raw[0]
+        if last is None:  # pragma: no cover - loop always raises once
+            raise PresetSelectionError(
+                f"the preset walk to P{target_slot:02d} failed without a reason",
+                observed_slot=known_slot,
+            )
+        raise last
+
     def _on_the_target(
         self, target_slot: int, force_reload: bool, settle: float
     ) -> int:
@@ -2693,9 +2724,14 @@ class SqBridge:
             seq_blob, preset_raw, attempts=attempts, timeout=timeout
         )
         # The manual's save steps: the dialog, the name page, the slot
-        # selection, the confirmation.
+        # selection, the confirmation.  A fourth Enter is the safety net
+        # when a press is dropped, and Select Preset closes whatever is
+        # left open before the walk can move a dialog target.
         for _ in range(3):
             self._press_release(ENTER_SAVE_BUTTON)
+        self._press_release(ENTER_SAVE_BUTTON, gap=0.6)
+        self._press_release(SELECT_PRESET_BUTTON)
+        time.sleep(PRESET_SETTLE)
         # Leave and return, so the read-back is the slot's stored bytes.
         self._press_release(PRESET_PREV_BUTTON)
         self._press_release(PRESET_NEXT_BUTTON)

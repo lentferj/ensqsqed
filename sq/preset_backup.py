@@ -21,17 +21,20 @@ per-slot records, and leaves all writing to the app.
 from __future__ import annotations
 
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 from sq import messages as m
-from sq.bridge import AllPresetsDump, PresetAlert
+from sq.bridge import UNIT_KEPT_OFFSETS, AllPresetsDump, DeviceError, PresetAlert
 
 __all__ = [
     "PresetBackup",
     "PresetBackupSlot",
+    "PresetRestoreError",
     "read_preset_backup",
+    "restore_preset_bank",
 ]
 
 #: An all-presets backup has all eighty defined slots.
@@ -61,6 +64,100 @@ class PresetBackup:
     @property
     def count(self) -> int:
         return len(self.slots)
+
+
+class PresetRestoreError(DeviceError):
+    """A full restore stopped at one slot."""
+
+    def __init__(self, slot: int, message: str) -> None:
+        super().__init__(message)
+        self.slot = slot
+
+
+def _select(device, target: int, known: int) -> int:
+    """Walk to a slot, retrying a dropped panel press."""
+    retry = getattr(device, "select_preset_retry", None)
+    if retry is not None:
+        return retry(target, known_slot=known)
+    last: Optional[BaseException] = None
+    for _ in range(3):
+        try:
+            return device.select_preset_by_walk(target, known_slot=known)
+        except Exception as exc:
+            last = exc
+            current = device.read_current_preset()
+            if current.preset_raw:
+                known = current.preset_raw[0]
+    if last is None:  # pragma: no cover - loop always raises once
+        raise DeviceError("preset selection failed without a reason")
+    raise last
+
+
+def restore_preset_bank(
+    device,
+    backup: PresetBackup,
+    *,
+    on_slot: Optional[Callable[[int, str], None]] = None,
+) -> int:
+    """Send and reselect every slot in ``backup``.
+
+    The device owns the wire; the caller owns the gate, the pre-restore
+    snapshot and the report.  A plain send leaves the effect parameters in
+    the working buffer, so each slot is left and reselected before its
+    read-back is compared.  The unit's own regions are skipped in that
+    comparison.
+    """
+    # A previous save may have left its dialog open; PREV/NEXT would then
+    # move the dialog's target instead of the preset.  Select Preset closes
+    # it and is harmless when none is open.
+    tap = getattr(device, "tap_button", None)
+    if tap is not None:
+        tap(2)
+        time.sleep(0.5)
+    current = device.read_current_preset()
+    if not current.preset_raw:
+        raise DeviceError("the unit did not return a current preset")
+    current_slot = current.preset_raw[0]
+    for item in backup.slots:
+        try:
+            if current_slot != item.slot:
+                current_slot = _select(device, item.slot, current_slot)
+            # The measured whole-buffer store: the three Enter/Save presses
+            # are what commit the FX block; a plain send + reselect does not.
+            device.store_current_slot(item.sequence, item.preset, attempts=3)
+            actual = device.read_current_preset()
+            if len(actual.seq_blob) != len(item.sequence):
+                raise PresetRestoreError(
+                    item.slot,
+                    f"P{item.slot:02d} sequence is {len(actual.seq_blob)} "
+                    f"bytes, expected {len(item.sequence)}",
+                )
+            expected = item.sequence + item.preset
+            actual_bytes = actual.seq_blob + actual.preset_raw
+            diff = tuple(
+                index
+                for index, (want, got) in enumerate(zip(expected, actual_bytes))
+                if want != got
+                and not (
+                    index >= len(item.sequence)
+                    and index - len(item.sequence) in UNIT_KEPT_OFFSETS
+                )
+            )
+            if diff:
+                first = diff[0]
+                raise PresetRestoreError(
+                    item.slot,
+                    f"P{item.slot:02d} read-back differs at offset(s) {diff[:8]} "
+                    f"(expected {expected[first]:#04x}, got "
+                    f"{actual_bytes[first]:#04x})",
+                )
+        except PresetRestoreError:
+            raise
+        except Exception as exc:
+            raise PresetRestoreError(item.slot, str(exc)) from exc
+        if on_slot is not None:
+            on_slot(item.slot, "sequence + preset sent; reselect commit")
+    return len(backup.slots)
 
 
 def _sequence_blob(dump: AllPresetsDump, sequence_number: int) -> bytes:

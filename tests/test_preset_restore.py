@@ -46,12 +46,12 @@ class _RestoreDevice:
         self.select_calls.append((target, known_slot))
         return target
 
-    def send_preset(self, seq, preset, *, verify=True, timeout=None):
+    def store_current_slot(self, seq, preset, *, attempts=3, timeout=None):
         if self.fail_at == len(self.send_calls):
             raise RuntimeError("synthetic write failure")
         self.send_calls.append((seq, preset))
         self.current = (seq, preset)
-        return SimpleNamespace(verified=verify, kept_preset_offsets=())
+        return SimpleNamespace(verified=True, kept_preset_offsets=())
 
 
 async def _run(app, backup, pilot):
@@ -92,8 +92,8 @@ async def test_all_eighty_slots_are_stored_with_their_sequences(tmp_path):
         assert [preset for _, preset in device.send_calls] == [
             slot.preset for slot in backup.slots
         ]
-        assert device.select_calls[:4] == [(1, 0), (0, 1), (1, 0), (0, 1)]
-        assert device.select_calls[-2:] == [(0, 79), (79, 0)]
+        assert device.select_calls[:2] == [(1, 0), (0, 1)]
+        assert device.select_calls[2:] == [(slot, slot - 1) for slot in range(1, 80)]
         log = str(report.query_one("#backup-log", Static).content)
         assert "P00" in log and "P79" in log
         assert "complete: 80/80" in str(

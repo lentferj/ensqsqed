@@ -656,17 +656,20 @@ are not write targets here: read them for backup by selecting each sound,
 then copy a bank to a card on the unit's own panel. Take a backup before
 importing over Internal.
 
-The hardware suite pins the measured behaviour behind a second,
-destructive gate:
+The hardware suite pins the measured behaviour behind destructive gates:
 
 ```
-ENSSQSQED_HW_BANK_WRITE=1 .venv/bin/python -m pytest tests/test_hardware.py \
+make hardware-test        # all --hardware tests, including the 80-preset restore
+ENSQSQED_HW_BANK_WRITE=1 .venv/bin/python -m pytest tests/test_hardware.py \
     -k SoundBankWrite --hardware
 ```
 
 The dump-only edit-buffer write passes; "stored in the bank" by a dump alone
 is a **strict xfail**. The opt-in permanent store is the measured
 three-Enter/Save path and is verified separately against the stored bank.
+`make hardware-test` sets the separate preset-restore gate: it captures the
+unit's current bank, restores all 80 slots through the production helper,
+and reads the stored bank back. It is destructive and never part of CI.
 
 ## Command line
 

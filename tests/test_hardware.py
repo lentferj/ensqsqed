@@ -52,6 +52,13 @@ import pytest
 
 from sq import banks, presets
 from sq import messages as m
+from sq.bridge import UNIT_KEPT_OFFSETS
+from sq.preset_backup import (
+    PresetBackup,
+    PresetBackupSlot,
+    read_preset_backup,
+    restore_preset_bank,
+)
 
 
 class TestHardwareIdentity:
@@ -271,6 +278,130 @@ class TestHardwarePresetReads:
         print(
             f"\nall presets: {dump.count} presets, {len(data)} bytes, the "
             f"area at {dump.preset_area_start}"
+        )
+
+
+class TestHardwarePresetRestore:
+    """The full 80-slot restore, proved with a sentinel, not a same copy.
+
+    A restore of the bytes already on the machine cannot prove a write:
+    a no-op and a successful write look identical.  This test therefore
+    restores a **modified** backup first -- one track-volume byte changed
+    in slot 0 -- reads the stored bank back, and requires the sentinel to
+    be present.  Only then does it restore the original snapshot and check
+    that the sentinel is gone.
+
+    Destructive: behind ``ENSQSQED_HW_PRESET_RESTORE=1``, which
+    ``make hardware-test`` sets.  The original bank is restored in a
+    ``finally`` even if the sentinel assertion fails.
+    """
+
+    #: Effect parameter 0 in the 168-byte preset.  A plain send does not
+    #: commit it; the whole-buffer store does.  This is the field the
+    #: restore is meant to prove.
+    SENTINEL_OFFSET = 152
+
+    @staticmethod
+    def _matches(want: bytes, got: bytes) -> bool:
+        """Compare the regions a dump can write, not the unit-kept ones."""
+        return all(
+            want[index] == got[index] or index in UNIT_KEPT_OFFSETS
+            for index in range(len(want))
+        )
+
+    @staticmethod
+    def _stored_copy(device, selected_after: int):
+        """Read the all-presets dump while a slot is not selected."""
+        current = device.read_current_preset()
+        current_slot = current.preset_raw[0]
+        skip = (selected_after + 1) % 80
+        if current_slot != skip:
+            device.select_preset_retry(skip, known_slot=current_slot)
+        return device.read_all_presets(), skip
+
+    def test_a_sentinel_is_stored_then_the_original_is_restored(
+        self, device, tmp_path
+    ) -> None:
+        if not os.environ.get("ENSQSQED_HW_PRESET_RESTORE"):
+            pytest.skip(
+                "the full preset restore test needs "
+                "ENSQSQED_HW_PRESET_RESTORE=1: it overwrites all 80 Internal "
+                "preset slots"
+            )
+
+        device.tap_button(2)  # close a save dialog left by an earlier probe
+        time.sleep(0.5)
+        current = device.read_current_preset()
+        current_slot = current.preset_raw[0]
+        neighbour = (current_slot + 1) % 80
+        device.select_preset_retry(neighbour, known_slot=current_slot)
+        snapshot = device.read_all_presets()
+        device.select_preset_retry(current_slot, known_slot=neighbour)
+        path = tmp_path / "original_presets.bin"
+        path.write_bytes(snapshot.to_bytes())
+        original = read_preset_backup(str(path))
+        assert original.count == 80
+
+        original_slot = original.slots[0]
+        old = original_slot.preset[self.SENTINEL_OFFSET]
+        sentinel = 0x39 if old != 0x39 else 0x38
+        changed = bytearray(original_slot.preset)
+        changed[self.SENTINEL_OFFSET] = sentinel
+        sentinel_backup = PresetBackup(
+            path=str(path),
+            slots=(
+                PresetBackupSlot(
+                    slot=0,
+                    preset=bytes(changed),
+                    sequence=original_slot.sequence,
+                ),
+                *original.slots[1:],
+            ),
+        )
+
+        try:
+
+            def progress(slot: int, detail: str) -> None:
+                print(f"restored P{slot:02d}", flush=True)
+
+            assert restore_preset_bank(device, sentinel_backup, on_slot=progress) == 80
+            stored, _skip = self._stored_copy(device, 0)
+            offsets = stored.slot_offsets()
+            index = offsets[0]
+            assert stored.presets_raw[index][self.SENTINEL_OFFSET] == sentinel, (
+                "the sentinel effect byte did not land in stored P00: the "
+                "full restore did not write what it sent"
+            )
+            print(
+                f"\npreset restore sentinel: P00 offset {self.SENTINEL_OFFSET} "
+                f"reads back as {sentinel} from stored memory"
+            )
+        finally:
+            # Only P00 was sentinelled; the other slots were restored
+            # unchanged by the full pass.  One slot is enough to remove
+            # the sentinel, and it keeps the destructive test shorter.
+            one = PresetBackup(
+                path=original.path,
+                slots=(original.slots[0],),
+            )
+            assert restore_preset_bank(device, one) == 1
+
+        stored, skip = self._stored_copy(device, 0)
+        offsets = stored.slot_offsets()
+        compared = 0
+        for item in original.slots:
+            if item.slot == skip:
+                continue
+            index = offsets.get(item.slot)
+            assert index is not None
+            assert self._matches(item.preset, stored.presets_raw[index]), (
+                f"the original P{item.slot:02d} was not restored"
+            )
+            compared += 1
+        assert compared == 79
+        print(
+            f"preset restore: 80 slots written; {compared} stored presets "
+            "re-read and matched the original"
         )
 
 

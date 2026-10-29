@@ -939,8 +939,9 @@ def test_the_store_walks_the_dialog_and_verifies_by_reload(
         if body and body[0] == m.CommandType.VIRTUAL_BUTTON:
             buttons.append(body[1])
     up = m.CommandType.BUTTON_UP_OFFSET
-    enter, prev, nxt = (
+    enter, select, prev, nxt = (
         b.ENTER_SAVE_BUTTON,
+        b.SELECT_PRESET_BUTTON,
         b.PRESET_PREV_BUTTON,
         b.PRESET_NEXT_BUTTON,
     )
@@ -951,6 +952,10 @@ def test_the_store_walks_the_dialog_and_verifies_by_reload(
         enter + up,
         enter,
         enter + up,
+        enter,
+        enter + up,
+        select,
+        select + up,
         prev,
         prev + up,
         nxt,

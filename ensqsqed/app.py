@@ -100,14 +100,18 @@ from sq import importer
 from sq import messages as msg
 from sq import preset_labels
 from sq import preset_cache
-from sq.preset_backup import PresetBackup, read_preset_backup
+from sq.preset_backup import (
+    PresetBackup,
+    PresetRestoreError,
+    read_preset_backup,
+    restore_preset_bank,
+)
 from sq.bridge import (
     AllPresetsDump,
     DeviceError,
     PRESET_SETTLE,
     PresetAlert,
     PresetMismatch,
-    UNIT_KEPT_OFFSETS,
     preset_needs_write,
 )
 from sq.favorites import Favorites, Favorite
@@ -4972,7 +4976,7 @@ class EnsqsqedApp(App):
             "read_all_presets",
             "read_current_preset",
             "select_preset_by_walk",
-            "send_preset",
+            "store_current_slot",
         ):
             if not hasattr(self.device, method):
                 self.notify_status(
@@ -5009,18 +5013,8 @@ class EnsqsqedApp(App):
             self._preset_restore_report.finish(summary)
 
     @work(thread=True)
-    def _preset_restore_worker(  # noqa: C901
-        self, backup: PresetBackup
-    ) -> None:
-        """**MIDI only** -- snapshot, then one slot at a time.
-
-        A plain ``send_preset`` commits only offsets 32-151.  The
-        documented selection-change commit stores the live snapshot,
-        including the effect parameters; this worker sends and then walks
-        to the neighbour and back for every slot.  The panel save dialog
-        is deliberately not used: it has been measured to revert a sent
-        effect.
-        """
+    def _preset_restore_worker(self, backup: PresetBackup) -> None:
+        """**MIDI only** -- snapshot, then hand the bank to the shared loop."""
         import os
         import time
 
@@ -5028,30 +5022,18 @@ class EnsqsqedApp(App):
         failure: Optional[BaseException] = None
         failed_slot: Optional[int] = None
         snapshot: Optional[str] = None
-        item = None
-
-        def select_restore_slot(target: int, known: int) -> int:
-            """Retry a dropped panel walk without changing the send path."""
-            last: Optional[BaseException] = None
-            for _ in range(3):
-                try:
-                    return self.device.select_preset_by_walk(target, known_slot=known)
-                except _BRIDGE_ERRORS as exc:
-                    last = exc
-                    current = self.device.read_current_preset()
-                    if current.preset_raw:
-                        known = current.preset_raw[0]
-            if last is None:  # pragma: no cover - loop always raises once
-                raise RuntimeError("preset selection failed without a reason")
-            raise last
-
         try:
             with self._busy_gate, self._lock:
                 self._call_from_thread(
                     self._preset_report_say,
                     "Saving a pre-restore snapshot of the stored presets…",
                 )
+                if hasattr(self.device, "tap_button"):
+                    self.device.tap_button(2)
+                    time.sleep(PRESET_SETTLE)
                 current = self.device.read_current_preset()
+                if not current.preset_raw:
+                    raise DeviceError("the unit did not return a current preset")
                 current_slot = current.preset_raw[0]
                 # A stored read must be taken while the slot is unselected;
                 # the current slot's dump mirrors its working buffer.
@@ -5074,59 +5056,23 @@ class EnsqsqedApp(App):
                     "Pre-restore snapshot",
                     snapshot,
                 )
-                current_slot = current.preset_raw[0]
-                for item in backup.slots:
-                    self._call_from_thread(
-                        self._preset_report_say,
-                        f"Restoring P{item.slot:02d} of 79…",
-                    )
-                    if current_slot != item.slot:
-                        current_slot = select_restore_slot(item.slot, current_slot)
-                    # Send without the immediate read-back: that read sees
-                    # the working buffer before the reselect commit.  The
-                    # verification below happens after the commit.
-                    self.device.send_preset(item.sequence, item.preset, verify=False)
-                    # Leaving the slot is the stored commit; the second
-                    # walk returns the unit to the slot being restored.
-                    neighbour = (item.slot + 1) % 80
-                    current_slot = select_restore_slot(neighbour, item.slot)
-                    current_slot = select_restore_slot(item.slot, current_slot)
-                    actual = self.device.read_current_preset()
-                    if len(actual.seq_blob) != len(item.sequence):
-                        raise DeviceError(
-                            f"P{item.slot:02d} sequence is "
-                            f"{len(actual.seq_blob)} bytes, expected "
-                            f"{len(item.sequence)}"
-                        )
-                    expected = item.sequence + item.preset
-                    actual_bytes = actual.seq_blob + actual.preset_raw
-                    diff = tuple(
-                        index
-                        for index, (want, got) in enumerate(zip(expected, actual_bytes))
-                        if want != got
-                        and not (
-                            index >= len(item.sequence)
-                            and index - len(item.sequence) in UNIT_KEPT_OFFSETS
-                        )
-                    )
-                    if diff:
-                        raise DeviceError(
-                            f"P{item.slot:02d} read-back differs at "
-                            f"offset(s) {diff[:8]}"
-                        )
-                    restored += 1
+
+                def report_slot(slot: int, detail: str) -> None:
                     self._call_from_thread(
                         self._preset_report_result,
                         True,
-                        f"P{item.slot:02d}",
-                        "sequence + preset sent; reselect commit",
+                        f"P{slot:02d}",
+                        detail,
                     )
+
+                restored = restore_preset_bank(self.device, backup, on_slot=report_slot)
+        except PresetRestoreError as exc:
+            failure = exc
+            failed_slot = exc.slot
         except _BRIDGE_ERRORS as exc:
             failure = exc
-            failed_slot = item.slot if item is not None else None
         except Exception as exc:  # pragma: no cover - programming error guard
             failure = exc
-            failed_slot = item.slot if item is not None else None
         finally:
             self._exchange.release()
         if failure is not None:

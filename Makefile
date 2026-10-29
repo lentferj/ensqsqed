@@ -47,8 +47,8 @@ PYFILES := $(shell git ls-files --cached --others --exclude-standard '*.py')
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap lint format typecheck typecheck-baseline \
-        test coverage audit audit-vulns audit-dead audit-deps audit-secrets \
-        secrets-baseline check clean
+        test coverage hardware-test audit audit-vulns audit-dead audit-deps \
+        audit-secrets secrets-baseline check clean
 
 help:
 	@echo 'ensqsqed development checks'
@@ -58,6 +58,7 @@ help:
 	@echo '  make format            ruff format (rewrites files; NOT run by check)'
 	@echo '  make typecheck         mypy, vs quality/mypy-baseline.txt'
 	@echo '  make test              pytest + coverage (term-missing)'
+	@echo '  make hardware-test     destructive 80-preset restore + probes'
 	@echo '  make audit             pip-audit, vulture, deptry, detect-secrets'
 	@echo '  make check             everything above; any failure stops the run'
 	@echo
@@ -101,6 +102,13 @@ test:
 
 coverage:
 	$(PYTHON) -m pytest --cov-report=term-missing
+
+# Destructive: restores all 80 Internal presets from the unit's own
+# current bank, then reads the stored bank back.  Opt-in by target; also
+# needs the unit answering and --hardware.  Never part of make check/CI.
+hardware-test:
+	ENSQSQED_HW_PRESET_RESTORE=1 $(PYTHON) -m pytest tests/test_hardware.py \
+		--hardware -rs
 
 # --- audit -------------------------------------------------------------------
 
